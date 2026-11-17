@@ -351,33 +351,29 @@ anytls_subscription_ready() {
 
 # --- 公网验收 -----------------------------------------------------------------
 
-anytls_public_curl() {
-    curl -sS --proto '=https' --noproxy '*' --connect-timeout 5 --max-time 30 "$@"
-}
-
 # 订阅经橙云 → Origin Rule 8443 → Caddy：公网 200 是链路与 strict 的二次证据。
 anytls_public_subscription_ok() {
     local token body decoded status marker
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS:-[]}") || return 1
     [[ -n "${token}" && "${token}" != "null" ]] || return 1
     if runtime_has_cdn_entry \
-        && [[ "$(anytls_public_curl "https://${SUBSCRIPTION_DOMAIN}/easy_all-health")" != "easy_all ok" ]]; then
+        && [[ "$(public_dns_curl "https://${SUBSCRIPTION_DOMAIN}/easy_all-health")" != "easy_all ok" ]]; then
         return 1
     fi
-    body=$(anytls_public_curl --get --data-urlencode "token=${token}" \
+    body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
     while IFS= read -r marker; do
         [[ -n "${marker}" ]] || continue
         grep -Fq -- "${marker}" <<<"${decoded}" || return 1
     done < <(runtime_base64_markers)
-    body=$(anytls_public_curl --get --data-urlencode "token=${token}" \
+    body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     while IFS= read -r marker; do
         [[ -n "${marker}" ]] || continue
         grep -Fq -- "${marker}" <<<"${body}" || return 1
     done < <(runtime_mihomo_markers)
-    status=$(anytls_public_curl -o /dev/null -w '%{http_code}' \
+    status=$(public_dns_curl -o /dev/null -w '%{http_code}' \
         --get --data-urlencode 'token=invalid' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     [[ "${status}" == "403" ]]
@@ -386,7 +382,7 @@ anytls_public_subscription_ok() {
 anytls_validate_public_runtime() {
     local attempt
     subscription_enabled || return 0
-    wait_for_dns_a_record "${SUBSCRIPTION_DOMAIN}" \
+    wait_for_dns_a_record "${SUBSCRIPTION_DOMAIN}" "" public \
         || die "订阅域名尚未解析：${SUBSCRIPTION_DOMAIN}；请检查橙云 A 记录后重试"
     for ((attempt = 1; attempt <= CDN_PUBLIC_ACCEPT_ATTEMPTS; attempt++)); do
         anytls_public_subscription_ok && return 0

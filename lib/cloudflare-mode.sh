@@ -309,20 +309,16 @@ refresh_runtime_subscription() {
 
 # --- Public acceptance --------------------------------------------------------
 
-# 本机验收（--resolve 127.0.0.1）不能证明橙云链路：DNS 指向、边缘证书与
-# Full (strict) 回源都可能在这里才暴露。公网探测走真实域名 + 系统 CA，禁止 -k。
-cdn_public_curl() {
-    curl -sS --proto '=https' --noproxy '*' --connect-timeout 5 --max-time 30 "$@"
-}
-
 cdn_wait_for_node_dns() {
-    wait_for_dns_a_record "${CF_NODE_DOMAIN}" \
+    wait_for_dns_a_record "${CF_NODE_DOMAIN}" "" public \
         || die "Cloudflare 节点域名尚未解析：${CF_NODE_DOMAIN}；请检查橙云 A 记录后重试"
 }
 
+# 本机验收（--resolve 127.0.0.1）不能证明橙云链路：DNS 指向、边缘证书与
+# Full (strict) 回源都可能在这里才暴露。公网探测走真实域名 + 系统 CA，禁止 -k。
 cdn_public_health_ok() {
     local body
-    body=$(cdn_public_curl "https://${CF_NODE_DOMAIN}/easy_all-health") || return 1
+    body=$(public_dns_curl "https://${CF_NODE_DOMAIN}/easy_all-health") || return 1
     [[ "${body}" == "easy_all ok" ]]
 }
 
@@ -330,11 +326,11 @@ cdn_public_subscription_ok() {
     local token body decoded
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS:-[]}") || return 1
     [[ -n "${token}" && "${token}" != "null" ]] || return 1
-    body=$(cdn_public_curl --get --data-urlencode "token=${token}" \
+    body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         "https://${CF_NODE_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
     [[ "${decoded}" == *"type=ws"* ]] || return 1
-    body=$(cdn_public_curl --get --data-urlencode "token=${token}" \
+    body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' \
         "https://${CF_NODE_DOMAIN}/subscribe") || return 1
     [[ "${body}" == *"network: ws"* ]]
@@ -342,7 +338,7 @@ cdn_public_subscription_ok() {
 
 cdn_public_token_rejection_ok() {
     local status
-    status=$(cdn_public_curl -o /dev/null -w '%{http_code}' \
+    status=$(public_dns_curl -o /dev/null -w '%{http_code}' \
         --get --data-urlencode 'token=invalid' \
         "https://${CF_NODE_DOMAIN}/subscribe") || return 1
     [[ "${status}" == "403" ]]

@@ -1617,9 +1617,7 @@ origin_guard_case() { # $1=profile 名
     : >"${url_log}"
     cat >"${stub_dir}/curl" <<'FAKE_CURL'
 #!/usr/bin/env bash
-last=""
-for arg in "$@"; do last=${arg}; done
-printf '%s\n' "${last}" >>"${ORIGIN_GUARD_LOG}"
+printf '%s\n' "$*" >>"${ORIGIN_GUARD_LOG}"
 printf '000'
 FAKE_CURL
     chmod 0755 "${stub_dir}/curl"
@@ -1630,6 +1628,7 @@ FAKE_CURL
         bash -c '
             source "$1/profiles/$2.sh"
             CF_ORIGIN_DOMAIN=origin.example.com
+            VPS_PUBLIC_IPV4=203.0.113.10
             VLESS_PATH=/vless-0123456789ab
             cdn_public_origin_header_guard_ok || exit 9
         ' _ "${ROOT_DIR}" "${profile}" >/dev/null 2>&1 \
@@ -1639,8 +1638,12 @@ FAKE_CURL
 mode4_urls=$(<"$(origin_guard_case combined)")
 assert_contains "模式 5 探测 Caddy 8443" "${mode4_urls}" "https://origin.example.com:8443/vless-0123456789ab"
 assert_not_contains "模式 5 不把探测发到 443" "${mode4_urls}" "https://origin.example.com/vless"
+assert_contains "模式 5 守卫探测钉本机公网 IP 与 Caddy 8443" "${mode4_urls}" \
+    "--resolve origin.example.com:8443:203.0.113.10"
 mode2_urls=$(<"$(origin_guard_case cloudfront)")
 assert_contains "模式 4 探测 Caddy 443" "${mode2_urls}" "https://origin.example.com:443/vless-0123456789ab"
+assert_contains "模式 4 守卫探测钉本机公网 IP 与 Caddy 443" "${mode2_urls}" \
+    "--resolve origin.example.com:443:203.0.113.10"
 
 # --- 7. update-core：核心缺失时按“重装修复”处理，并在替换二进制后重启 Caddy ---
 # 该入口要求 root，且下载核心、systemd 与 iptables 计量都是本机外部能力：这里只替身这些
@@ -2164,7 +2167,7 @@ assert_not_contains "内核重启提示不再用裸 read" "${reboot_prompt_body}
 run_certificate_deploy_cases
 run_tls_certificate_cases
 
-# --- 8. 五模式 DNS 等待：清本机缓存 + 6 分钟轮询 + 拒绝 dig 超时文本误判 ---------
+# --- 8. 五模式 DNS 等待：清本机缓存 + 180 轮 × 2 秒轮询 + 拒绝 dig 超时文本误判 ---------
 dns_wait_log="${TMP_DIR}/dns-wait.log"
 dns_wait_bin="${TMP_DIR}/dns-wait-bin"
 mkdir -p "${dns_wait_bin}"
@@ -2174,11 +2177,11 @@ printf 'FLUSH %s\n' "\$*" >>$(printf '%q' "${dns_wait_log}")
 EOF
 chmod +x "${dns_wait_bin}/resolvectl"
 
-# 8.1 默认轮询窗口为 180 * 2s = 360s（6 分钟）
+# 8.1 默认轮询上限为 180 轮 × 2 秒（每轮另计 dig 超时；public 作用域最多 3 次 dig）
 dns_defaults=$(bash -c 'source "$1/lib/runtime-core.sh"; printf "%s:%s\n" "${DNS_WAIT_ATTEMPTS}" "${DNS_WAIT_SECONDS}"' _ "${ROOT_DIR}")
-assert_contains "默认 DNS 轮询窗口为 6 分钟（180x2s）" "${dns_defaults}" "180:2"
+assert_contains "默认 DNS 轮询上限为 180 轮 × 2 秒" "${dns_defaults}" "180:2"
 
-# 8.2 模式 4/5：先清缓存再 dig，第 2 次返回目标 IP 时通过
+# 8.2 模式 4/5 安装阶段：先清缓存再 dig（只用系统解析），第 2 次返回目标 IP 时通过
 : >"${dns_wait_log}"
 dns_wait_count_file="${TMP_DIR}/dns-wait-count"
 printf '0\n' >"${dns_wait_count_file}"
@@ -2206,7 +2209,7 @@ dns_cf_ok=$(
         ' _ "${ROOT_DIR}" 2>&1
 ) || fail "模式 4/5 DNS 重试应成功：${dns_cf_ok}"
 assert_contains "模式 4/5 等待前先清本机缓存" "$(<"${dns_wait_log}")" "FLUSH flush-caches"
-assert_contains "模式 4/5 第 2 次命中目标 IP 后成功" "${dns_cf_ok}" "OK"
+assert_contains "模式 4/5 第 2 轮命中目标 IP 后成功" "${dns_cf_ok}" "OK"
 flush_line=$(grep -n '^FLUSH ' "${dns_wait_log}" | head -n 1 | cut -d: -f1)
 dig_line=$(grep -n '^DIG#' "${dns_wait_log}" | head -n 1 | cut -d: -f1)
 ((flush_line < dig_line)) || fail "清缓存必须早于第一次 dig"
@@ -2251,6 +2254,222 @@ dns_anytls_out=$(
 ((dns_anytls_fail != 0)) || fail "模式 1/3 订阅域名未解析时应阻断"
 assert_contains "模式 1/3 失败提示清晰" "${dns_anytls_out}" "订阅域名尚未解析"
 assert_contains "模式 1/3 等待前先清本机缓存" "$(<"${dns_wait_log}")" "FLUSH flush-caches"
+
+# 8.5 公网验收入口（模式 2）两个都查：仅一方命中即通过，但必须留下判定不一致的告警
+: >"${dns_wait_log}"
+dns_partial_hit=$(
+    PATH="${dns_wait_bin}:${PATH}" DNS_WAIT_ATTEMPTS_OVERRIDE=1 DNS_WAIT_SECONDS_OVERRIDE=0 \
+        DNS_WAIT_TEST_LOG="${dns_wait_log}" \
+        bash -c '
+            source "$1/profiles/cloudflare.sh"
+            CF_NODE_DOMAIN=cf.example.com
+            dig() {
+                printf "DIG %s\n" "$*" >>"${DNS_WAIT_TEST_LOG}"
+                if [[ "$*" == *"@1.1.1.1"* ]]; then
+                    printf "203.0.113.10\n"
+                fi
+                return 0
+            }
+            cdn_wait_for_node_dns
+            printf "PARTIAL_HIT_OK\n"
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "仅 1.1.1.1 命中而 8.8.8.8 为空时应按命中方通过：${dns_partial_hit}"
+assert_contains "部分命中后仍通过验收" "${dns_partial_hit}" "PARTIAL_HIT_OK"
+assert_contains "部分命中时告警点名未命中的解析器" "${dns_partial_hit}" \
+    "公共 DNS 判定不一致（1.1.1.1=已命中，8.8.8.8=尚未返回该记录）"
+assert_contains "检查同时查询了 1.1.1.1 与 8.8.8.8" "$(<"${dns_wait_log}")" "@1.1.1.1"
+assert_contains "检查同时查询了 8.8.8.8" "$(<"${dns_wait_log}")" "@8.8.8.8"
+
+dns_both_ok=$(
+    PATH="${dns_wait_bin}:${PATH}" DNS_WAIT_ATTEMPTS_OVERRIDE=1 DNS_WAIT_SECONDS_OVERRIDE=0 \
+        bash -c '
+            source "$1/profiles/cloudflare.sh"
+            CF_NODE_DOMAIN=cf.example.com
+            dig() {
+                if [[ "$*" == *"@1.1.1.1"* || "$*" == *"@8.8.8.8"* ]]; then
+                    printf "203.0.113.10\n"
+                fi
+                return 0
+            }
+            cdn_wait_for_node_dns
+            printf "BOTH_OK\n"
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "1.1.1.1 与 8.8.8.8 均命中时应通过：${dns_both_ok}"
+assert_contains "双公共 DNS 均命中后通过" "${dns_both_ok}" "BOTH_OK"
+[[ "${dns_both_ok}" != *"判定不一致"* ]] || fail "双解析器一致时不应产生不一致告警：${dns_both_ok}"
+
+# 8.6 两个公共 DNS 都未给出记录且至少一方不可达时，用系统默认 DNS 取第三个意见
+dns_fallback_ok=$(
+    PATH="${dns_wait_bin}:${PATH}" DNS_WAIT_ATTEMPTS_OVERRIDE=1 DNS_WAIT_SECONDS_OVERRIDE=0 \
+        bash -c '
+            source "$1/profiles/cloudflare.sh"
+            CF_NODE_DOMAIN=cf.example.com
+            dig() {
+                if [[ "$*" == *"@1.1.1.1"* || "$*" == *"@8.8.8.8"* ]]; then
+                    printf ";; connection timed out; no servers could be reached\n"
+                    return 9
+                fi
+                printf "203.0.113.10\n"
+            }
+            cdn_wait_for_node_dns
+            printf "FALLBACK_OK\n"
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "公共 DNS 均不可达时应回退系统 DNS 并通过：${dns_fallback_ok}"
+assert_contains "公共 DNS 均不可达时回退系统 DNS" "${dns_fallback_ok}" "FALLBACK_OK"
+assert_contains "回退系统 DNS 时留告警证据" "${dns_fallback_ok}" \
+    "公共 DNS 未给出该记录（1.1.1.1=不可达，8.8.8.8=不可达），已按系统默认 DNS 判定解析生效"
+
+dns_fallback_sys_fail=0
+PATH="${dns_wait_bin}:${PATH}" DNS_WAIT_ATTEMPTS_OVERRIDE=1 DNS_WAIT_SECONDS_OVERRIDE=0 \
+    bash -c '
+        source "$1/profiles/cloudflare.sh"
+        CF_NODE_DOMAIN=cf.example.com
+        dig() {
+            printf ";; connection timed out; no servers could be reached\n"
+            return 9
+        }
+        cdn_wait_for_node_dns
+    ' _ "${ROOT_DIR}" >/dev/null 2>&1 || dns_fallback_sys_fail=$?
+((dns_fallback_sys_fail != 0)) || fail "公共 DNS 与系统 DNS 均无应答时不得判为通过"
+
+# 8.7 一方未命中（1.1.1.1 无记录）、另一方不可达（8.8.8.8 超时）：系统 DNS 命中则通过并告警
+dns_partial_fallback_ok=$(
+    PATH="${dns_wait_bin}:${PATH}" DNS_WAIT_ATTEMPTS_OVERRIDE=1 DNS_WAIT_SECONDS_OVERRIDE=0 \
+        bash -c '
+            source "$1/profiles/cloudflare.sh"
+            CF_NODE_DOMAIN=cf.example.com
+            dig() {
+                if [[ "$*" == *"@1.1.1.1"* ]]; then
+                    return 0
+                fi
+                if [[ "$*" == *"@8.8.8.8"* ]]; then
+                    printf ";; connection timed out; no servers could be reached\n"
+                    return 9
+                fi
+                printf "203.0.113.10\n"
+            }
+            cdn_wait_for_node_dns
+            printf "PARTIAL_FALLBACK_OK\n"
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "一方公共 DNS 未命中、一方不可达时应用系统 DNS 兜底通过：${dns_partial_fallback_ok}"
+assert_contains "部分命中兜底后通过" "${dns_partial_fallback_ok}" "PARTIAL_FALLBACK_OK"
+assert_contains "兜底告警点名两侧状态" "${dns_partial_fallback_ok}" \
+    "公共 DNS 未给出该记录（1.1.1.1=尚未返回该记录，8.8.8.8=不可达）"
+
+# 8.8 两个公共解析器都可达且都无记录时继续等待，不得由系统默认 DNS 提前通过
+dns_public_both_empty_fail=0
+PATH="${dns_wait_bin}:${PATH}" DNS_WAIT_ATTEMPTS_OVERRIDE=1 DNS_WAIT_SECONDS_OVERRIDE=0 \
+    bash -c '
+        source "$1/profiles/cloudflare.sh"
+        CF_NODE_DOMAIN=cf.example.com
+        dig() {
+            if [[ "$*" == *"@1.1.1.1"* || "$*" == *"@8.8.8.8"* ]]; then
+                return 0
+            fi
+            printf "203.0.113.10\n"
+        }
+        cdn_wait_for_node_dns
+    ' _ "${ROOT_DIR}" >/dev/null 2>&1 || dns_public_both_empty_fail=$?
+((dns_public_both_empty_fail != 0)) || fail "两个公共解析器都可达但都无记录时不得由系统 DNS 绕过"
+
+# 8.9 安装/云端同步的源站 A 记录等待只用系统解析：公共 DNS 的污染与不可达都不影响结论
+: >"${dns_wait_log}"
+dns_origin_system_only=$(
+    PATH="${dns_wait_bin}:${PATH}" DNS_WAIT_ATTEMPTS_OVERRIDE=1 DNS_WAIT_SECONDS_OVERRIDE=0 \
+        DNS_WAIT_TEST_LOG="${dns_wait_log}" \
+        bash -c '
+            source "$1/profiles/combined.sh"
+            CF_ORIGIN_DOMAIN=stat.example.com
+            VPS_PUBLIC_IPV4=203.0.113.10
+            dig() {
+                printf "DIG %s\n" "$*" >>"${DNS_WAIT_TEST_LOG}"
+                if [[ "$*" == *"@1.1.1.1"* ]]; then
+                    printf "198.51.100.9\n"
+                    return 0
+                fi
+                if [[ "$*" == *"@8.8.8.8"* ]]; then
+                    printf ";; connection timed out; no servers could be reached\n"
+                    return 9
+                fi
+                printf "203.0.113.10\n"
+            }
+            cdn_wait_for_origin_dns
+            printf "SYSTEM_ONLY_OK\n"
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "安装期源站等待应只依赖系统解析：${dns_origin_system_only}"
+assert_contains "安装期源站等待通过" "${dns_origin_system_only}" "SYSTEM_ONLY_OK"
+[[ "$(<"${dns_wait_log}")" != *"@1.1.1.1"* && "$(<"${dns_wait_log}")" != *"@8.8.8.8"* ]] \
+    || fail "安装期源站等待不得查询公共 DNS：$(<"${dns_wait_log}")"
+
+dns_origin_mismatch_fail=0
+PATH="${dns_wait_bin}:${PATH}" DNS_WAIT_ATTEMPTS_OVERRIDE=1 DNS_WAIT_SECONDS_OVERRIDE=0 \
+    bash -c '
+        source "$1/profiles/combined.sh"
+        CF_ORIGIN_DOMAIN=stat.example.com
+        VPS_PUBLIC_IPV4=203.0.113.10
+        dig() {
+            printf "198.51.100.9\n"
+        }
+        cdn_wait_for_origin_dns
+    ' _ "${ROOT_DIR}" >/dev/null 2>&1 || dns_origin_mismatch_fail=$?
+((dns_origin_mismatch_fail != 0)) || fail "安装期源站等待仍须精确匹配系统解析结果"
+
+# 8.10 公网验收 curl 优先通过 1.1.1.1 / 8.8.8.8 解析并注入 --resolve；都拿不到时才回退默认 DNS
+curl_resolve_out=$(
+    bash -c '
+        source "$1/profiles/combined.sh"
+        dig() {
+            if [[ "$*" == *"@1.1.1.1"* ]]; then
+                printf "198.51.100.42\n"
+                return 0
+            fi
+            if [[ "$*" == *"@8.8.8.8"* ]]; then
+                printf "198.51.100.43\n"
+                return 0
+            fi
+            return 9
+        }
+        curl() {
+            printf "CURL %s\n" "$*"
+        }
+        public_dns_curl "https://edge.example.com:8443/easy_all-health"
+    ' _ "${ROOT_DIR}" 2>&1
+) || fail "公网验收 curl 注入 --resolve 失败：${curl_resolve_out}"
+assert_contains "公网验收 curl 注入 --resolve host:port:ip" "${curl_resolve_out}" "--resolve edge.example.com:8443:198.51.100.42"
+
+curl_half_propagated_out=$(
+    bash -c '
+        source "$1/profiles/combined.sh"
+        dig() {
+            if [[ "$*" == *"@1.1.1.1"* ]]; then
+                printf "198.51.100.42\n"
+            fi
+            return 0
+        }
+        curl() {
+            printf "CURL %s\n" "$*"
+        }
+        public_dns_curl "https://edge.example.com/easy_all-health"
+    ' _ "${ROOT_DIR}" 2>&1
+) || fail "仅一方公共 DNS 命中时应仍用命中方的 IP 钉 --resolve：${curl_half_propagated_out}"
+assert_contains "半传播时仍钉命中方返回的 IP" "${curl_half_propagated_out}" \
+    "--resolve edge.example.com:443:198.51.100.42"
+
+curl_fallback_out=$(
+    bash -c '
+        source "$1/profiles/combined-cloudflare.sh"
+        dig() {
+            printf ";; connection timed out; no servers could be reached\n"
+            return 9
+        }
+        curl() {
+            printf "CURL %s\n" "$*"
+        }
+        public_dns_curl "https://sub.example.com/subscribe"
+    ' _ "${ROOT_DIR}" 2>&1
+) || fail "公共 DNS 不可达时 public_dns_curl 应回退默认解析：${curl_fallback_out}"
+[[ "${curl_fallback_out}" != *"--resolve"* ]] || fail "公共 DNS 不可达时不应注入 --resolve：${curl_fallback_out}"
+assert_contains "公共 DNS 不可达时仍正常调用 curl" "${curl_fallback_out}" "https://sub.example.com/subscribe"
 
 printf 'ok - 凭据、strict 顺序、DNS 归属、证书生效与服务编排测试通过\n'
 

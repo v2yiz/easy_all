@@ -257,8 +257,9 @@ cdn_ensure_zone_id() {
     fi
 }
 
+# 安装与云端同步阶段只用系统解析：外部公共 DNS 仅限公网验收（见 public_dns_curl）。
 cdn_wait_for_origin_dns() {
-    wait_for_dns_a_record "${CF_ORIGIN_DOMAIN}" "${VPS_PUBLIC_IPV4}" \
+    wait_for_dns_a_record "${CF_ORIGIN_DOMAIN}" "${VPS_PUBLIC_IPV4}" system \
         || die "源站 A 记录尚未生效：${CF_ORIGIN_DOMAIN} -> ${VPS_PUBLIC_IPV4}；请检查灰云 DNS 后重试"
 }
 
@@ -848,33 +849,36 @@ cdn_verify_traffic_counters() {
         || die "无法建立或读取 mangle 计量规则（链 ${CDN_TRAFFIC_COUNTER_CHAIN}）；请检查 iptables 与 ${CDN_TRAFFIC_COUNTER_DIR}"
 }
 
-cdn_public_curl() {
-    curl -sS --proto '=https' --noproxy '*' --connect-timeout 5 --max-time 30 "$@"
-}
-
 # 节点 alias 返回固定 health 文本：能返回完整证据 CloudFront 已注入源站头并回源成功。
 cdn_public_health_ok() {
     local body
-    body=$(cdn_public_curl "https://${CF_NODE_DOMAIN}/easy_all-health") || return 1
+    body=$(public_dns_curl "https://${CF_NODE_DOMAIN}/easy_all-health") || return 1
     [[ "${body}" == "easy_all ok" ]]
 }
 
 # 源站域名是公网可见的 A 记录，也是源站头校验真正生效的地方（CloudFront 总会注入配置好的
 # 头，因此无法用节点域名探测“缺头/错头”）。无头与错头都必须被拒。
 cdn_public_origin_header_guard_ok() {
-    local status origin_url
+    local status origin_port origin_url
+    local -a resolve_args=()
     # 源站端口由模式派生：直接把请求发到 Caddy 的站点端口，模式 5 的 443 是 sing-box，
     # 发到 443 只会被丢弃，把“连不上”误判成“守卫已拒绝”。
-    origin_url="https://${CF_ORIGIN_DOMAIN}:$(caddy_site_port)${VLESS_PATH}"
+    origin_port=$(caddy_site_port)
+    origin_url="https://${CF_ORIGIN_DOMAIN}:${origin_port}${VLESS_PATH}"
+    # 已知本机公网 IP 时直连 VPS_PUBLIC_IPV4，避免旧 DNS 导致超时假阳性。
+    [[ -z "${VPS_PUBLIC_IPV4:-}" ]] \
+        || resolve_args=(--resolve "${CF_ORIGIN_DOMAIN}:${origin_port}:${VPS_PUBLIC_IPV4}")
     # Caddy 守卫对缺头/错头执行 abort：连接被关闭，curl 拿不到状态码。两者都算拒绝，
     # 但只要还能拿到 2xx 就说明守卫没生效。
-    status=$(cdn_public_curl -o /dev/null -w '%{http_code}' \
+    status=$(public_dns_curl -o /dev/null -w '%{http_code}' \
+        ${resolve_args[@]+"${resolve_args[@]}"} \
         "${origin_url}" || true)
     case "${status}" in
     "" | 000 | 403 | 404) ;;
     *) return 1 ;;
     esac
-    status=$(cdn_public_curl -o /dev/null -w '%{http_code}' \
+    status=$(public_dns_curl -o /dev/null -w '%{http_code}' \
+        ${resolve_args[@]+"${resolve_args[@]}"} \
         --header 'X-Easy-All-Origin-Key: wrong-origin-key' \
         "${origin_url}" || true)
     case "${status}" in
@@ -888,20 +892,20 @@ cdn_public_subscription_ok() {
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS:-[]}") || return 1
     [[ -n "${token}" && "${token}" != "null" ]] || return 1
     # 正确 Token：默认 Base64 必须含 WebSocket 节点，强制 clash 必须含 ws 传输。
-    body=$(cdn_public_curl --get --data-urlencode "token=${token}" \
+    body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
     [[ "${decoded}" == *"type=ws"* ]] || return 1
-    body=$(cdn_public_curl --get --data-urlencode "token=${token}" \
+    body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     [[ "${body}" == *"network: ws"* ]] || return 1
     # os=ios 走 Mihomo iOS 变体，node=all 走带 optional 节点的额外产物。
-    body=$(cdn_public_curl --get --data-urlencode "token=${token}" \
+    body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' --data-urlencode 'os=ios' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     [[ "${body}" == *"network: ws"* ]] || return 1
-    body=$(cdn_public_curl --get --data-urlencode "token=${token}" \
+    body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'node=all' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
@@ -910,7 +914,7 @@ cdn_public_subscription_ok() {
 
 cdn_public_token_rejection_ok() {
     local status
-    status=$(cdn_public_curl -o /dev/null -w '%{http_code}' \
+    status=$(public_dns_curl -o /dev/null -w '%{http_code}' \
         --get --data-urlencode 'token=invalid' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     [[ "${status}" == "403" ]]

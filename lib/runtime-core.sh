@@ -522,6 +522,9 @@ dns_ensure_record() {
 
 readonly DNS_WAIT_ATTEMPTS="${DNS_WAIT_ATTEMPTS_OVERRIDE:-180}"
 readonly DNS_WAIT_SECONDS="${DNS_WAIT_SECONDS_OVERRIDE:-2}"
+readonly PUBLIC_DNS_RESOLVERS=(1.1.1.1 8.8.8.8)
+# _dns_a_query_status 的状态标签：仅用于公网验收部分命中的告警文案。
+readonly DNS_STATUS_LABELS=(已命中 尚未返回该记录 不可达)
 
 # 清理本机可能存在的递归 DNS 缓存（systemd-resolved / nscd / dnsmasq），避免新建记录前
 # 留下的 NXDOMAIN 负缓存或旧记录拖垮后续 dig / curl 校验。
@@ -539,27 +542,130 @@ flush_local_dns_cache() {
     fi
 }
 
-# 等待域名 A 记录生效：先清本机缓存，再以 2 秒间隔轮询至多 6 分钟（180 次）。
+# 查询指定 DNS（空串表示系统默认 DNS）的 A 记录匹配状态：
+#   0 = 可达且命中目标 IP（或合法 IPv4）
+#   1 = 可达但未命中（NXDOMAIN / 空记录 / 旧 IP）
+#   2 = 不可达（超时或命令失败）
+# dig_timeout 为空时沿用 dig 默认超时与重试次数（安装/云端同步阶段，与本改动前一致）；
+# 非空时用 +time=<n> +tries=1，让公网验收的 180 轮窗口可控。
+_dns_a_query_status() {
+    local resolver=$1 domain=$2 expected_ipv4=${3:-} dig_timeout=${4:-}
+    local answers line rc=0
+    local -a dig_args=(+short)
+    [[ -z "${dig_timeout}" ]] || dig_args+=(+time="${dig_timeout}" +tries=1)
+    if [[ -n "${resolver}" ]]; then
+        answers=$(dig "${dig_args[@]}" "@${resolver}" A "${domain}" 2>/dev/null) || rc=$?
+    else
+        answers=$(dig "${dig_args[@]}" A "${domain}" 2>/dev/null) || rc=$?
+    fi
+    if ((rc != 0)) || grep -q '^;;' <<<"${answers}"; then
+        return 2
+    fi
+    if [[ -n "${expected_ipv4}" ]]; then
+        grep -Fxq "${expected_ipv4}" <<<"${answers}" && return 0
+    else
+        while IFS= read -r line; do
+            validate_ipv4 "${line}" && return 0
+        done <<<"${answers}"
+    fi
+    return 1
+}
+
+# 等待域名 A 记录生效：先清本机缓存，再轮询至多 DNS_WAIT_ATTEMPTS 次（默认 180 次、间隔 2 秒）。
+# resolver_scope 决定查哪套解析器，外部公共 DNS 只允许用在公网验收阶段：
+#   public = 公网验收：两个公共解析器都查，任一命中即通过（权威记录由云 API 写入并回读确认，
+#            递归缓存不同步不该阻断部署），其余可达解析器未命中/不可达只记一条告警；
+#            两个都没给出记录且至少一方不可达时，用系统默认 DNS 取第三个意见（命中才通过）；
+#            两个都可达且都无记录时继续等待。
+#   system = 安装/云端同步：只查系统默认 DNS，不经外部公共解析器。
 # 传入 expected_ipv4 时要求精确匹配该 IP（灰云直连）；省略时要求至少返回一条合法 IPv4
 # （橙云代理），防止 dig 超时输出 ";; connection timed out..." 被误判为成功。
 wait_for_dns_a_record() {
-    local domain=$1 expected_ipv4=${2:-}
-    local attempt answers line
+    local domain=$1 expected_ipv4=${2:-} resolver_scope=$3
+    local attempt rc1 rc2 rc_sys
     flush_local_dns_cache
     for ((attempt = 1; attempt <= DNS_WAIT_ATTEMPTS; attempt++)); do
-        answers=$(dig +short A "${domain}" 2>/dev/null || true)
-        if [[ -n "${answers}" ]]; then
-            if [[ -n "${expected_ipv4}" ]]; then
-                grep -Fxq "${expected_ipv4}" <<<"${answers}" && return 0
-            else
-                while IFS= read -r line; do
-                    validate_ipv4 "${line}" && return 0
-                done <<<"${answers}"
+        case "${resolver_scope}" in
+        system)
+            _dns_a_query_status "" "${domain}" "${expected_ipv4}" && return 0
+            ;;
+        public)
+            rc1=0
+            rc2=0
+            _dns_a_query_status "${PUBLIC_DNS_RESOLVERS[0]}" "${domain}" "${expected_ipv4}" 2 || rc1=$?
+            _dns_a_query_status "${PUBLIC_DNS_RESOLVERS[1]}" "${domain}" "${expected_ipv4}" 2 || rc2=$?
+            if ((rc1 == 0 || rc2 == 0)); then
+                ((rc1 == 0 && rc2 == 0)) \
+                    || warn "${domain}：公共 DNS 判定不一致（${PUBLIC_DNS_RESOLVERS[0]}=${DNS_STATUS_LABELS[rc1]}，${PUBLIC_DNS_RESOLVERS[1]}=${DNS_STATUS_LABELS[rc2]}），已按命中方判定解析生效"
+                return 0
             fi
-        fi
+            if ((rc1 == 2 || rc2 == 2)); then
+                rc_sys=0
+                _dns_a_query_status "" "${domain}" "${expected_ipv4}" 2 || rc_sys=$?
+                if ((rc_sys == 0)); then
+                    warn "${domain}：公共 DNS 未给出该记录（${PUBLIC_DNS_RESOLVERS[0]}=${DNS_STATUS_LABELS[rc1]}，${PUBLIC_DNS_RESOLVERS[1]}=${DNS_STATUS_LABELS[rc2]}），已按系统默认 DNS 判定解析生效"
+                    return 0
+                fi
+            fi
+            ;;
+        *)
+            die "wait_for_dns_a_record 的 resolver_scope 必须是 public 或 system：${resolver_scope}"
+            ;;
+        esac
         ((attempt == DNS_WAIT_ATTEMPTS)) || sleep "${DNS_WAIT_SECONDS}"
     done
     return 1
+}
+
+# 通过外部公共 DNS（1.1.1.1 / 8.8.8.8）解析 IPv4，供公网验收 curl --resolve 使用。
+# 按序查询（1.1.1.1 先、8.8.8.8 后），首个给出合法 IPv4 的解析器即采用（与 wait_for_dns_a_record
+# 的方案 B 一致：不让某一侧的递归缓存状态把探测退回带负缓存的系统 DNS）；都拿不到时才返回 1。
+resolve_ipv4_via_public_dns() {
+    local domain=$1 resolver answers line rc
+    for resolver in "${PUBLIC_DNS_RESOLVERS[@]}"; do
+        rc=0
+        answers=$(dig +short +time=2 +tries=1 "@${resolver}" A "${domain}" 2>/dev/null) || rc=$?
+        ((rc == 0)) || continue
+        grep -q '^;;' <<<"${answers}" && continue
+        while IFS= read -r line; do
+            if validate_ipv4 "${line}"; then
+                printf '%s\n' "${line}"
+                return 0
+            fi
+        done <<<"${answers}"
+    done
+    return 1
+}
+
+# 公网验收专用 HTTPS 请求：优先通过 1.1.1.1 / 8.8.8.8 解析目标 IP 并注入 --resolve，
+# 绕过 VPS 服务商 DNS 的 NXDOMAIN 负缓存；公共 DNS 不可达时自动回退系统默认 DNS。
+public_dns_curl() {
+    local arg url="" authority host port ip="" has_resolve=0
+    for arg in "$@"; do
+        [[ "${arg}" == "--resolve" || "${arg}" == --resolve=* ]] && has_resolve=1
+        [[ "${arg}" == https://* ]] && url=${arg}
+    done
+    if ((has_resolve == 0)) && [[ -n "${url}" ]]; then
+        authority=${url#https://}
+        authority=${authority%%/*}
+        authority=${authority%%\?*}
+        if [[ "${authority}" == *:* ]]; then
+            host=${authority%%:*}
+            port=${authority##*:}
+        else
+            host=${authority}
+            port=443
+        fi
+        if [[ -n "${host}" ]]; then
+            ip=$(resolve_ipv4_via_public_dns "${host}") || ip=""
+        fi
+    fi
+    if [[ -n "${ip}" ]]; then
+        curl -sS --proto '=https' --noproxy '*' --connect-timeout 5 --max-time 30 \
+            --resolve "${host}:${port}:${ip}" "$@"
+        return
+    fi
+    curl -sS --proto '=https' --noproxy '*' --connect-timeout 5 --max-time 30 "$@"
 }
 
 validate_node_name() {
