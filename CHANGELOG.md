@@ -1,3 +1,11 @@
+## 5.4.1 更新说明（2026-11-18）
+
+### 增强与修复
+
+- **放宽 CloudFront 回源建连超时**（`lib/cloudfront-mode.sh`）：将 `CLOUDFRONT_CONNECTION_TIMEOUT` 从 `3` 秒调整为 `5` 秒，降低模式 4/5 在跨境回源链路抖动或丢包重传时触发偶发 504 Gateway Timeout 的概率。
+
+---
+
 ## 5.4.0 更新说明（2026-11-17）
 
 ### 增强与修复
