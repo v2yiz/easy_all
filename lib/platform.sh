@@ -3,6 +3,10 @@
 # Shared host preflight and SSH boot-safety checks.
 
 EASY_ALL_SSH_PORT_CONFIG="${EASY_ALL_SSH_PORT_CONFIG:-/etc/ssh/sshd_config.d/00-easy-all-ports.conf}"
+# 安装收尾把 SSH 端口迁移到 EASY_ALL_TARGET_SSH_PORT（写 sshd_config.d 片段，重启后生效）。
+EASY_ALL_TARGET_SSH_PORT="${EASY_ALL_TARGET_SSH_PORT:-22222}"
+EASY_ALL_SSHD_CONFIG="${EASY_ALL_SSHD_CONFIG:-/etc/ssh/sshd_config}"
+EASY_ALL_SSHD_CONFIG_DIR="${EASY_ALL_SSHD_CONFIG_DIR:-/etc/ssh/sshd_config.d}"
 EASY_ALL_FAIL2BAN_CONFIG="${EASY_ALL_FAIL2BAN_CONFIG:-/etc/fail2ban/jail.d/99-easy-all-sshd.local}"
 EASY_ALL_FAIL2BAN_ACTION_CONFIG="${EASY_ALL_FAIL2BAN_ACTION_CONFIG:-/etc/fail2ban/action.d/easy-all-ufw-cidr.conf}"
 # Fail2ban 是常驻安全基线：helper 放在独立系统路径，卸载 easy_all 时保留。
@@ -270,6 +274,9 @@ restore_platform_security_state() {
             && "$(<"${EASY_ALL_SSH_PORT_CONFIG}")" == *"Managed by easy_all"* ) ]]; then
         rm -f -- "${EASY_ALL_SSH_PORT_CONFIG}" || ssh_config_restored=0
     fi
+    # 安装收尾注释掉的 Port 行必须一并还原，否则恢复后的 sshd 仍只监听 22222。
+    restore_post_install_sshd_backups || ssh_config_restored=0
+    reload_ssh_socket_generator
 
     sshd_bin=$(command -v sshd 2>/dev/null || true)
     [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
@@ -744,15 +751,168 @@ ensure_ssh_boot_service() {
             || die "SSH 服务未设置为开机启动：${unit}"
         systemctl is-active --quiet "${unit}" \
             || die "SSH 服务未运行：${unit}"
-        if [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]] \
-            && grep -Fq "Managed by easy_all" "${EASY_ALL_SSH_PORT_CONFIG}" 2>/dev/null; then
-            rm -f -- "${EASY_ALL_SSH_PORT_CONFIG}"
-            if "${sshd_bin}" -t >/dev/null 2>&1; then
-                systemctl reload "${unit}" >/dev/null 2>&1 || true
-            fi
-        fi
         info "SSH 已设置开机启动并处于运行状态：${unit}"
         return 0
     done
     die "未找到 ssh.service 或 sshd.service；无法保证重启后 SSH 可用，已中止"
+}
+
+# --- 安装收尾的 SSH 端口迁移 ------------------------------------------------
+# 只写 sshd_config.d 片段并注释原有 Port 行，再 daemon-reload；绝不重启 sshd /
+# ssh.socket，当前安装会话靠已建立的 TCP 连接维持，新端口在下次开机生效。
+
+# sshd -T 的 port 行必须按字段比较：子串匹配会让 `port 22` 命中 `port 22222`。
+sshd_t_has_exact_port() {
+    awk -v p="${2:-}" '$1 == "port" && $2 == p {found=1} END {exit !found}' <<<"${1:-}"
+}
+
+# ssh.socket 的 ListenStream 由 generator 从 sshd_config 生成，需要 daemon-reload 重新生成。
+reload_ssh_socket_generator() {
+    systemctl is-enabled --quiet ssh.socket >/dev/null 2>&1 \
+        || systemctl is-active --quiet ssh.socket >/dev/null 2>&1 \
+        || return 0
+    systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+sshd_config_mode() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || true
+}
+
+# 备份名用 main-/d- 前缀编码归属：主配置还原到 EASY_ALL_SSHD_CONFIG，其余回 sshd_config.d。
+restore_post_install_sshd_backups() {
+    local backup_dir="${BACKUP_DIR}/sshd-port-backup" backup name target mode restored=1
+    [[ -d "${backup_dir}" ]] || return 0
+    for backup in "${backup_dir}"/*; do
+        [[ -f "${backup}" ]] || continue
+        name=${backup##*/}
+        case "${name}" in
+        main-*) target=${EASY_ALL_SSHD_CONFIG} ;;
+        d-*)
+            target="${EASY_ALL_SSHD_CONFIG_DIR}/${name#d-}"
+            install -d -m 0755 "${EASY_ALL_SSHD_CONFIG_DIR}" || { restored=0; continue; }
+            ;;
+        *) continue ;;
+        esac
+        mode=$(sshd_config_mode "${backup}")
+        [[ -n "${mode}" ]] || mode=0644
+        install -m "${mode}" "${backup}" "${target}" || restored=0
+    done
+    ((restored == 1))
+}
+
+rollback_post_install_ssh_config() {
+    if [[ -f "${BACKUP_DIR}/pre-install-ssh-port.conf" ]]; then
+        install -d -m 0755 "$(dirname -- "${EASY_ALL_SSH_PORT_CONFIG}")" \
+            && install -m 0644 "${BACKUP_DIR}/pre-install-ssh-port.conf" \
+                "${EASY_ALL_SSH_PORT_CONFIG}" \
+            || warn "恢复 ${EASY_ALL_SSH_PORT_CONFIG} 失败"
+    else
+        rm -f -- "${EASY_ALL_SSH_PORT_CONFIG}" || warn "删除 ${EASY_ALL_SSH_PORT_CONFIG} 失败"
+    fi
+    restore_post_install_sshd_backups || warn "恢复 sshd 端口备份失败；请人工核对 SSH 配置"
+    reload_ssh_socket_generator
+}
+
+# 「已迁移到 target_port 但尚未重启」的判定：配置文件与 sshd -T 都已经只认新端口。
+ssh_post_install_port_migrated() {
+    local target_port=${1:-${EASY_ALL_TARGET_SSH_PORT}} sshd_bin output
+    [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]] || return 1
+    grep -Fq "Managed by easy_all" "${EASY_ALL_SSH_PORT_CONFIG}" 2>/dev/null || return 1
+    grep -qx "Port ${target_port}" "${EASY_ALL_SSH_PORT_CONFIG}" 2>/dev/null || return 1
+    sshd_bin=$(command -v sshd 2>/dev/null || true)
+    [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
+    [[ -n "${sshd_bin}" ]] || return 1
+    output=$("${sshd_bin}" -T 2>/dev/null) || return 1
+    sshd_t_has_exact_port "${output}" "${target_port}" || return 1
+    ! sshd_t_has_exact_port "${output}" 22
+}
+
+configure_post_install_ssh_port() {
+    local target_port=${1:-${EASY_ALL_TARGET_SSH_PORT}}
+    local sshd_bin sshd_t_out config candidate backup_dir backup_file listen_out mode
+    sshd_bin=$(command -v sshd 2>/dev/null || true)
+    [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
+    [[ -n "${sshd_bin}" ]] || die "未找到 sshd；无法迁移 SSH 端口"
+    # 只读预检先行：第三方 UFW 已阻断新端口时直接中止，此时尚未改动任何文件。
+    verify_ssh_ufw_no_unmanaged_block "${target_port}"
+
+    backup_dir="${BACKUP_DIR}/sshd-port-backup"
+    install -d -m 0700 "${BACKUP_DIR}" "${backup_dir}" || die "创建 SSH 配置备份目录失败"
+    install -d -m 0755 "$(dirname -- "${EASY_ALL_SSH_PORT_CONFIG}")" \
+        || die "创建 $(dirname -- "${EASY_ALL_SSH_PORT_CONFIG}") 失败"
+    candidate=$(mktemp "$(dirname -- "${EASY_ALL_SSH_PORT_CONFIG}")/.easy-all-ports.XXXXXX") \
+        || die "创建 SSH 端口配置候选文件失败"
+    printf '# Managed by easy_all\nPort %s\n' "${target_port}" >"${candidate}"
+    chmod 0644 "${candidate}"
+    mv -f -- "${candidate}" "${EASY_ALL_SSH_PORT_CONFIG}" \
+        || die "写入 ${EASY_ALL_SSH_PORT_CONFIG} 失败"
+
+    for config in "${EASY_ALL_SSHD_CONFIG}" "${EASY_ALL_SSHD_CONFIG_DIR}"/*.conf; do
+        [[ -f "${config}" && "${config}" != "${EASY_ALL_SSH_PORT_CONFIG}" ]] || continue
+        candidate=$(mktemp "${RUNTIME_TMP:-/tmp}/easy-all-sshd-port.XXXXXX") \
+            || die "创建 sshd 配置候选文件失败"
+        if ! awk -v target="${target_port}" '
+            /^[[:space:]]*#/ {print; next}
+            tolower($1) == "port" && $2 != target {
+                printf "# easy_all-disabled-port: %s\n", $0
+                next
+            }
+            {print}
+        ' "${config}" >"${candidate}"; then
+            rm -f -- "${candidate}"
+            rollback_post_install_ssh_config
+            die "生成 ${config} 的端口迁移候选失败；已恢复原 SSH 配置"
+        fi
+        if cmp -s "${candidate}" "${config}"; then
+            rm -f -- "${candidate}"
+            continue
+        fi
+        mode=$(sshd_config_mode "${config}")
+        [[ -n "${mode}" ]] || mode=0644
+        if [[ "${config}" == "${EASY_ALL_SSHD_CONFIG}" ]]; then
+            backup_file="${backup_dir}/main-${config##*/}"
+        else
+            backup_file="${backup_dir}/d-${config##*/}"
+        fi
+        if [[ ! -f "${backup_file}" ]] \
+            && ! install -m "${mode}" "${config}" "${backup_file}"; then
+            rm -f -- "${candidate}"
+            rollback_post_install_ssh_config
+            die "备份 ${config} 失败；已恢复原 SSH 配置"
+        fi
+        if ! install -m "${mode}" "${candidate}" "${config}"; then
+            rm -f -- "${candidate}"
+            rollback_post_install_ssh_config
+            die "注释 ${config} 中的旧 Port 行失败；已恢复原 SSH 配置"
+        fi
+        rm -f -- "${candidate}"
+    done
+
+    if ! "${sshd_bin}" -t >/dev/null 2>&1; then
+        rollback_post_install_ssh_config
+        die "SSH 端口迁移后 sshd 配置校验失败；已恢复原配置"
+    fi
+    sshd_t_out=$("${sshd_bin}" -T 2>/dev/null) || sshd_t_out=""
+    if ! sshd_t_has_exact_port "${sshd_t_out}" "${target_port}" \
+        || sshd_t_has_exact_port "${sshd_t_out}" 22; then
+        rollback_post_install_ssh_config
+        die "SSH 端口迁移后有效端口不是 ${target_port}（或仍包含 22）；已恢复原配置"
+    fi
+    if systemctl is-enabled --quiet ssh.socket >/dev/null 2>&1 \
+        || systemctl is-active --quiet ssh.socket >/dev/null 2>&1; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        listen_out=$(systemctl show -p Listen ssh.socket 2>/dev/null || true)
+        if ! grep -Eq ":${target_port}([^0-9]|$)" <<<"${listen_out}"; then
+            rollback_post_install_ssh_config
+            die "ssh.socket 未按 ${target_port} 生成监听端口；已恢复原配置"
+        fi
+    fi
+    # UFW 与 Fail2ban 内部用 die 退出：放进子 shell 才能捕获失败并先回滚 sshd 配置。
+    if ! ( apply_post_install_ssh_ufw_policy "${target_port}" \
+        && SSH_PORTS="${target_port}" \
+        && ensure_ssh_fail2ban ); then
+        rollback_post_install_ssh_config
+        die "SSH 端口迁移后更新 UFW 或 Fail2ban 失败；已恢复原 SSH 配置"
+    fi
+    info "SSH 端口已迁移为 ${target_port}；原端口已禁用，重启后生效"
 }

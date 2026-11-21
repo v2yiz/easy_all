@@ -2338,6 +2338,297 @@ assert_equal "B2: inactive 分支的 from-形态命中" "0" "$(b2_probe inactive
 assert_contains "B2: 阻断文案给出 ufw status 自助步骤" "$(<"${ROOT_DIR}/lib/runtime-core.sh")" \
     "请先 ufw status 查明并移除该规则后重试"
 
+# --- SSH 端口迁移：安装收尾 / apply 窗口期 / 卸载兜底 ---------------------
+# 全部外部依赖用假二进制隔离：sshd / ss / ufw / systemctl / fail2ban-client / dpkg-query。
+ssh_mig_root="${TMP_DIR}/ssh-mig"
+mkdir -p "${ssh_mig_root}/bin"
+cat >"${ssh_mig_root}/bin/sshd" <<'FAKE_SSHD'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+case "${1:-}" in
+-t) exit "${FAKE_SSHD_T_STATUS:-0}" ;;
+-T)
+    [[ "${FAKE_SSHD_T_STATUS:-0}" == "0" ]] || exit 1
+    if [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]] \
+        && grep -qx 'Port 22222' "${EASY_ALL_SSH_PORT_CONFIG}" 2>/dev/null; then
+        printf 'port 22222\nlistenaddress 0.0.0.0:22222\n'
+    else
+        printf 'port 22\nlistenaddress 0.0.0.0:22\n'
+    fi
+    ;;
+esac
+FAKE_SSHD
+cat >"${ssh_mig_root}/bin/ss" <<'FAKE_SS'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf 'LISTEN 0 128 0.0.0.0:%s 0.0.0.0:* users:(("sshd",pid=42,fd=3))\n' \
+    "${FAKE_SSH_LISTEN_PORT:-22}"
+FAKE_SS
+cat >"${ssh_mig_root}/bin/ufw" <<'FAKE_UFW'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+rules=${FAKE_UFW_RULES}
+: >>"${rules}"
+args=("$@")
+while [[ "${args[0]:-}" == --* ]]; do args=("${args[@]:1}"); done
+cmd=${args[0]:-}
+display() {
+    local i=0 line
+    printf 'Status: active\n'
+    while IFS= read -r line; do
+        i=$((i + 1))
+        if [[ "${1:-}" == numbered ]]; then
+            printf '[%2d] %s\n' "${i}" "${line}"
+        else
+            printf '%s\n' "${line}"
+        fi
+    done <"${rules}"
+}
+add_rule() {
+    local line=$1
+    grep -Fxq -- "${line}" "${rules}" && return 0
+    if [[ "${2:-append}" == prepend ]]; then
+        { printf '%s\n' "${line}"; cat "${rules}"; } >"${rules}.new"
+        mv -f -- "${rules}.new" "${rules}"
+    else
+        printf '%s\n' "${line}" >>"${rules}"
+    fi
+}
+upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
+case "${cmd}" in
+status) display "${args[1]:-}" ;;
+show) cat "${rules}" ;;
+enable | reload | default) : ;;
+allow | deny)
+    [[ "${FAKE_UFW_FAIL:-}" != "${cmd}" ]] || exit 1
+    endpoint=${args[1]:-}
+    comment=""
+    [[ "${args[2]:-}" != comment ]] || comment=${args[3]:-}
+    add_rule "${endpoint} $(upper "${cmd}") IN Anywhere${comment:+ # ${comment}}" append
+    ;;
+insert)
+    action=$(upper "${args[2]:-}")
+    endpoint=${args[3]:-}
+    comment=""
+    [[ "${args[4]:-}" != comment ]] || comment=${args[5]:-}
+    add_rule "${endpoint} ${action} IN Anywhere${comment:+ # ${comment}}" prepend
+    ;;
+delete)
+    action=$(upper "${args[1]:-}")
+    endpoint=${args[2]:-}
+    comment=""
+    [[ "${args[3]:-}" != comment ]] || comment=${args[4]:-}
+    line="${endpoint} ${action} IN Anywhere${comment:+ # ${comment}}"
+    grep -Fxq -- "${line}" "${rules}" || exit 1
+    awk -v drop="${line}" '$0 != drop' "${rules}" >"${rules}.new"
+    mv -f -- "${rules}.new" "${rules}"
+    ;;
+*) exit 0 ;;
+esac
+FAKE_UFW
+cat >"${ssh_mig_root}/bin/systemctl" <<'FAKE_SYSTEMCTL'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >>"${FAKE_SYSTEMCTL_LOG}"
+case "${1:-}" in
+cat) [[ "${2:-}" == ssh.service ]] ;;
+is-enabled | is-active)
+    if [[ "${3:-}" != ssh.socket ]]; then
+        exit 0
+    fi
+    [[ "${FAKE_SSH_SOCKET:-disabled}" != "disabled" ]]
+    ;;
+show)
+    if [[ " $* " == *' ssh.socket '* && "${FAKE_SSH_SOCKET:-disabled}" == "ok" ]]; then
+        printf 'Listen=[::]:22222 (Stream)\n'
+    elif [[ " $* " == *' ssh.socket '* ]]; then
+        printf 'Listen=[::]:22 (Stream)\n'
+    fi
+    ;;
+*) exit 0 ;;
+esac
+FAKE_SYSTEMCTL
+cat >"${ssh_mig_root}/bin/fail2ban-client" <<'FAKE_F2B'
+#!/usr/bin/env bash
+exit 0
+FAKE_F2B
+cat >"${ssh_mig_root}/bin/dpkg-query" <<'FAKE_DPKG'
+#!/usr/bin/env bash
+printf 'ii '
+FAKE_DPKG
+cat >"${ssh_mig_root}/bin/apt-get" <<'FAKE_APT'
+#!/usr/bin/env bash
+exit 1
+FAKE_APT
+chmod +x "${ssh_mig_root}/bin/"*
+
+SSH_MIG_PRELUDE='set -Eeuo pipefail
+source "$1/lib/log.sh"
+source "$1/lib/platform.sh"
+source "$1/lib/firewall.sh"
+'
+ssh_mig_case() {
+    local dir="${ssh_mig_root}/$1"
+    rm -rf -- "${dir}"
+    mkdir -p "${dir}/backups" "${dir}/ssh/sshd_config.d" "${dir}/runtime" "${dir}/state"
+    printf 'Include /etc/ssh/sshd_config.d/*.conf\nPort 22\nPasswordAuthentication no\n' \
+        >"${dir}/ssh/sshd_config"
+    printf 'PasswordAuthentication no\n' >"${dir}/ssh/sshd_config.d/50-cloud-init.conf"
+    : >"${dir}/ufw.rules"
+    : >"${dir}/systemctl.log"
+}
+ssh_mig_run() {
+    local dir=$1 snippet=$2
+    PATH="${ssh_mig_root}/bin:${PATH}" \
+    BACKUP_DIR="${dir}/backups" \
+    RUNTIME_TMP="${dir}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${dir}/state" \
+    EASY_ALL_SSH_PORT_CONFIG="${dir}/ssh/sshd_config.d/00-easy-all-ports.conf" \
+    EASY_ALL_SSHD_CONFIG="${dir}/ssh/sshd_config" \
+    EASY_ALL_SSHD_CONFIG_DIR="${dir}/ssh/sshd_config.d" \
+    EASY_ALL_TARGET_SSH_PORT=22222 \
+    EASY_ALL_FAIL2BAN_CONFIG="${dir}/fail2ban/99-easy-all-sshd.local" \
+    EASY_ALL_FAIL2BAN_ACTION_CONFIG="${dir}/fail2ban/easy-all-ufw-cidr.conf" \
+    EASY_ALL_FAIL2BAN_CIDR_HELPER="${dir}/bin/fail2ban-ufw-cidr.sh" \
+    EASY_ALL_FAIL2BAN_CIDR_STATE_DIR="${dir}/fail2ban-state" \
+    FAKE_UFW_RULES="${dir}/ufw.rules" \
+    FAKE_SYSTEMCTL_LOG="${dir}/systemctl.log" \
+    FAKE_SSH_LISTEN_PORT="${FAKE_SSH_LISTEN_PORT:-22}" \
+    FAKE_SSHD_T_STATUS="${FAKE_SSHD_T_STATUS:-0}" \
+    FAKE_UFW_FAIL="${FAKE_UFW_FAIL:-}" \
+    FAKE_SSH_SOCKET="${FAKE_SSH_SOCKET:-disabled}" \
+    UFW_DEFAULT_CONFIG="${dir}/ufw-default" \
+    bash -c "${SSH_MIG_PRELUDE}${snippet}" _ "${ROOT_DIR}" 2>&1
+}
+mig_status=0
+mig_out() { mig_status=0; mig_value=$(ssh_mig_run "$1" "$2") || mig_status=$?; }
+
+# 1. 迁移成功：写片段、注释旧 Port、UFW 放行新端口并 insert 1 deny 22、Fail2ban 跟随
+case1="${ssh_mig_root}/migration"
+ssh_mig_case migration
+printf '22/tcp ALLOW IN Anywhere # easy_all-managed\n' >"${case1}/ufw.rules"
+mig_out "${case1}" 'configure_post_install_ssh_port'
+assert_equal "迁移成功退出 0" "0" "${mig_status}"
+assert_contains "写入受管片段" "$(<"${case1}/ssh/sshd_config.d/00-easy-all-ports.conf")" "# Managed by easy_all"
+assert_contains "受管片段写 Port 22222" "$(<"${case1}/ssh/sshd_config.d/00-easy-all-ports.conf")" "Port 22222"
+assert_contains "原 Port 行被注释" "$(<"${case1}/ssh/sshd_config")" "# easy_all-disabled-port: Port 22"
+assert_equal "sshd_config 不再有生效的 Port 22" "0" \
+    "$(grep -cx 'Port 22' "${case1}/ssh/sshd_config" || true)"
+assert_equal "主配置已备份" "1" \
+    "$(test -f "${case1}/backups/sshd-port-backup/main-sshd_config" && printf 1 || printf 0)"
+assert_equal "首条 UFW 规则是受管 deny 22/tcp" "22/tcp DENY IN Anywhere # easy_all-managed" \
+    "$(head -n 1 "${case1}/ufw.rules")"
+assert_contains "保留原有 allow 22/tcp" "$(<"${case1}/ufw.rules")" "22/tcp ALLOW IN Anywhere # easy_all-managed"
+assert_contains "放行 22222/tcp" "$(<"${case1}/ufw.rules")" "22222/tcp ALLOW IN Anywhere # easy_all-managed"
+assert_contains "Fail2ban jail 端口更新为 22222" "$(<"${case1}/fail2ban/99-easy-all-sshd.local")" "port = 22222"
+assert_not_contains "不重启 ssh.service" "$(<"${case1}/systemctl.log")" "restart ssh.service"
+assert_not_contains "不 reload ssh.service" "$(<"${case1}/systemctl.log")" "reload ssh.service"
+
+# 2. UFW 失败：子 shell 捕获后回滚 sshd 配置与受管片段
+case2="${ssh_mig_root}/rollback-ufw"
+ssh_mig_case rollback-ufw
+printf '22/tcp ALLOW IN Anywhere # easy_all-managed\n' >"${case2}/ufw.rules"
+case2_status=0
+case2_out=$(FAKE_UFW_FAIL=allow ssh_mig_run "${case2}" 'configure_post_install_ssh_port') || case2_status=$?
+assert_equal "UFW 失败时非零退出" "1" "${case2_status}"
+assert_contains "回滚提示点名已恢复" "${case2_out}" "已恢复原 SSH 配置"
+assert_equal "回滚还原生效的 Port 22" "1" \
+    "$(grep -cx 'Port 22' "${case2}/ssh/sshd_config" || true)"
+assert_not_contains "回滚去掉注释标记" "$(<"${case2}/ssh/sshd_config")" "easy_all-disabled-port"
+assert_equal "回滚删除受管片段" "0" \
+    "$(test -e "${case2}/ssh/sshd_config.d/00-easy-all-ports.conf" && printf 1 || printf 0)"
+assert_not_contains "UFW 失败时不插入 deny" "$(<"${case2}/ufw.rules")" "DENY IN"
+
+# 3. sshd -t 失败：同样完整回滚
+case3="${ssh_mig_root}/rollback-sshd"
+ssh_mig_case rollback-sshd
+case3_status=0
+case3_out=$(FAKE_SSHD_T_STATUS=1 ssh_mig_run "${case3}" 'configure_post_install_ssh_port') || case3_status=$?
+assert_equal "sshd -t 失败时非零退出" "1" "${case3_status}"
+assert_contains "sshd -t 失败提示" "${case3_out}" "sshd 配置校验失败"
+assert_equal "sshd -t 失败时删除受管片段" "0" \
+    "$(test -e "${case3}/ssh/sshd_config.d/00-easy-all-ports.conf" && printf 1 || printf 0)"
+assert_not_contains "sshd -t 失败时恢复原 Port 行" "$(<"${case3}/ssh/sshd_config")" "easy_all-disabled-port"
+
+# 4. ensure_ssh_boot_service 不再删除受管片段（apply 路径不得撤销迁移）
+case4="${ssh_mig_root}/boot-service"
+ssh_mig_case boot-service
+printf '# Managed by easy_all\nPort 22222\n' >"${case4}/ssh/sshd_config.d/00-easy-all-ports.conf"
+mig_out "${case4}" 'ensure_ssh_boot_service'
+assert_equal "ensure_ssh_boot_service 退出 0" "0" "${mig_status}"
+assert_equal "ensure_ssh_boot_service 保留受管片段" "1" \
+    "$(test -f "${case4}/ssh/sshd_config.d/00-easy-all-ports.conf" && printf 1 || printf 0)"
+
+# 5. 已迁移未重启（配置 22222、实际仍监听 22）：apply 路径不得被受管 deny 挡死
+case5="${ssh_mig_root}/apply-window"
+ssh_mig_case apply-window
+printf '# Managed by easy_all\nPort 22222\n' >"${case5}/ssh/sshd_config.d/00-easy-all-ports.conf"
+printf 'Include /etc/ssh/sshd_config.d/*.conf\n# easy_all-disabled-port: Port 22\n' \
+    >"${case5}/ssh/sshd_config"
+printf '22/tcp DENY IN Anywhere # easy_all-managed\n22/tcp ALLOW IN Anywhere # easy_all-managed\n' \
+    >"${case5}/ufw.rules"
+mig_out "${case5}" '
+source "$1/lib/runtime-core.sh"
+snapshot_ufw_state() { :; }
+ensure_ssh_boot_service() { :; }
+configure_ufw_ip_family() { :; }
+runtime_public_tcp_ports() { printf 443; }
+runtime_cloudflare_only_port() { printf ""; }
+ensure_ssh_fail2ban() { :; }
+configure_runtime_ufw
+'
+assert_equal "窗口期 apply 正常通过" "0" "${mig_status}"
+assert_contains "窗口期放行 22222/tcp" "$(<"${case5}/ufw.rules")" "22222/tcp ALLOW IN Anywhere # easy_all-managed"
+
+# 6. 卸载兜底：删受管 deny 后必须把恢复后的 22 端口重新放行
+case6="${ssh_mig_root}/uninstall"
+ssh_mig_case uninstall
+printf '22/tcp DENY IN Anywhere # easy_all-managed\n22222/tcp ALLOW IN Anywhere # easy_all-managed\n' \
+    >"${case6}/ufw.rules"
+printf 'Include /etc/ssh/sshd_config.d/*.conf\nPort 22\n' >"${case6}/ssh/sshd_config"
+mig_out "${case6}" 'source "$1/lib/runtime-core.sh"; restore_preinstall_firewall'
+assert_equal "卸载恢复防火墙退出 0" "0" "${mig_status}"
+assert_not_contains "卸载移除受管 deny 22/tcp" "$(<"${case6}/ufw.rules")" "22/tcp DENY IN"
+assert_contains "卸载兑底补回 22/tcp 放行" "$(<"${case6}/ufw.rules")" "22/tcp ALLOW IN Anywhere # easy_all-managed"
+
+# 7. ssh.socket 已启用：generator 生成新端口则通过，未生成则回滚（防重启后无人监听）
+case9="${ssh_mig_root}/socket-ok"
+ssh_mig_case socket-ok
+mig_status=0
+mig_value=$(FAKE_SSH_SOCKET=ok ssh_mig_run "${case9}" 'configure_post_install_ssh_port') || mig_status=$?
+assert_equal "ssh.socket 生成新端口时迁移通过" "0" "${mig_status}"
+assert_contains "ssh.socket 路径写入 Port 22222" \
+    "$(<"${case9}/ssh/sshd_config.d/00-easy-all-ports.conf")" "Port 22222"
+case10="${ssh_mig_root}/socket-stale"
+ssh_mig_case socket-stale
+case10_status=0
+case10_out=$(FAKE_SSH_SOCKET=stale ssh_mig_run "${case10}" 'configure_post_install_ssh_port') \
+    || case10_status=$?
+assert_equal "ssh.socket 未跟随时中止" "1" "${case10_status}"
+assert_contains "ssh.socket 未跟随时提示原因" "${case10_out}" \
+    "ssh.socket 未按 22222 生成监听端口"
+assert_equal "ssh.socket 未跟随时删除受管片段" "0" \
+    "$(test -e "${case10}/ssh/sshd_config.d/00-easy-all-ports.conf" && printf 1 || printf 0)"
+assert_not_contains "ssh.socket 未跟随时恢复原 Port 行" \
+    "$(<"${case10}/ssh/sshd_config")" "easy_all-disabled-port"
+
+# 8. 精确端口匹配：port 22 不得命中 port 22222
+assert_equal "精确端口匹配接受 port 22222" "0" \
+    "$(bash -c "source '${ROOT_DIR}/lib/platform.sh'; sshd_t_has_exact_port 'port 22222' 22222" >/dev/null 2>&1 && printf 0 || printf 1)"
+assert_equal "精确端口匹配不误配 22" "1" \
+    "$(bash -c "source '${ROOT_DIR}/lib/platform.sh'; sshd_t_has_exact_port 'port 22222' 22" >/dev/null 2>&1 && printf 0 || printf 1)"
+
+# 9. 三个 install_all 入口的锚点：迁移在 INSTALL_ROLLBACK_ON_EXIT=0 之前，收尾传 ssh-port
+for mode_file in anytls-mode cloudflare-mode cloudfront-mode; do
+    assert_contains "${mode_file} 安装收尾调用端口迁移" \
+        "$(<"${ROOT_DIR}/lib/${mode_file}.sh")" "configure_post_install_ssh_port"
+    assert_contains "${mode_file} 收尾传 ssh-port" \
+        "$(<"${ROOT_DIR}/lib/${mode_file}.sh")" "prompt_kernel_reboot ssh-port"
+    assert_equal "${mode_file} 迁移早于关闭回滚" "1" \
+        "$(awk '/^    configure_post_install_ssh_port$/{call=NR} /^    INSTALL_ROLLBACK_ON_EXIT=0$/{off=NR} END{print (call && off && call < off) ? 1 : 0}' \
+            "${ROOT_DIR}/lib/${mode_file}.sh")"
+done
+
 # A32：文件尾汇总本轮未验证的用例，避免「skip 静默消失」。
 if ((${#SKIPPED_ITEMS[@]} > 0)); then
     printf '未验证项（%s 条）：\n' "${#SKIPPED_ITEMS[@]}"

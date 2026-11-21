@@ -943,6 +943,11 @@ configure_runtime_ufw() {
     snapshot_platform_security_state
     ensure_ssh_boot_service
     detect_ssh_ports strict
+    # 装完未重启的窗口期：sshd -T 已只认新端口，内核监听仍是旧端口。此时只按新端口
+    # 放行与校验，否则已插入的受管 deny 22/tcp 会让次序校验失败。
+    if ssh_post_install_port_migrated "${EASY_ALL_TARGET_SSH_PORT}"; then
+        SSH_PORTS="${EASY_ALL_TARGET_SSH_PORT}"
+    fi
     verify_ssh_ufw_no_unmanaged_block "${SSH_PORTS}"
     configure_ufw_ip_family
     ufw default deny incoming >/dev/null || die "设置 UFW 默认入站策略失败"
@@ -1794,11 +1799,40 @@ commit_subscription_update() {
     UPDATE_SUB_ROLLBACK_ON_EXIT=0
 }
 
+# 卸载/回滚兜底：恢复后的 SSH 端口必须仍有有效放行，否则重启后无法登录。
+# 安装后执行过 apply 会把受管 allow 22/tcp 当过期规则回收，这里重新补齐。
+restore_ufw_ssh_allow_after_port_restore() {
+    local status ssh_ports port
+    status=$(LC_ALL=C ufw status 2>/dev/null) || return 0
+    [[ "${status}" == *'Status: active'* ]] || return 0
+    if ! ssh_ports=$(detect_ssh_ports strict && printf '%s' "${SSH_PORTS}"); then
+        warn "无法确认恢复后的 SSH 端口；保留现有 UFW 规则，请人工核对 ufw status"
+        return 1
+    fi
+    ssh_ports=$(normalize_ufw_tcp_ports "${ssh_ports}") \
+        || { warn "SSH 端口列表无效；保留现有 UFW 规则"; return 1; }
+    for port in ${ssh_ports}; do
+        ufw_ssh_port_is_allowed "${port}" && continue
+        ufw allow "${port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null 2>&1 \
+            || { warn "补回 UFW SSH ${port} 放行失败；请立即通过 Console 核对"; return 1; }
+    done
+    ufw reload >/dev/null 2>&1 || true
+}
+
 # 卸载与安装失败回滚都只回收业务端口：保留 UFW 启用状态、默认策略与 SSH 放行。
 restore_preinstall_firewall() {
     [[ ! -f "${BACKUP_DIR}/pre-install-ufw-default" ]] \
         || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" "${UFW_DEFAULT_CONFIG}" \
             || warn "恢复 ${UFW_DEFAULT_CONFIG} 失败"
+    if command -v ufw >/dev/null 2>&1; then
+        # 必须先解除受管 deny 22/tcp，否则 22 的放行会被它继续挡住。
+        if ufw_managed_ssh_deny_exists 22; then
+            ufw --force delete deny 22/tcp comment "${UFW_RULE_COMMENT}" >/dev/null 2>&1 \
+                || warn "移除受管 UFW deny 22/tcp 规则失败；请人工核对 ufw status"
+        fi
+        restore_ufw_ssh_allow_after_port_restore \
+            || warn "恢复 SSH 端口 UFW 放行未完成；请人工核对 ufw status"
+    fi
     reclaim_ufw_business_rules || warn "回收业务 UFW 放行未完成；请人工核对 ufw status"
     if command -v ufw >/dev/null 2>&1; then
         for port in 443 8443; do

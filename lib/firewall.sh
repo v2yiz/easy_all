@@ -299,6 +299,30 @@ ufw_ssh_port_has_unmanaged_block() {
     return 1
 }
 
+# 受管 `22/tcp DENY IN` 是否已存在：安装收尾用它保证 insert 幂等（重跑不会叠加规则）。
+ufw_managed_ssh_deny_exists() {
+    local port=${1:-22} status line endpoint action direction source comment
+    command -v ufw >/dev/null 2>&1 || return 1
+    status=$(LC_ALL=C ufw status numbered 2>/dev/null) || return 1
+    while IFS= read -r line; do
+        [[ "${line}" == *'(v6)'* ]] && continue
+        [[ "${line}" =~ ^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]*(.*)$ ]] || continue
+        line=${BASH_REMATCH[1]}
+        comment=""
+        if [[ "${line}" == *' # '* ]]; then
+            comment=${line#*' # '}
+            line=${line%%' # '*}
+        fi
+        read -r endpoint action direction source <<<"${line}"
+        [[ "${action}" == 'DENY' && "${direction}" == 'IN' ]] || continue
+        [[ "${comment}" == "${UFW_RULE_COMMENT}" ]] || continue
+        [[ "${endpoint}" == "${port}/tcp" ]] || continue
+        [[ "${source}" == 'Anywhere' || "${source}" == 'Any' ]] || continue
+        return 0
+    done <<<"${status}"
+    return 1
+}
+
 verify_ssh_ufw_no_unmanaged_block() {
     local desired_ports=$1 port blocked=""
     desired_ports=$(normalize_ufw_tcp_ports "${desired_ports}") \
@@ -391,6 +415,29 @@ apply_ssh_ufw_policy() {
     ssh_ports=$(normalize_ufw_tcp_ports "${2:-${SSH_PORTS:-22}}") || die "SSH UFW 校验端口列表无效"
     verify_ssh_ufw_no_unmanaged_block "${ssh_ports}"
     apply_managed_ufw_tcp_ports "${desired_ports}" "${ssh_ports}"
+}
+
+# 安装收尾专用：放行新 SSH 端口并在第 1 条禁用旧 22 端口。
+# 保留原有 `allow 22/tcp`（被首条 deny 覆盖），卸载时删掉 deny 即可自动恢复放行。
+apply_post_install_ssh_ufw_policy() {
+    local target_port=${1:-22222}
+    verify_ssh_ufw_no_unmanaged_block "${target_port}"
+    if ! ufw_tcp_port_has_unmanaged_anywhere_allow "${target_port}"; then
+        ufw allow "${target_port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null \
+            || die "添加受管 UFW 规则失败：TCP ${target_port}"
+    fi
+    ufw --force enable >/dev/null || die "启用 UFW 失败"
+    ufw reload >/dev/null || die "重载 UFW 失败"
+    ufw_ssh_port_is_allowed "${target_port}" \
+        || die "UFW 未按规则顺序有效放行 SSH ${target_port}"
+    # 插到第 1 条：UFW 按顺序匹配，即使保留着 allow 22/tcp 也会被这条 deny 覆盖。
+    if ! ufw_managed_ssh_deny_exists 22; then
+        ufw insert 1 deny 22/tcp comment "${UFW_RULE_COMMENT}" >/dev/null \
+            || die "插入受管 UFW deny 22/tcp 失败"
+    fi
+    ufw reload >/dev/null || die "重载 UFW 失败"
+    ufw_ssh_port_is_allowed "${target_port}" \
+        || die "UFW 未按规则顺序有效放行 SSH ${target_port}"
 }
 
 # 原子移除 easy_all 注入的规则区块；不用 sed -i，避免在系统目录留下 .bak。

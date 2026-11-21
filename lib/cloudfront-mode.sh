@@ -1797,6 +1797,8 @@ install_all() {
     install_progress_stage state
     save_state
     cdn_commit_local_runtime
+    # 安装已成功：迁移 SSH 端口并同步 UFW/Fail2ban；仍在回滚钩子内，失败可完整回滚。
+    configure_post_install_ssh_port
     INSTALL_ROLLBACK_ON_EXIT=0
     install_progress_clear
     clear_profile_credentials
@@ -1804,7 +1806,7 @@ install_all() {
     show_subscription
     success "easy_all ${CDN_MODE_LABEL} 安装完成（${CDN_ENTRY_SUMMARY}）"
     show_tcp_acceleration_status
-    prompt_kernel_reboot
+    prompt_kernel_reboot ssh-port
 }
 
 cdn_print_cloud_inventory() {

@@ -773,40 +773,49 @@ EOF_SERVICE
     physical_fq_active || die "FQ 服务启动后实际队列验收失败"
 }
 
+# 安装收尾提示：mode=ssh-port 时必弹（安装入口已强制交互终端），mode=kernel 保持原条件返回。
 prompt_kernel_reboot() {
-    local choice
-    [[ -f "${KERNEL_REBOOT_MARKER}" ]] || return 0
-    if running_kernel_supported; then
+    local mode=${1:-kernel} choice="" kernel_pending=0
+    if [[ -f "${KERNEL_REBOOT_MARKER}" ]] && ! running_kernel_supported; then
+        kernel_pending=1
+    fi
+    if [[ "${mode}" != "ssh-port" ]] && ((kernel_pending == 0)); then
         return 0
     fi
     printf '\n'
-    printf '%s\n' "========================================================================"
-    printf '%s\n' "【重要提示：请重启服务器以加载 Skyline Speeder 所需的兼容内核】"
-    printf '%s\n' "其余安装已完成，只需重启一次；开机将自动安装并启用 Skyline，无需再次执行命令。"
-    printf '%s\n' "Zabbly 6.12+ LTS 内核已安装完成，当前运行仍为 $(uname -r)。"
-    printf '%s\n' "系统必须重启后才会真正载入新内核！"
+    printf '%b%s%b\n' "${RED}" "================================================================" "${RESET}"
+    if [[ "${mode}" == "ssh-port" ]]; then
+        printf '%b%s%b\n' "${RED}" "【重要提示：ssh端口已经修改为22222，原22端口禁用（重启后生效）】" "${RESET}"
+        printf '%s\n' "重启后请使用 22222 端口连接 SSH：ssh -p 22222 root@<服务器 IP>"
+        printf '%s\n' "如使用云厂商安全组，请先放行 TCP 22222，否则重启后将无法连接"
+        printf '%s\n' "当前会话靠已建立的连接维持；一旦断开，必须完成重启才能从 22222 端口重新连接"
+    fi
+    if ((kernel_pending == 1)); then
+        printf '%s\n' "【重要提示：请重启服务器以加载 Skyline Speeder 所需的兼容内核】"
+        printf '%s\n' "其余安装已完成，只需重启一次；开机将自动安装并启用 Skyline，无需再次执行命令。"
+        printf '%s\n' "Zabbly 6.12+ LTS 内核已安装完成，当前运行仍为 $(uname -r)。"
+        printf '%s\n' "系统必须重启后才会真正载入新内核！"
+    fi
     printf '%s\n' "请保存好上方的节点与订阅链接后，立即重启服务器。"
     printf '%s\n' "========================================================================"
-    if [[ "${EASY_ALL_NO_REBOOT:-0}" == "1" ]]; then
-        return 0
-    fi
-    if [[ "${PARAMS_LOADED:-0}" == "1" ]]; then
-        warn "安装已完成；请按上方提示重启服务器以载入新内核：sudo reboot"
-        return 0
-    fi
-    if [[ -t 0 ]]; then
-        # 走共享读取原语（readline）：裸 read 在 raw 会话里等不到 \n 会挂住。
-        read_prompt '是否现在立即重启服务器以载入新内核？[y/N]: ' choice || choice="n"
-        case "${choice}" in
-            [yY]|[yY][eE][sS])
-                info "正在重启服务器..."
-                ${REBOOT_COMMAND:-reboot}
-                ;;
-            *)
-                warn "已跳过自动重启，请在保存配置后手动执行: sudo reboot"
-                ;;
-        esac
+    # 走共享读取原语（readline）：裸 read 在 raw 会话里等不到 \n 会挂住。
+    if [[ "${mode}" == "ssh-port" ]]; then
+        read_prompt '是否现在立即重启服务器以确保 SSH 端口及全部配置生效？[y/N]: ' choice
     else
-        warn "检测到非交互式环境，请在保存配置后手动执行: sudo reboot"
+        read_prompt '是否现在立即重启服务器以载入新内核？[y/N]: ' choice
     fi
+    case "${choice}" in
+    [yY] | [yY][eE][sS])
+        info "正在重启服务器..."
+        ${REBOOT_COMMAND:-reboot}
+        ;;
+    *)
+        if [[ "${mode}" == "ssh-port" ]]; then
+            printf '%b%s%b\n' "${RED}" \
+                "已跳过自动重启；必须手动执行 sudo reboot 后，22222 端口与新配置才会生效。" "${RESET}"
+        else
+            warn "已跳过自动重启，请在保存配置后手动执行: sudo reboot"
+        fi
+        ;;
+    esac
 }

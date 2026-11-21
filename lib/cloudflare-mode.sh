@@ -674,6 +674,8 @@ install_all() {
     install_progress_stage state
     save_state
     register_easy_all_command
+    # 安装已成功：迁移 SSH 端口并同步 UFW/Fail2ban；仍在回滚钩子内，失败可完整回滚。
+    configure_post_install_ssh_port
     # 状态已落盘：uninstall 可用，后续失败不再回滚本机。
     INSTALL_ROLLBACK_ON_EXIT=0
     install_progress_clear
@@ -682,7 +684,7 @@ install_all() {
     show_subscription
     success "easy_all ${CDN_MODE_LABEL} 安装完成（${CDN_ENTRY_SUMMARY}）"
     show_tcp_acceleration_status
-    prompt_kernel_reboot
+    prompt_kernel_reboot ssh-port
 }
 
 cdn_print_cloud_inventory() {

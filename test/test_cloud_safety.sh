@@ -2162,6 +2162,56 @@ assert_not_contains "debian-init 密码不用命令替换读入" "$(<"${ROOT_DIR
 reboot_prompt_body=$(sed -n '/^prompt_kernel_reboot() {/,/^}/p' "${ROOT_DIR}/lib/tcp-tuning.sh")
 assert_contains "内核重启提示走共享读取原语" "${reboot_prompt_body}" "read_prompt '"
 assert_not_contains "内核重启提示不再用裸 read" "${reboot_prompt_body}" "read -r choice"
+# SSH 端口迁移收尾提示：红字 + 会话风险 + 纯交互确认重启（无跳过分支）。
+assert_not_contains "迁移提示无 EASY_ALL_NO_REBOOT 跳过分支" \
+    "${reboot_prompt_body}" "EASY_ALL_NO_REBOOT"
+assert_not_contains "迁移提示无 PARAMS_LOADED 跳过分支" "${reboot_prompt_body}" "PARAMS_LOADED"
+assert_not_contains "迁移提示无非交互 else 分支" "${reboot_prompt_body}" '[[ -t 0 ]]'
+assert_contains "迁移提示红字告知端口已迁移" "${reboot_prompt_body}" \
+    "ssh端口已经修改为22222，原22端口禁用"
+assert_contains "迁移提示告知会话风险" "${reboot_prompt_body}" "一旦断开"
+printf '#!/usr/bin/env bash\nprintf "REBOOT-CALLED\\n"\n' >"${TMP_DIR}/fake-reboot"
+chmod +x "${TMP_DIR}/fake-reboot"
+mkdir -p "${TMP_DIR}/prompt-state"
+: >"${TMP_DIR}/prompt-state/kernel-reboot-required"
+prompt_ssh_case() { # $1=用户输入 $2=running_kernel_supported 返回值
+    local answer=$1 kernel_ok=$2
+    ANSWER="${answer}" KERNEL_OK="${kernel_ok}" \
+        STATE_DIR="${TMP_DIR}/prompt-state" \
+        REBOOT_COMMAND="${TMP_DIR}/fake-reboot" \
+        bash -c '
+            set -Eeuo pipefail
+            source "$1/lib/log.sh"
+            source "$1/lib/tcp-tuning.sh"
+            running_kernel_supported() { [[ "${KERNEL_OK}" == "1" ]]; }
+            printf "%s\n" "${ANSWER}" | prompt_kernel_reboot ssh-port
+        ' _ "${ROOT_DIR}" 2>&1
+}
+prompt_reject_out=$(prompt_ssh_case n 1)
+assert_contains "迁移提示使用红字" "${prompt_reject_out}" $'\033[31m'
+assert_contains "迁移提示点名 22222" "${prompt_reject_out}" "22222"
+assert_contains "迁移提示告知原 22 端口禁用" "${prompt_reject_out}" "原22端口禁用"
+assert_contains "拒绝重启时提示 sudo reboot" "${prompt_reject_out}" "sudo reboot"
+assert_not_contains "拒绝重启时不执行重启命令" "${prompt_reject_out}" "REBOOT-CALLED"
+assert_not_contains "无内核需求时不提新内核" "${prompt_reject_out}" "Skyline"
+prompt_accept_out=$(prompt_ssh_case y 1)
+assert_contains "确认重启时执行重启命令" "${prompt_accept_out}" "REBOOT-CALLED"
+assert_contains "确认重启时提示框也渲染红字" "${prompt_accept_out}" $'\033[31m'
+assert_not_contains "确认重启时提示框不打印字面量转义" "${prompt_accept_out}" '\033[31m'
+assert_contains "拒绝重启时提示框也渲染红字" "${prompt_reject_out}" $'\033[31m'
+assert_not_contains "拒绝重启时提示框不打印字面量转义" "${prompt_reject_out}" '\033[31m'
+prompt_kernel_out=$(prompt_ssh_case n 0)
+assert_contains "需载入新内核时同一提示框合并" "${prompt_kernel_out}" "Skyline"
+assert_equal "迁移提示与内核提示合并为一次询问" "1" \
+    "$(grep -c 'ssh端口已经修改为22222' <<<"${prompt_kernel_out}")"
+prompt_noop_out=$(STATE_DIR="${TMP_DIR}/prompt-state" bash -c '
+    set -Eeuo pipefail
+    source "$1/lib/log.sh"
+    source "$1/lib/tcp-tuning.sh"
+    running_kernel_supported() { return 0; }
+    prompt_kernel_reboot
+' _ "${ROOT_DIR}" 2>&1)
+assert_equal "无内核需求且无参数时直接返回" "" "${prompt_noop_out}"
 
 # 部署事务用例不依赖真实 TLS：无条件先跑，TLS 门只影响真实握手那一段。
 run_certificate_deploy_cases

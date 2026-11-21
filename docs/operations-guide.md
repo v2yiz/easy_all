@@ -75,8 +75,11 @@ sudo easy_all apply-cloud
 - 安装时自动配置并启用 [Skyline Speeder](https://github.com/CYBERVERSE-Research/skyline-speeder)；依赖 Linux 6.12+ 内核（若版本不足自动换装 Zabbly 6.12+ LTS 内核）。
 - **低配服务器**：内存 ≤ 1GB 的小机建议预留 ≥ 1.5GB 根分区空间，脚本会自动创建 1GB Swap 避免编译期 OOM。
 - **状态验证**：
-  - 安装后若提示重启，执行 `sudo reboot`；
+  - 安装成功后 SSH 端口已修改为 `22222`、原 `22` 端口已禁用，按提示确认重启（或手动执行 `sudo reboot`）使新端口与内核生效；
   - 重启后运行 `sudo easy_all status`，确认 `Skyline Speeder: active`；若显示 `degraded`，网络仍可正常连通，可运行 `sudo easy_all apply` 尝试重置修复。
+
+> [!CAUTION]
+> **SSH 端口变更提醒**：所有模式安装成功后均已将 SSH 端口修改为 `22222` 并禁用原 `22` 端口（UFW 同步放行 `22222/tcp`、阻断 `22/tcp`）。**配置在重启后生效**，断开当前会话后未重启前无法再从 `22` 端口重连；请确保云厂商安全组已放行 **TCP `22222`**，重启后使用 `ssh -p 22222 <用户>@<服务器 IP>` 登录。
 
 ---
 
