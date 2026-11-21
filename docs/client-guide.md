@@ -13,7 +13,7 @@
 | **Windows** | **[FlClash](https://github.com/chen08209/FlClash/releases)**（优先推荐）、[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Bettbox](https://github.com/appshubcc/Bettbox/releases) | [sing-box for Desktop（SFW）](https://sing-box.sagernet.org/clients/desktop/)（Win 10+，选 `SFW-*.exe`） |
 | **macOS** | **[FlClash](https://github.com/chen08209/FlClash/releases)**（优先推荐）、[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Bettbox](https://github.com/appshubcc/Bettbox/releases) | [sing-box for Apple（SFM）](https://sing-box.sagernet.org/clients/apple/#download-macos-standalone-version)（macOS 13+，选 `SFM-*.pkg`） |
 | **Android** | **[FlClash](https://github.com/chen08209/FlClash/releases)**（优先推荐）、[Clash Meta for Android](https://github.com/MetaCubeX/ClashMetaForAndroid/releases)、[Bettbox](https://github.com/appshubcc/Bettbox/releases) | [sing-box for Android（SFA）](https://sing-box.sagernet.org/clients/android/)（选 `SFA-*.apk`） |
-| **iOS / iPadOS** | [Clash Mi](https://clashmi.app/download)（需使用外区 Apple ID）；通用 Base64 推荐 [Shadowrocket（小火箭）](https://apps.apple.com/us/app/shadowrocket/id932747118)（需使用外区 Apple ID） | [sing-box MT（SFI）](https://apps.apple.com/us/app/sing-box-mt/id6785326793)（iOS 15+，需使用外区 Apple ID；tvOS 选 SFT） |
+| **iOS / iPadOS**<br>（均需外区 Apple ID） | [Clash Mi](https://clashmi.app/download)；通用 Base64 推荐 [Shadowrocket（小火箭）](https://apps.apple.com/us/app/shadowrocket/id932747118) | [sing-box MT（SFI）](https://apps.apple.com/us/app/sing-box-mt/id6785326793)（iOS 15+；tvOS 选 SFT） |
 | **Linux** | **[FlClash](https://github.com/chen08209/FlClash/releases)**（优先推荐）、[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Mihomo Core](https://github.com/MetaCubeX/mihomo/releases) | [sing-box for Desktop（SFL）](https://sing-box.sagernet.org/clients/desktop/)（选对应架构的 `SFL-*`） |
 
 > 内核要求：Mihomo 建议 **≥ 1.19.9**，官方 sing-box 需 **≥ 1.14.0**。请从官方渠道下载对应架构版本，勿开启“跳过证书校验”。
@@ -34,8 +34,7 @@
   - 内核必须 **≥ 1.14.0**（旧版本会报错无法启动）。
   - 首次启动需联网拉取内置规则集；官方 sing-box 不支持的协议（如 `xhttp`、`mieru`）会在生成订阅时自动跳过。
 - **iOS 客户端**：
-  - `Clash Mi`、`Shadowrocket（小火箭）`、`sing-box MT（SFI）` 均需使用**外区 Apple ID** 下载。
-  - iOS 端获取 Mihomo 订阅时（或链接追加 `&os=ios`）会自动精简嗅探配置，降低后台内存占用并保障推送稳定。
+  - 获取 Mihomo 订阅时（或链接追加 `&os=ios`）会自动精简嗅探配置，降低后台内存占用并保障推送稳定。
 - **Android Google FCM 推送**：
   - 若前台正常但后台收不到推送，请在系统与客户端中：① 关闭“允许绕过 VPN”，确保 Google Play 服务走代理；② 允许代理客户端与 Google Play 服务无限制后台运行；③ 重启设备清理旧 DNS 缓存。
 
