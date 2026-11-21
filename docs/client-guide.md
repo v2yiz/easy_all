@@ -14,11 +14,11 @@ sudo easy_all subscription
 
 | 平台 | Mihomo（YAML） | sing-box（完整 JSON） |
 | :--- | :--- | :--- |
-| **Windows** | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[FlClash](https://github.com/chen08209/FlClash/releases)、[Bettbox](https://github.com/appshubcc/Bettbox/releases) | [sing-box for Desktop（SFW）](https://sing-box.sagernet.org/clients/desktop/)（Win 10+，选 `SFW-*.exe`） |
-| **macOS** | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[FlClash](https://github.com/chen08209/FlClash/releases)、[Bettbox](https://github.com/appshubcc/Bettbox/releases) | [sing-box for Apple（SFM）](https://sing-box.sagernet.org/clients/apple/#download-macos-standalone-version)（macOS 13+，选 `SFM-*.pkg`） |
-| **Android** | [FlClash](https://github.com/chen08209/FlClash/releases)、[Clash Meta for Android](https://github.com/MetaCubeX/ClashMetaForAndroid/releases)、[Bettbox](https://github.com/appshubcc/Bettbox/releases) | [sing-box for Android（SFA）](https://sing-box.sagernet.org/clients/android/)（选 `SFA-*.apk`） |
+| **Windows** | **[FlClash](https://github.com/chen08209/FlClash/releases)**（优先推荐）、[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Bettbox](https://github.com/appshubcc/Bettbox/releases) | [sing-box for Desktop（SFW）](https://sing-box.sagernet.org/clients/desktop/)（Win 10+，选 `SFW-*.exe`） |
+| **macOS** | **[FlClash](https://github.com/chen08209/FlClash/releases)**（优先推荐）、[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Bettbox](https://github.com/appshubcc/Bettbox/releases) | [sing-box for Apple（SFM）](https://sing-box.sagernet.org/clients/apple/#download-macos-standalone-version)（macOS 13+，选 `SFM-*.pkg`） |
+| **Android** | **[FlClash](https://github.com/chen08209/FlClash/releases)**（优先推荐）、[Clash Meta for Android](https://github.com/MetaCubeX/ClashMetaForAndroid/releases)、[Bettbox](https://github.com/appshubcc/Bettbox/releases) | [sing-box for Android（SFA）](https://sing-box.sagernet.org/clients/android/)（选 `SFA-*.apk`） |
 | **iOS / iPadOS** | [Clash Mi](https://clashmi.app/download) | [sing-box MT（SFI）](https://apps.apple.com/us/app/sing-box-mt/id6785326793)（iOS 15+，外区 Apple ID；tvOS 选 SFT） |
-| **Linux** | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[FlClash](https://github.com/chen08209/FlClash/releases)、[Mihomo Core](https://github.com/MetaCubeX/mihomo/releases) | [sing-box for Desktop（SFL）](https://sing-box.sagernet.org/clients/desktop/)（选对应架构的 `SFL-*`） |
+| **Linux** | **[FlClash](https://github.com/chen08209/FlClash/releases)**（优先推荐）、[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/releases)、[Mihomo Core](https://github.com/MetaCubeX/mihomo/releases) | [sing-box for Desktop（SFL）](https://sing-box.sagernet.org/clients/desktop/)（选对应架构的 `SFL-*`） |
 
 > 客户端内核需支持 AnyTLS 与 VLESS WebSocket（Mihomo 建议 ≥ 1.19.9）。请从官方渠道下载与 CPU 架构匹配的版本；勿在客户端开启“跳过证书校验”（`skip-cert-verify: false`）。
 
