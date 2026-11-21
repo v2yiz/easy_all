@@ -17,39 +17,6 @@
 
 ---
 
-## 模式选择
-
-五种模式共用同一套本机运行时（sing-box 节点入站 + Caddy 订阅与回源分发）。**客户端节点与订阅入口统一使用 443 端口**。
-
-$\textcolor{red}{\textbf{模式推荐：线路好选模式 5，}}$<br>
-$\textcolor{red}{\textbf{线路一般就直接模式 4；}}$<br>
-$\textcolor{red}{\textbf{没有可用信用卡才选模式 2 或模式 3。}}$<br>
-$\textcolor{red}{\textbf{纯直连在非常时期被封的概率太高，不推荐。}}$
-
-| 模式 | 适用场景 | 客户端节点入口 | 订阅入口 | 所需凭据 | 子域名数量 |
-| :--- | :--- | :--- | :--- | :--- | :---: |
-| **1. AnyTLS 直连** | VPS IP 纯净、直连质量优良 | `direct:443` | `sub:443` (deploy) 或无 (link) | Cloudflare Token | 1–2 |
-| **2. 纯 CloudFlare** | 只要 CDN 入口且回源仅限 CF | `cf:443` (橙云 CDN) | `cf:443` | Cloudflare Token | 1 |
-| **3. AnyTLS + CloudFlare** | 同时需要直连与橙云 CDN 节点 | `direct:443` + `cf:443` | `cf:443` | Cloudflare Token | 2 |
-| **4. 纯 CloudFront** | 只要 CDN 入口隐藏源站 IP | `cf:443` (AWS CDN) | `cf:443` | Cloudflare Token + AWS 密钥 | 2 |
-| **5. AnyTLS + CloudFront** | 同时需要直连与 CDN 节点 | `direct:443` + `cf:443` | `cf:443` | Cloudflare Token + AWS 密钥 | 2 |
-
-> **核心约定**：
-> - **域名规划**：全模式只需 **1 个根域名**（托管于同一 Cloudflare Zone），安装器会自动创建对应数量的一级子域名。
-> - **端口规范**：客户端统一连接 `443`，全模式不开放 `80`。回源端口在模式 1 deploy、2 与 3 仅对 Cloudflare 官方回源 IP 放行（模式 1/3 为 `8443`，模式 2 为 `443`）；模式 5 源站 `8443` 对公网可达，由 `X-Easy-All-Origin-Key` 密钥精确校验。
-> - **协议与证书**：CDN 节点均为 **VLESS WebSocket**。模式 1/3/5 直连与模式 4/5 源站使用 Let's Encrypt（DNS-01 自动签发），模式 4/5 的 CloudFront 客户端证书由 AWS ACM 托管，模式 2 回源使用 Cloudflare Origin CA（客户端连接 CF 边缘证书）。
-> - **Cloudflare SSL**：模式 1 deploy、2、3 要求目标 Zone 的 SSL/TLS 必须为 **Full (strict)**。
-> - **升级提示**：不支持从 4.x 直接升级，请先执行旧版 `sudo easy_all uninstall` 后重新安装。
-
-> [!WARNING]
-> **Cloudflare 提供免费套餐，但官方规则限制通过 CDN 代理翻墙流量，模式 2 与模式 3 存在潜在封禁风险，请自行评估使用。**
->
-> **模式 4 与模式 5 使用 CloudFront。注册 AWS 账号时需要绑定信用卡，使用 CloudFront 流量超过 1 TB 会产生费用。**
->
-> **Cloudflare注册简单，CloudFront更稳定，晚高峰效果好。**
-
----
-
 ## 开始前准备
 
 1. **服务器环境**：全新 Debian 12/13 或 Ubuntu 22.04/24.04/26.04 LTS（具备公网 IPv4 与 root 权限，`443`、回环 `10086` 及所选模式回源端口未被占用）。
@@ -80,6 +47,39 @@ Host *
 
 - **临时连接命令**（PowerShell / 终端通用）：`ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 <用户>@<IP> -p <端口>`。
 - **会话防中断**：强烈建议在 VPS 上的 `tmux` 或 `screen` 会话中执行安装；万一因切网中断，重新连接后再次运行安装命令即可无缝续装。
+
+---
+
+## 模式选择
+
+五种模式共用同一套本机运行时（sing-box 节点入站 + Caddy 订阅与回源分发）。**客户端节点与订阅入口统一使用 443 端口**。
+
+$\textcolor{red}{\textbf{模式推荐：线路好选模式 5，}}$<br>
+$\textcolor{red}{\textbf{线路一般就直接模式 4；}}$<br>
+$\textcolor{red}{\textbf{没有可用信用卡才选模式 2 或模式 3。}}$<br>
+$\textcolor{red}{\textbf{纯直连在非常时期被封的概率太高，不推荐。}}$
+
+| 模式 | 适用场景 | 客户端节点入口 | 订阅入口 | 所需凭据 | 子域名数量 |
+| :--- | :--- | :--- | :--- | :--- | :---: |
+| **1. AnyTLS 直连** | VPS IP 纯净、直连质量优良 | `direct:443` | `sub:443` (deploy) 或无 (link) | Cloudflare Token | 1–2 |
+| **2. 纯 CloudFlare** | 只要 CDN 入口且回源仅限 CF | `cf:443` (橙云 CDN) | `cf:443` | Cloudflare Token | 1 |
+| **3. AnyTLS + CloudFlare** | 同时需要直连与橙云 CDN 节点 | `direct:443` + `cf:443` | `cf:443` | Cloudflare Token | 2 |
+| **4. 纯 CloudFront** | 只要 CDN 入口隐藏源站 IP | `cf:443` (AWS CDN) | `cf:443` | Cloudflare Token + AWS 密钥 | 2 |
+| **5. AnyTLS + CloudFront** | 同时需要直连与 CDN 节点 | `direct:443` + `cf:443` | `cf:443` | Cloudflare Token + AWS 密钥 | 2 |
+
+> **核心约定**：
+> - **域名规划**：全模式只需 **1 个根域名**（托管于同一 Cloudflare Zone），安装器会自动创建对应数量的一级子域名。
+> - **端口规范**：客户端统一连接 `443`，全模式不开放 `80`。回源端口在模式 1 deploy、2 与 3 仅对 Cloudflare 官方回源 IP 放行（模式 1/3 为 `8443`，模式 2 为 `443`）；模式 5 源站 `8443` 对公网可达，由 `X-Easy-All-Origin-Key` 密钥精确校验。
+> - **协议与证书**：CDN 节点均为 **VLESS WebSocket**。模式 1/3/5 直连与模式 4/5 源站使用 Let's Encrypt（DNS-01 自动签发），模式 4/5 的 CloudFront 客户端证书由 AWS ACM 托管，模式 2 回源使用 Cloudflare Origin CA（客户端连接 CF 边缘证书）。
+> - **Cloudflare SSL**：模式 1 deploy、2、3 要求目标 Zone 的 SSL/TLS 必须为 **Full (strict)**。
+> - **升级提示**：不支持从 4.x 直接升级，请先执行旧版 `sudo easy_all uninstall` 后重新安装。
+
+> [!WARNING]
+> **Cloudflare 提供免费套餐，但官方规则限制通过 CDN 代理翻墙流量，模式 2 与模式 3 存在潜在封禁风险，请自行评估使用。**
+>
+> **模式 4 与模式 5 使用 CloudFront。注册 AWS 账号时需要绑定信用卡，使用 CloudFront 流量超过 1 TB 会产生费用。**
+>
+> **Cloudflare注册简单，CloudFront更稳定，晚高峰效果好。**
 
 ---
 
