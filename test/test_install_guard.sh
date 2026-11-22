@@ -118,6 +118,34 @@ output=$(capture assert_install_ports_free "443 8443" || true)
 assert_contains "多端口字符串必须逐端口检查" "${output}" "TCP 8443 已被占用"
 idle
 
+# 1c. 回环绑定的监听同样必须被检出：ss 过滤表达式不得带地址前缀，否则只绑 127.0.0.1
+#     的伪装站端口会被漏检，安装就会与已在运行的 Caddy 抢同一个端口。
+camo_port=$(bash -c 'source "$1/lib/log.sh"; source "$1/lib/caddy-runtime.sh"; caddy_reality_camouflage_port' _ "${ROOT_DIR}")
+loopback_ss="${TMP_DIR}/fake-ss-loopback"
+cat >"${loopback_ss}" <<'FAKE_SS_LOOPBACK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_SS_LOOPBACK_LOG}"
+expression=${!#}
+# 只接受与地址无关的 sport 过滤：真实 ss 用它会命中任何本地地址上的同端口监听。
+[[ "${expression}" == "sport = :${FAKE_SS_LOOPBACK_PORT}" ]] || exit 0
+printf 'LISTEN 0 511 %s:%s 0.0.0.0:*\n' "${FAKE_SS_LOOPBACK_BIND}" "${FAKE_SS_LOOPBACK_PORT}"
+FAKE_SS_LOOPBACK
+chmod +x "${loopback_ss}"
+for bind_address in 0.0.0.0 127.0.0.1; do
+    : >"${TMP_DIR}/fake-ss-loopback.log"
+    output=$(EASY_ALL_SS_CMD_OVERRIDE="${loopback_ss}" \
+        FAKE_SS_LOOPBACK_LOG="${TMP_DIR}/fake-ss-loopback.log" \
+        FAKE_SS_LOOPBACK_PORT="${camo_port}" FAKE_SS_LOOPBACK_BIND="${bind_address}" \
+        capture assert_install_ports_free "${camo_port}" || true)
+    assert_contains "${bind_address} 上的回环伪装站端口必须被检出" "${output}" \
+        "TCP ${camo_port} 已被占用"
+    assert_not_contains "${bind_address}: ss 过滤表达式不得带地址前缀" \
+        "$(<"${TMP_DIR}/fake-ss-loopback.log")" "127.0.0.1:${camo_port}"
+    assert_not_contains "${bind_address}: ss 过滤表达式不得带通配地址" \
+        "$(<"${TMP_DIR}/fake-ss-loopback.log")" "0.0.0.0:${camo_port}"
+done
+idle
+
 # 2. 第三方占用保持原文案，并点名占用进程
 busy 80
 FAKE_SS_OWNER=sshd
@@ -259,12 +287,14 @@ install_progress_clear
 
 # 6b. 标记链路身份：五种模式各自接受同链路标记，其他链路一律拒绝
 # （回归：模式 1 的 anytls 链被漏掉，中断后续装总被要求清理重装）。
+# 模式 6 与模式 4/5 共用 cloudfront 链（计量/启动门禁与持久阻断都按链判定）。
 while read -r marker_profile marker_chain; do
     install_progress_begin "${marker_profile}" "${marker_chain}"
     install_marker_chain_matches "${marker_profile}" \
         || fail "标记链路 ${marker_chain} 必须匹配模式 ${marker_profile}"
 done <<'MARKER_CASES'
 anytls anytls
+reality-self cloudfront
 cloudfront cloudfront
 combined-cloudfront cloudfront
 cloudflare cloudflare
@@ -623,6 +653,7 @@ rm -rf -- "${EASY_ALL_GUARD_STATE_DIR}"
 
 # 13. 跨模式清理：profile 映射齐全，未知模式拒绝猜测
 assert_equal "anytls maps to its profile" "anytls.sh" "$(profile_script_for anytls)"
+assert_equal "reality-self maps to its profile" "reality-self.sh" "$(profile_script_for reality-self)"
 assert_equal "cloudfront maps to its profile" "cloudfront.sh" "$(profile_script_for cloudfront)"
 assert_equal "cloudflare maps to its profile" "cloudflare.sh" "$(profile_script_for cloudflare)"
 assert_equal "combined-cloudfront maps to its profile" "combined.sh" \
@@ -631,6 +662,8 @@ assert_equal "combined-cloudflare maps to its profile" "combined-cloudflare.sh" 
     "$(profile_script_for combined-cloudflare)"
 assert_equal "unknown mode is rejected" "1" \
     "$(profile_script_for nope >/dev/null 2>&1 && echo 0 || echo 1)"
+assert_equal "reality-self 清理脚本存在" "1" \
+    "$([[ -f "${ROOT_DIR}/profiles/$(profile_script_for reality-self)" ]] && echo 1 || echo 0)"
 output=$(capture run_recorded_profile_cleanup nope || true)
 assert_contains "unknown recorded mode is explained" "${output}" "无法识别上次安装的模式"
 
@@ -1063,6 +1096,9 @@ run_incomplete_uninstall() { # 零参数入口
         # 内核边界替身：本测试不触碰宿主 iptables；生产路径失败关闭由 metering 门禁覆盖。
         remove_cdn_traffic_protection_timer() { :; }
         cdn_traffic_counters_remove() { :; }
+        # 探测日志同样属于内核/systemd 边界：生产路径的保守失败与重试口径由
+        # test_probe_log.sh 的清理保守性用例覆盖。
+        remove_probe_log() { :; }
         remove_certbot_deploy_hook() { :; }
         certificate_remove_lineage() { :; }
         restore_platform_security_state() { :; }
@@ -2628,6 +2664,387 @@ for mode_file in anytls-mode cloudflare-mode cloudfront-mode; do
         "$(awk '/^    configure_post_install_ssh_port$/{call=NR} /^    INSTALL_ROLLBACK_ON_EXIT=0$/{off=NR} END{print (call && off && call < off) ? 1 : 0}' \
             "${ROOT_DIR}/lib/${mode_file}.sh")"
 done
+
+# 40. 模式 6：Reality + CloudFront 运行时契约（真实 Profile + 核心库，独立进程隔离）
+reality_work="${TMP_DIR}/reality-runtime"
+mkdir -p "${reality_work}/certs"
+cat >"${reality_work}/run.sh" <<'REALITY_RUNTIME'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT_DIR=$1
+WORK=$2
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+export RUNTIME_TMP="${WORK}/runtime"
+export EASY_ALL_GUARD_STATE_DIR="${WORK}/state"
+export EASY_ALL_GUARD_STATE_FILE="${WORK}/state/state.env"
+export EASY_ALL_CERT_DIR_OVERRIDE="${WORK}/certs"
+export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${WORK}/subs"
+export EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${WORK}/progress/install-progress.env"
+export CAMOUFLAGE_DIR="${WORK}/camouflage"
+export SINGBOX_CONFIG="${WORK}/singbox.json"
+export CADDY_CONFIG="${WORK}/Caddyfile"
+export SINGBOX_BIN="${WORK}/cores/sing-box"
+export FAKE_KEYPAIR_LOG="${WORK}/keypair.log"
+install -d "${RUNTIME_TMP}" "${SINGBOX_BIN%/*}" "${EASY_ALL_CERT_DIR_OVERRIDE}"
+cat >"${SINGBOX_BIN}" <<'FAKE_SINGBOX'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_KEYPAIR_LOG}"
+case "${1:-}" in
+generate)
+    [[ "${2:-}" == "reality-keypair" ]] || exit 1
+    [[ "${FAKE_KEYPAIR_STATUS:-0}" == "0" ]] || exit 1
+    printf 'PrivateKey: %s\n' "${FAKE_KEYPAIR_PRIVATE}"
+    printf 'PublicKey: %s\n' "${FAKE_KEYPAIR_PUBLIC}"
+    ;;
+esac
+FAKE_SINGBOX
+chmod +x "${SINGBOX_BIN}"
+: >"${FAKE_KEYPAIR_LOG}"
+# shellcheck source=/dev/null
+source "${ROOT_DIR}/profiles/reality-self.sh"
+
+DIRECT_DOMAIN=direct.example.com
+DIRECT_NODE_NAME=Reality
+VLESS_UUID=11111111-2222-4111-8111-111111111111
+# 模式 6 与模式 5 同构：源站域名复用直连域名，订阅域名复用节点域名。
+CF_ORIGIN_DOMAIN=direct.example.com
+CF_NODE_DOMAIN=cf.example.com
+CF_NODE_PREFIX="CF"
+VLESS_PATH=/vless-abcdef123456
+SUBSCRIPTION_DOMAIN=cf.example.com
+ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef
+CDN_TRAFFIC_PROTECTION_GB=985
+AWS_CLOUDFRONT_DISTRIBUTION_ID=EDFDVBD6EXAMPLE
+AWS_CLOUDFRONT_DOMAIN=d111111abcdef8.cloudfront.net
+AWS_ACM_CERTIFICATE_ARN=arn:aws:acm:us-east-1:123456789012:certificate/x
+CLOUDFLARE_ZONE_ID=zoneid
+CF_ZONE=example.com
+VPS_PUBLIC_IPV4=203.0.113.10
+SUBSCRIPTION_MODE=deploy
+
+# 端口与链路派生与模式 5 完全一致。
+[[ "$(runtime_public_tcp_ports)" == "443 8443" ]] || fail "模式 6 公网端口应为 443 8443"
+[[ -z "$(runtime_cloudflare_only_port)" ]] || fail "模式 6 的 8443 由源站头守卫，不按源段限制"
+[[ "$(runtime_cdn_loopback_port)" == "10086" ]] || fail "模式 6 回环入站端口错误"
+[[ "$(caddy_reality_camouflage_port)" == "9443" ]] || fail "模式 6 伪装站端口错误"
+[[ "$(caddy_site_port)" == "8443" ]] || fail "模式 6 Caddy 站点端口应为 8443"
+[[ "$(caddy_site_host)" == "direct.example.com" ]] || fail "模式 6 Caddy 站点应为 CF_ORIGIN_DOMAIN"
+[[ "$(subscription_link_domain)" == "cf.example.com" ]] || fail "模式 6 订阅链接应使用订阅域名"
+[[ "$(runtime_protocol_label)" == "Reality（direct TCP 443）+ VLESS HTTPUpgrade over AWS CloudFront" ]] \
+    || fail "模式 6 协议标签未对齐模式 5：$(runtime_protocol_label)"
+
+# 证书只需覆盖 {DIRECT_DOMAIN, CF_ORIGIN_DOMAIN}：同域去重后不含 ACM 侧的订阅域名。
+[[ "$(certificate_required_hosts | paste -sd, -)" == "direct.example.com" ]] \
+    || fail "模式 6 证书域名错误：$(certificate_required_hosts | paste -sd, -)"
+SUBSCRIPTION_DOMAIN=cf.example.com
+CF_ORIGIN_DOMAIN=origin2.example.com
+[[ "$(certificate_required_hosts | paste -sd, -)" == "direct.example.com,origin2.example.com" ]] \
+    || fail "模式 6 证书域名错误：$(certificate_required_hosts | paste -sd, -)"
+CF_ORIGIN_DOMAIN=direct.example.com
+
+# 无 link 模式：Caddy 站点与订阅站点恒启用。
+runtime_caddy_site_enabled || fail "模式 6 的 Caddy 必须恒启用"
+runtime_subscription_site_enabled || fail "模式 6 的订阅站点必须恒启用"
+SUBSCRIPTION_MODE=link
+runtime_subscription_site_enabled || fail "模式 6 没有 link 模式：订阅站点仍须启用"
+SUBSCRIPTION_MODE=deploy
+
+# 订阅标记：Reality + VLESS httpupgrade 两个本地节点。
+[[ "$(runtime_base64_markers | paste -sd, -)" == "security=reality,type=httpupgrade" ]] \
+    || fail "模式 6 base64 标记错误：$(runtime_base64_markers | paste -sd, -)"
+[[ "$(runtime_mihomo_markers | paste -sd, -)" == "reality-opts:,network: ws" ]] \
+    || fail "模式 6 Mihomo 标记错误：$(runtime_mihomo_markers | paste -sd, -)"
+
+# 985GB 熔断：sing-box 的 ExecStartPre 必须挂内部计量入口（与模式 4/5 同一条链）。
+[[ "$(runtime_singbox_exec_start_pre)" == "${COMMAND_PATH} internal-traffic-prepare" ]] \
+    || fail "模式 6 必须挂 internal-traffic-prepare：$(runtime_singbox_exec_start_pre)"
+
+# keypair：生成 → 落盘身份 → 第二次不重复生成；失败不覆盖已有身份。
+REALITY_PRIVATE_KEY=""
+REALITY_PUBLIC_KEY=""
+REALITY_SHORT_ID=0123456789abcdef
+export FAKE_KEYPAIR_PRIVATE="$(printf 'A%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')"
+export FAKE_KEYPAIR_PUBLIC="$(printf 'B%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')"
+reality_generate_keypair
+[[ "${REALITY_PRIVATE_KEY}" == "${FAKE_KEYPAIR_PRIVATE}" ]] || fail "keypair 私钥未写入"
+[[ "${REALITY_PUBLIC_KEY}" == "${FAKE_KEYPAIR_PUBLIC}" ]] || fail "keypair 公钥未写入"
+identity=$(install_identity_file)
+[[ -f "${identity}" ]] || fail "keypair 生成后未落盘安装身份"
+jq -e --arg k "${FAKE_KEYPAIR_PRIVATE}" --arg s "0123456789abcdef" \
+    '.reality_private_key == $k and .reality_short_id == $s' "${identity}" >/dev/null \
+    || fail "安装身份未保存 Reality 字段"
+reality_generate_keypair
+[[ "$(grep -c . "${FAKE_KEYPAIR_LOG}" || true)" == "1" ]] \
+    || fail "续装已有 keypair 时不得重新生成"
+before=$(openssl dgst -sha256 "${identity}" | awk '{print $NF}')
+REALITY_PRIVATE_KEY=""
+REALITY_PUBLIC_KEY=""
+if ( export FAKE_KEYPAIR_STATUS=1; reality_generate_keypair ) >/dev/null 2>&1; then
+    fail "keypair 生成失败时必须中止安装"
+fi
+[[ "$(openssl dgst -sha256 "${identity}" | awk '{print $NF}')" == "${before}" ]] \
+    || fail "keypair 失败不得改写已落盘身份"
+REALITY_PRIVATE_KEY=${FAKE_KEYPAIR_PRIVATE}
+REALITY_PUBLIC_KEY=${FAKE_KEYPAIR_PUBLIC}
+
+# 伪装页部署/回收：与 Caddy 配置同生命周期，且不得删除用户在目录里的其他文件。
+reality_deploy_camouflage_page
+[[ -s "${CAMOUFLAGE_DIR}/index.html" ]] || fail "伪装页未部署到 CAMOUFLAGE_DIR"
+grep -Fq 'Workspace Sign In' "${CAMOUFLAGE_DIR}/index.html" \
+    || fail "伪装页内容不是登录门户模板"
+printf 'keep me\n' >"${CAMOUFLAGE_DIR}/user-note.txt"
+reality_remove_camouflage_page
+[[ ! -e "${CAMOUFLAGE_DIR}/index.html" ]] || fail "回收后 index.html 仍存在"
+[[ -s "${CAMOUFLAGE_DIR}/user-note.txt" ]] || fail "回收时删除了用户自己的文件"
+rm -f -- "${CAMOUFLAGE_DIR}/user-note.txt"
+reality_remove_camouflage_page
+[[ ! -d "${CAMOUFLAGE_DIR}" ]] || fail "空目录应被回收"
+
+# 状态文案：直连行必须给出 Reality 与伪装站回落目标，Caddy 恒有真实状态。
+systemctl() { [[ "${1:-}" != "is-active" ]] || return 3; }
+require_root() { :; }
+collect_installed_state() { :; }
+show_tcp_acceleration_status() { :; }
+cdn_traffic_counters_ready() { return 1; }
+cdn_traffic_read_usage() { printf '%s' '{"protection_offline":false}'; }
+show_cdn_traffic_protection_status() { :; }
+CDN_SUBSCRIPTION_CORRUPT=0
+CERT_FILE="${WORK}/certs/absent.pem"
+status_output=$(show_status 2>&1)
+[[ "${status_output}" == *"VLESS Reality"* ]] || fail "状态未标明 Reality 直连"
+[[ "${status_output}" == *"伪装站"* ]] || fail "状态未说明伪装站回落目标"
+[[ "${status_output}" != *"Caddy: 未部署"* ]] || fail "模式 6 无 link 模式，不得显示 Caddy 未部署"
+[[ "${status_output}" == *"Caddy: inactive"* ]] || fail "模式 6 应报告 Caddy 真实状态"
+REALITY_RUNTIME
+bash "${reality_work}/run.sh" "${ROOT_DIR}" "${reality_work}" >"${reality_work}/out.log" 2>&1 || {
+    cat "${reality_work}/out.log" >&2
+    fail "模式 6 运行时契约未通过"
+}
+
+# 41. runtime.manifest ↔ profiles/ 双向一致（缺失项会让 verify-release 或自更新失效）
+manifest_file="${ROOT_DIR}/runtime.manifest"
+grep -Fxq 'profiles/reality-self.sh' "${manifest_file}" || fail "manifest 缺少模式 6 Profile"
+grep -Fxq 'templates/camouflage-login.html' "${manifest_file}" \
+    || fail "manifest 缺少伪装站页面模板"
+while IFS= read -r relative_path; do
+    [[ -n "${relative_path}" && "${relative_path}" != \#* ]] || continue
+    [[ -f "${ROOT_DIR}/${relative_path}" ]] || fail "manifest 列了不存在的文件：${relative_path}"
+done <"${manifest_file}"
+for profile_path in "${ROOT_DIR}"/profiles/*.sh; do
+    relative_path="profiles/$(basename "${profile_path}")"
+    grep -Fxq "${relative_path}" "${manifest_file}" \
+        || fail "Profile 未纳入 manifest：${relative_path}"
+done
+
+# 42. 模式 6 从 install_all 入口走到 inputs 阶段：对齐模式 5 的输入与身份字段。
+run_reality_install_all_case() {
+    local case_dir="${TMP_DIR}/reality-install-all"
+    rm -rf -- "${case_dir}"
+    mkdir -p "${case_dir}"
+    EASY_ALL_GUARD_STATE_DIR="${case_dir}/state" \
+    EASY_ALL_GUARD_STATE_FILE="${case_dir}/state/state.env" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/subscriptions" \
+    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${case_dir}/progress/install-progress.env" \
+    CAMOUFLAGE_DIR="${case_dir}/camouflage" \
+    RUNTIME_TMP="${case_dir}/runtime" \
+        bash -c '
+            set -Eeuo pipefail
+            # shellcheck source=/dev/null
+            source "$1/profiles/reality-self.sh"
+            # 宿主与云端一律替身：本用例只校验 install_all 的输入阶段与身份字段。
+            require_root() { :; }
+            acquire_runtime_write_lock() { :; }
+            require_systemd() { :; }
+            check_platform() { :; }
+            report_host_init_state() { :; }
+            ensure_swap() { :; }
+            install_failure_begin() { :; }
+            install_progress_begin() { printf "PROGRESS-BEGIN: %s %s\n" "$1" "$2"; }
+            prepare_fresh_install() { printf "PRECHECK:%s|%s|%s|%s\n" "$1" "${2:-}" "${3:-}" "${4:-}"; }
+            snapshot_fresh_install() { :; }
+            install_packages() { :; }
+            install_aws_cli() { :; }
+            install_certbot_deploy_hook() { :; }
+            choose_tcp_acceleration() { :; }
+            configure_tcp_acceleration() { :; }
+            configure_daily_reboot() { :; }
+            configure_ipv4_only() { :; }
+            # 交互输入全部取默认值：不走真终端，也不改动任何提示文案的语义。
+            prompt_value() { printf "%s\n" "$2"; }
+            cloudflare_collect_api_token() { :; }
+            collect_aws_credentials() { :; }
+            collect_cdn_edge_address() { :; }
+            apply_cdn_edge_prefix() { :; }
+            configure_cdn_traffic_protection() { CDN_TRAFFIC_PROTECTION_GB=985; }
+            choose_subscription_config() {
+                printf %s "{\"allowedTokens\":{\"owner\":\"token-abcdefgh\"},\"nodes\":[]}"
+            }
+            cdn_apply_subscription_config() { :; }
+            cdn_validate_install_owner_token() { :; }
+            detect_public_ipv4() { printf %s "203.0.113.10"; }
+            CF_ZONE=example.com
+            # 输入阶段一结束就记录身份并退出：核心下载与云端资源不在本用例范围。
+            install_progress_stage() {
+                if [[ "$1" == "core" ]]; then
+                    printf "UUID=%s\n" "${VLESS_UUID:-}"
+                    printf "SHORT_ID=%s\n" "${REALITY_SHORT_ID:-}"
+                    printf "PRIVATE_KEY=%s\n" "${REALITY_PRIVATE_KEY:-}"
+                    printf "SUBSCRIPTION_MODE=%s\n" "${SUBSCRIPTION_MODE:-}"
+                    printf "ORIGIN_EQ_DIRECT=%s\n" \
+                        "$([[ "${CF_ORIGIN_DOMAIN:-}" == "${DIRECT_DOMAIN:-}" ]] && echo yes || echo no)"
+                    printf "SUBDOMAIN_EQ_NODE=%s\n" \
+                        "$([[ "${SUBSCRIPTION_DOMAIN:-}" == "${CF_NODE_DOMAIN:-}" ]] && echo yes || echo no)"
+                    printf "ANYTLS_PASSWORD_SET=%s\n" "${ANYTLS_PASSWORD:+yes}"
+                    exit 0
+                fi
+            }
+            # 测试没有 tty：只把 install_all 首行的交互终端门禁换成 no-op，其余函数体原样执行。
+            install_all_definition=$(declare -f install_all | grep -v "^    \[\[ -t 0 \]\]")
+            eval "${install_all_definition}"
+            install_all
+        ' _ "${ROOT_DIR}" 2>&1
+}
+reality_install_all_output=$(run_reality_install_all_case)
+assert_contains "模式 6 安装写 CloudFront 链路标记" "${reality_install_all_output}" \
+    "PROGRESS-BEGIN: reality-self cloudfront"
+assert_equal "模式 6 首轮端口预检覆盖 443/8443/10086/9443" \
+    "PRECHECK:443 8443||10086|9443" \
+    "$(grep -F 'PRECHECK:' <<<"${reality_install_all_output}" || true)"
+reality_install_uuid=$(uninstall_entry_value "${reality_install_all_output}" UUID)
+[[ "${reality_install_uuid}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]] \
+    || fail "模式 6 输入阶段必须生成 v4 VLESS_UUID：${reality_install_uuid:-空}"
+reality_install_sid=$(uninstall_entry_value "${reality_install_all_output}" SHORT_ID)
+[[ "${reality_install_sid}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
+    || fail "模式 6 输入阶段必须生成 Reality short_id：${reality_install_sid:-空}"
+assert_equal "模式 6 输入阶段不生成 keypair（依赖已安装核心）" "" \
+    "$(uninstall_entry_value "${reality_install_all_output}" PRIVATE_KEY)"
+assert_equal "模式 6 订阅恒为 deploy" "deploy" \
+    "$(uninstall_entry_value "${reality_install_all_output}" SUBSCRIPTION_MODE)"
+assert_equal "模式 6 源站域名复用直连域名" "yes" \
+    "$(uninstall_entry_value "${reality_install_all_output}" ORIGIN_EQ_DIRECT)"
+assert_equal "模式 6 订阅域名复用节点域名" "yes" \
+    "$(uninstall_entry_value "${reality_install_all_output}" SUBDOMAIN_EQ_NODE)"
+grep -Fxq 'ANYTLS_PASSWORD_SET=' <<<"${reality_install_all_output}" \
+    || fail "模式 6 的输入阶段不得生成 AnyTLS 密码"
+
+# 43. 模式 6 的 985GB 熔断启动链：只接受 cloudfront 链，且持久阻断必须拒绝启动。
+boot_work="${TMP_DIR}/reality-boot"
+rm -rf -- "${boot_work}"
+mkdir -p "${boot_work}/runtime"
+cat >"${boot_work}/boot.sh" <<'REALITY_BOOT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT_DIR=$1
+WORK=$2
+MARKER_CHAIN=$3
+BLOCK_ALLOWED=$4
+export RUNTIME_TMP="${WORK}/runtime"
+export EASY_ALL_GUARD_STATE_DIR="${WORK}/state"
+export EASY_ALL_GUARD_STATE_FILE="${WORK}/state/state.env"
+export EASY_ALL_CERT_DIR_OVERRIDE="${WORK}/certs"
+export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${WORK}/subs"
+export EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${WORK}/progress/install-progress.env"
+export CAMOUFLAGE_DIR="${WORK}/camouflage"
+export SINGBOX_CONFIG="${WORK}/singbox.json"
+# shellcheck source=/dev/null
+source "${ROOT_DIR}/profiles/reality-self.sh"
+require_root() { :; }
+success() { printf 'SUCCESS:%s\n' "$*"; }
+# 计量实现与本用例无关：只校验链路身份与阻断门禁的分支。
+cdn_traffic_prepare_counters() { :; }
+cdn_traffic_require_counters() { :; }
+if [[ "${BLOCK_ALLOWED}" == "1" ]]; then
+    cdn_traffic_start_config_allowed() { return 1; }
+else
+    cdn_traffic_start_config_allowed() { :; }
+fi
+install_progress_begin reality-self "${MARKER_CHAIN}"
+CDN_TRAFFIC_PROTECTION_GB=985
+VLESS_UUID=11111111-2222-4111-8111-111111111111
+REALITY_PRIVATE_KEY=$(printf 'A%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')
+REALITY_PUBLIC_KEY=$(printf 'B%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')
+REALITY_SHORT_ID=0123456789abcdef
+persist_install_identity || exit 1
+internal_traffic_prepare
+REALITY_BOOT
+run_reality_boot() { # $1=marker chain $2=block allowed
+    local case_dir="${boot_work}/case-$1-$2"
+    rm -rf -- "${case_dir}"
+    mkdir -p "${case_dir}/runtime" "${case_dir}/state"
+    bash "${boot_work}/boot.sh" "${ROOT_DIR}" "${case_dir}" "$1" "$2" 2>&1 || true
+}
+boot_ok=$(run_reality_boot cloudfront 0)
+assert_contains "模式 6 按 cloudfront 链通过启动准备" "${boot_ok}" "SUCCESS:计量规则与保护状态校验通过"
+boot_wrong=$(run_reality_boot cloudflare 0)
+assert_contains "模式 6 拒绝非 cloudfront 链" "${boot_wrong}" \
+    "安装进度标记缺少本模式要求的 CHAIN；拒绝启动 sing-box"
+boot_blocked=$(run_reality_boot cloudfront 1)
+assert_contains "模式 6 持久阻断必须拒绝启动" "${boot_blocked}" \
+    "持久阻断/保护性停机状态与开放 CDN 入站的候选配置冲突；拒绝启动 sing-box"
+assert_not_contains "拒绝启动时不得报告校验通过" "${boot_blocked}" \
+    "SUCCESS:计量规则与保护状态校验通过"
+
+# 20b. 跨进程续装：身份落盘后，新进程 load_install_identity 必须复用同一 keypair，
+#      不得再调用 `sing-box generate reality-keypair`（否则已下发订阅的 pbk 会失配）。
+reuse_root="${TMP_DIR}/reality-reuse"
+rm -rf -- "${reuse_root}"
+mkdir -p "${reuse_root}/certs" "${reuse_root}/cores"
+cat >"${reuse_root}/cores/sing-box" <<'FAKE_REUSE_SINGBOX'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_KEYPAIR_LOG}"
+if [[ "${1:-}" == "generate" && "${2:-}" == "reality-keypair" ]]; then
+    # 与已落盘身份刻意不同的值：一旦重新生成，KEY 断言必然失败。
+    printf 'PrivateKey: %s\n' "$(printf 'C%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')"
+    printf 'PublicKey: %s\n' "$(printf 'D%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')"
+fi
+FAKE_REUSE_SINGBOX
+chmod +x "${reuse_root}/cores/sing-box"
+reuse_env=(
+    "RUNTIME_TMP=${reuse_root}/runtime"
+    "EASY_ALL_GUARD_STATE_DIR=${reuse_root}/state"
+    "EASY_ALL_GUARD_STATE_FILE=${reuse_root}/state/state.env"
+    "EASY_ALL_CERT_DIR_OVERRIDE=${reuse_root}/certs"
+    "EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE=${reuse_root}/subs"
+    "CAMOUFLAGE_DIR=${reuse_root}/camouflage"
+    "SINGBOX_BIN=${reuse_root}/cores/sing-box"
+    "FAKE_KEYPAIR_LOG=${reuse_root}/keypair.log"
+)
+mkdir -p "${reuse_root}/runtime"
+: >"${reuse_root}/keypair.log"
+reuse_phase1=$(env "${reuse_env[@]}" bash -c '
+    set -Eeuo pipefail
+    # shellcheck source=/dev/null
+    source "$1/profiles/reality-self.sh"
+    install -d -m 0700 "$(install_state_dir_path)"
+    REALITY_PRIVATE_KEY=$(printf "A%.0s" {1..32} | base64 | tr "+/" "-_" | tr -d "=\\n")
+    REALITY_PUBLIC_KEY=$(printf "B%.0s" {1..32} | base64 | tr "+/" "-_" | tr -d "=\\n")
+    REALITY_SHORT_ID=0123456789abcdef
+    persist_install_identity || exit 1
+    printf "KEY=%s\n" "${REALITY_PRIVATE_KEY}"
+' _ "${ROOT_DIR}" 2>&1) || fail "模式 6 身份落盘失败：${reuse_phase1}"
+reuse_phase2=$(env "${reuse_env[@]}" bash -c '
+    set -Eeuo pipefail
+    # shellcheck source=/dev/null
+    source "$1/profiles/reality-self.sh"
+    REALITY_PRIVATE_KEY=""
+    REALITY_PUBLIC_KEY=""
+    load_install_identity || exit 1
+    printf "LOADED=%s\n" "${REALITY_PRIVATE_KEY:+yes}"
+    reality_generate_keypair || exit 1
+    printf "KEY=%s\n" "${REALITY_PRIVATE_KEY}"
+    printf "SHORT_ID=%s\n" "${REALITY_SHORT_ID:-}"
+    printf "GENERATE_CALLS=%s\n" "$(grep -c . "${FAKE_KEYPAIR_LOG}" || true)"
+' _ "${ROOT_DIR}" 2>&1) || fail "模式 6 续装身份恢复失败：${reuse_phase2}"
+assert_equal "续装确实从磁盘恢复了 Reality 私钥" "LOADED=yes" \
+    "$(grep -Fx 'LOADED=yes' <<<"${reuse_phase2}" || true)"
+assert_equal "跨进程续装复用同一 Reality 私钥" \
+    "$(uninstall_entry_value "${reuse_phase1}" KEY)" \
+    "$(uninstall_entry_value "${reuse_phase2}" KEY)"
+assert_equal "跨进程续装复用同一 Reality short_id" "0123456789abcdef" \
+    "$(uninstall_entry_value "${reuse_phase2}" SHORT_ID)"
+assert_equal "跨进程续装不得重新生成 keypair" "0" \
+    "$(uninstall_entry_value "${reuse_phase2}" GENERATE_CALLS)"
 
 # A32：文件尾汇总本轮未验证的用例，避免「skip 静默消失」。
 if ((${#SKIPPED_ITEMS[@]} > 0)); then

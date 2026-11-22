@@ -479,6 +479,9 @@ apply_easy_all() {
     save_state
     cdn_commit_local_runtime
     commit_subscription_update
+    # 模式 1/3 恒有直连 TCP 443 入口：探测日志在最后一次 UFW reload 之后同步并强制重放。
+    # 失败不回滚已提交的配置，但必须让命令非零退出，绝不能接着报成功。
+    probe_log_enable_and_replay || return 1
     success "本机配置与订阅已应用；未修改 Cloudflare 云端资源"
 }
 
@@ -489,6 +492,11 @@ apply_cloud_phase() {
     anytls_ensure_zone_id
     if subscription_enabled; then
         cloudflare_ensure_zone_ssl_strict
+        # 模式 3 的橙云节点走 HTTPUpgrade（HTTP/1.1 Upgrade）：Zone 关闭 WebSockets 时链路必失败。
+        # 模式 1 不走 CDN 代理，不查该开关。
+        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+            cloudflare_ensure_zone_websockets_on
+        fi
     fi
     anytls_ensure_dns
     certbot_write_cloudflare_credentials
@@ -519,6 +527,7 @@ apply_cloud_resources() {
     save_state
     cdn_commit_local_runtime
     commit_subscription_update
+    probe_log_enable_and_replay || return 1
     success "本机配置、证书与 Cloudflare 资源已同步"
 }
 
@@ -595,6 +604,8 @@ cdn_local_uninstall_common() {
     }
     restore_preinstall_firewall
     restore_preinstall_ipv6
+    remove_probe_log \
+        || { warn "回收 TCP 443 探测日志规则与单元失败；已保留本机状态与命令，修正后重试 uninstall"; return 1; }
     if ! remove_daily_reboot_schedule; then
         warn "卸载未完成：移除 easy_all 定时重启任务失败，本机状态与命令已保留；修正 root crontab 后重试 uninstall"
         return 1
@@ -701,6 +712,8 @@ uninstall_all() {
 cleanup_partial_install() {
     local failed=0 path
     cleanup_partial_install_local || return 1
+    remove_probe_log \
+        || { warn "回收 TCP 443 探测日志规则与单元失败；已保留安装进度标记与状态，修正后重试 sudo easy_all cleanup-partial"; return 1; }
     remove_certbot_deploy_hook || true
     certificate_remove_lineage || true
     remove_daily_reboot_schedule || true
@@ -802,6 +815,9 @@ install_all() {
     anytls_ensure_zone_id
     if subscription_enabled; then
         cloudflare_ensure_zone_ssl_strict
+        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+            cloudflare_ensure_zone_websockets_on
+        fi
     fi
     configure_runtime_ufw
     anytls_ensure_dns
@@ -827,7 +843,9 @@ install_all() {
     save_state
     cdn_commit_local_runtime
     # 安装已成功：迁移 SSH 端口并同步 UFW/Fail2ban；仍在回滚钩子内，失败可完整回滚。
+    # 安装收尾的 SSH/UFW 同步会再次 reload UFW；探测规则必须在这之后重放，否则会被清掉。
     configure_post_install_ssh_port
+    probe_log_enable_and_replay || die "启用直连 TCP 443 探测日志失败；安装中止并回滚"
     INSTALL_ROLLBACK_ON_EXIT=0
     install_progress_clear
     clear_profile_credentials

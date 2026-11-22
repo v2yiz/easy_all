@@ -71,6 +71,10 @@ DIRECT_DOMAIN="direct.example.com"
 CF_NODE_DOMAIN="cf.example.com"
 DIRECT_NODE_NAME="AnyTLS"
 CF_NODE_PREFIX="CDN-WS"
+# 模式 6（Reality）：固定 32 字节示例值，只验证配置结构与客户端产物，不用于真实握手。
+REALITY_PRIVATE_KEY="$(printf 'A%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')"
+REALITY_PUBLIC_KEY="$(printf 'B%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')"
+REALITY_SHORT_ID="0123456789abcdef"
 
 # 设计/计划冻结的固定常量：期望值来自 design.md §6 与 plan.md，不由实现推导。
 assert_equal "sing-box 锁定版本" "1.14.4" "${SINGBOX_VERSION}"
@@ -121,8 +125,10 @@ assert_equal "模式 4 只有 VLESS 入站" "vless-cdn-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${cloudfront_json}")"
 assert_equal "VLESS 入站监听回环 10086" "127.0.0.1 10086" \
     "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"${cloudfront_json}")"
-assert_equal "VLESS 使用 ws 与精确路径" "ws ${VLESS_PATH}" \
+assert_equal "VLESS 入站使用 httpupgrade 与精确路径" "httpupgrade ${VLESS_PATH}" \
     "$(jq -r '.inbounds[0].transport | "\(.type) \(.path)"' <<<"${cloudfront_json}")"
+assert_equal "VLESS 入站不写 early data 字段" "false" \
+    "$(jq -r '.inbounds[0].transport | has("max_early_data") or has("early_data_header_name")' <<<"${cloudfront_json}")"
 assert_equal "VLESS 用户 UUID" "${VLESS_UUID}" \
     "$(jq -r '.inbounds[0].users[0].uuid' <<<"${cloudfront_json}")"
 assert_equal "回环 CDN 入站不启用 TLS" "null" \
@@ -157,7 +163,7 @@ assert_equal "模式 3 blocked 只保留 AnyTLS" "anytls-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render combined-cloudflare 1)")"
 
 # 公共结构：log/dns/outbounds/route 按 design §7。
-for proto in anytls cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+for proto in anytls reality-self cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     body=$(render "${proto}" 0)
     assert_equal "${proto}: log 级别 warning" "warning" "$(jq -r '.log.level' <<<"${body}")"
     assert_equal "${proto}: DNS 显式 IPv4-only" "ipv4_only" "$(jq -r '.dns.strategy' <<<"${body}")"
@@ -213,13 +219,13 @@ assert_equal "AnyTLS 链接格式" \
 assert_equal "AnyTLS 链接按组件编码" \
     "anytls://${ANYTLS_PASSWORD}@direct.example.com:443/?sni=direct.example.com&insecure=0#AnyTLS%20%E7%9B%B4%E8%BF%9E" \
     "$(DIRECT_NODE_NAME="AnyTLS 直连"; build_anytls_link)"
-assert_equal "VLESS ws 链接格式" \
-    "vless://${VLESS_UUID}@cf.example.com:443?encryption=none&security=tls&type=ws&sni=cf.example.com&fp=chrome&host=cf.example.com&path=%2Fvless-abcdef123456&packetEncoding=xudp#CDN-WS" \
+assert_equal "VLESS httpupgrade 链接格式" \
+    "vless://${VLESS_UUID}@cf.example.com:443?encryption=none&security=tls&type=httpupgrade&sni=cf.example.com&fp=chrome&alpn=http%2F1.1&host=cf.example.com&path=%2Fvless-abcdef123456&packetEncoding=xudp#CDN-WS" \
     "$(build_vless_ws_link)"
 vless_link=$(build_vless_ws_link)
 assert_not_contains "VLESS 链接无 Reality flow" "${vless_link}" "flow="
 assert_not_contains "VLESS 链接无 XHTTP 参数" "${vless_link}" "type=xhttp"
-assert_not_contains "VLESS 链接无 alpn" "${vless_link}" "alpn="
+assert_contains "VLESS 链接显式约束 ALPN" "${vless_link}" "alpn=http%2F1.1"
 assert_not_contains "VLESS 链接无源站密钥" "${vless_link}" "X-Easy-All-Origin-Key"
 
 anytls_node=$(build_mihomo_anytls_node)
@@ -242,12 +248,24 @@ assert_contains "VLESS 节点 UUID" "${ws_node}" 'uuid: "'"${VLESS_UUID}"'"'
 assert_contains "VLESS 节点 ws 传输" "${ws_node}" "network: ws"
 assert_contains "VLESS 节点 TLS" "${ws_node}" "tls: true"
 assert_contains "VLESS 节点 SNI" "${ws_node}" 'servername: "cf.example.com"'
+assert_contains "VLESS 节点 ALPN 列表" "${ws_node}" "alpn:"
+assert_contains "VLESS 节点 ALPN 值为 http/1.1" "${ws_node}" "- http/1.1"
 assert_contains "VLESS 节点 ws 路径" "${ws_node}" 'path: "/vless-abcdef123456"'
 assert_contains "VLESS 节点 ws Host" "${ws_node}" 'Host: "cf.example.com"'
+assert_contains "VLESS 节点启用 v2ray-http-upgrade" "${ws_node}" "v2ray-http-upgrade: true"
+assert_contains "VLESS 节点启用 http-upgrade fast open" "${ws_node}" \
+    "v2ray-http-upgrade-fast-open: true"
 assert_contains "VLESS 客户端指纹" "${ws_node}" "client-fingerprint: chrome"
 assert_contains "VLESS xudp 编码" "${ws_node}" "packet-encoding: xudp"
 assert_not_contains "VLESS 节点无源站密钥" "${ws_node}" "X-Easy-All-Origin-Key"
-assert_not_contains "VLESS 节点无 httpupgrade" "${ws_node}" "httpupgrade"
+assert_not_contains "VLESS 节点不写 early data" "${ws_node}" "early-data"
+assert_equal "sing-box 节点 ALPN 与 httpupgrade 传输" \
+    "[\"http/1.1\"] httpupgrade cf.example.com /vless-abcdef123456" \
+    "$(build_singbox_ws_outbound \
+        | jq -r '"\(.tls.alpn) \(.transport.type) \(.transport.host) \(.transport.path)"')"
+assert_equal "sing-box 节点不写 early data" "null null" \
+    "$(build_singbox_ws_outbound \
+        | jq -r '.transport.max_early_data, .transport.early_data_header_name' | paste -sd' ' -)"
 
 if (PROTOCOL=cloudfront; CF_NODE_DOMAIN=""; build_vless_ws_link) >/dev/null 2>&1; then
     fail "缺少 CF_NODE_DOMAIN 必须失败"
@@ -258,9 +276,9 @@ fi
 
 # --- CDN 优选连接地址：只换连接地址，SNI 与 Host 仍是节点域名 -----------------
 # 期望值来自 design §2 条 3 / §4.5：连接地址是 CF_EDGE_ADDRESS，SNI、servername、
-# WebSocket Host 保持 CF_NODE_DOMAIN（证书校验、回源 Host 均按节点域名）。
+# HTTPUpgrade Host 保持 CF_NODE_DOMAIN（证书校验、回源 Host 均按节点域名）。
 assert_equal "优选地址只替换 VLESS 链接的连接地址" \
-    "vless://${VLESS_UUID}@edge.example-cdn.com:443?encryption=none&security=tls&type=ws&sni=cf.example.com&fp=chrome&host=cf.example.com&path=%2Fvless-abcdef123456&packetEncoding=xudp#CDN-WS" \
+    "vless://${VLESS_UUID}@edge.example-cdn.com:443?encryption=none&security=tls&type=httpupgrade&sni=cf.example.com&fp=chrome&alpn=http%2F1.1&host=cf.example.com&path=%2Fvless-abcdef123456&packetEncoding=xudp#CDN-WS" \
     "$(CF_EDGE_ADDRESS="edge.example-cdn.com" build_vless_ws_link)"
 edge_node=$(CF_EDGE_ADDRESS="edge.example-cdn.com" build_mihomo_ws_node)
 assert_contains "优选地址替换 Mihomo server" "${edge_node}" 'server: "edge.example-cdn.com"'
@@ -269,7 +287,7 @@ assert_contains "优选地址不改 Mihomo ws Host" "${edge_node}" 'Host: "cf.ex
 assert_equal "优选地址只替换 sing-box server" \
     "edge.example-cdn.com cf.example.com cf.example.com" \
     "$(CF_EDGE_ADDRESS="edge.example-cdn.com" build_singbox_ws_outbound \
-        | jq -r '"\(.server) \(.tls.server_name) \(.transport.headers.Host)"')"
+        | jq -r '"\(.server) \(.tls.server_name) \(.transport.host)"')"
 # 空值与未设置都必须回落到节点域名：无字段的既有部署产物逐字节不变（验收条件 5）。
 assert_equal "空优选地址不改变 VLESS 链接" "$(build_vless_ws_link)" \
     "$(CF_EDGE_ADDRESS="" build_vless_ws_link)"
@@ -277,6 +295,66 @@ assert_equal "空优选地址不改变 Mihomo 节点" "$(build_mihomo_ws_node)" 
     "$(CF_EDGE_ADDRESS="" build_mihomo_ws_node)"
 assert_equal "空优选地址不改变 sing-box 节点" "$(build_singbox_ws_outbound)" \
     "$(CF_EDGE_ADDRESS="" build_singbox_ws_outbound)"
+
+# --- 模式 6：Reality 直连 + CloudFront（design §2.2）-------------------------
+reality_json=$(render reality-self 0)
+assert_equal "模式 6 双入站：Reality 443 + 回环 CDN" "vless-reality-in,vless-cdn-in" \
+    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${reality_json}")"
+assert_equal "模式 6 CDN 入站监听回环 10086" "vless-cdn-in 127.0.0.1 10086 httpupgrade" \
+    "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | "\(.tag) \(.listen) \(.listen_port) \(.transport.type)"' <<<"${reality_json}")"
+assert_equal "Reality 入站监听 0.0.0.0:443" "0.0.0.0 443" \
+    "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"${reality_json}")"
+assert_equal "Reality 用户启用 vision 流控" "easy_all ${VLESS_UUID} xtls-rprx-vision" \
+    "$(jq -r '.inbounds[0].users[0] | "\(.name) \(.uuid) \(.flow)"' <<<"${reality_json}")"
+assert_equal "Reality 握手目标固定回环 9443" "127.0.0.1 9443" \
+    "$(jq -r '.inbounds[0].tls.reality.handshake | "\(.server) \(.server_port)"' <<<"${reality_json}")"
+assert_equal "Reality 使用直连域名与私钥" "direct.example.com ${REALITY_PRIVATE_KEY}" \
+    "$(jq -r '.inbounds[0].tls | "\(.server_name) \(.reality.private_key)"' <<<"${reality_json}")"
+assert_equal "Reality short_id 列表" "[\"${REALITY_SHORT_ID}\"]" \
+    "$(jq -c '.inbounds[0].tls.reality.short_id' <<<"${reality_json}")"
+assert_equal "Reality 入站不内联证书" "no-cert" \
+    "$(jq -r 'if .inbounds[0].tls.certificate_path then "cert" else "no-cert" end' <<<"${reality_json}")"
+assert_equal "模式 6 blocked 只保留 Reality 直连入站" "vless-reality-in" \
+    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render reality-self 1)")"
+assert_equal "模式 6 blocked 保留 443 Reality 内容" "0.0.0.0 443" \
+    "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"$(render reality-self 1)")"
+if (PROTOCOL=reality-self; REALITY_PRIVATE_KEY=""; render_singbox_config "${TMP_DIR}/x.json" 0) >/dev/null 2>&1; then
+    fail "缺少 REALITY_PRIVATE_KEY 必须失败"
+fi
+
+assert_equal "Reality 链接格式" \
+    "vless://${VLESS_UUID}@direct.example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=direct.example.com&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=tcp&packetEncoding=xudp#Reality" \
+    "$(DIRECT_NODE_NAME="Reality" build_reality_link)"
+assert_equal "Reality 链接对节点名编码" \
+    "vless://${VLESS_UUID}@direct.example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=direct.example.com&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=tcp&packetEncoding=xudp#Reality%20%E8%87%AA%E5%81%B7" \
+    "$(DIRECT_NODE_NAME="Reality 自偷" build_reality_link)"
+reality_node=$(DIRECT_NODE_NAME="Reality" build_mihomo_reality_node)
+assert_contains "Reality 节点名称" "${reality_node}" 'name: "Reality"'
+assert_contains "Reality 节点类型" "${reality_node}" "type: vless"
+assert_contains "Reality 节点服务器" "${reality_node}" 'server: "direct.example.com"'
+assert_contains "Reality 节点 UUID" "${reality_node}" 'uuid: "'"${VLESS_UUID}"'"'
+assert_contains "Reality 节点 vision 流控" "${reality_node}" "flow: xtls-rprx-vision"
+assert_contains "Reality 节点 TLS" "${reality_node}" "tls: true"
+assert_contains "Reality 节点启用 UDP" "${reality_node}" "udp: true"
+assert_contains "Reality 节点 SNI" "${reality_node}" 'servername: "direct.example.com"'
+assert_contains "Reality 客户端指纹" "${reality_node}" "client-fingerprint: chrome"
+assert_contains "Reality xudp 编码" "${reality_node}" "packet-encoding: xudp"
+assert_contains "Reality 公钥" "${reality_node}" 'public-key: "'"${REALITY_PUBLIC_KEY}"'"'
+assert_contains "Reality short-id" "${reality_node}" 'short-id: "'"${REALITY_SHORT_ID}"'"'
+assert_not_contains "Reality 节点不写 support-x25519mlkem768" \
+    "${reality_node}" "support-x25519mlkem768"
+assert_not_contains "Reality 节点不写 PQ 开关" "${reality_node}" "x25519mlkem768"
+assert_not_contains "Reality 节点无 websocket 传输" "${reality_node}" "network: ws"
+
+reality_outbound=$(DIRECT_NODE_NAME="Reality" build_singbox_reality_outbound)
+assert_equal "sing-box Reality outbound 契约" \
+    "vless Reality 443 ${VLESS_UUID} xtls-rprx-vision direct.example.com chrome ${REALITY_PUBLIC_KEY} ${REALITY_SHORT_ID} xudp" \
+    "$(jq -r '"\(.type) \(.tag) \(.server_port) \(.uuid) \(.flow) \(.tls.server_name) \(.tls.utls.fingerprint) \(.tls.reality.public_key) \(.tls.reality.short_id) \(.packet_encoding)"' <<<"${reality_outbound}")"
+assert_equal "sing-box Reality outbound 不内联私钥" "no-key" \
+    "$(jq -r 'if (.tls.reality.private_key // null) == null then "no-key" else "key" end' <<<"${reality_outbound}")"
+if (DIRECT_NODE_NAME="Reality"; REALITY_PUBLIC_KEY=""; build_mihomo_reality_node) >/dev/null 2>&1; then
+    fail "缺少 REALITY_PUBLIC_KEY 必须失败"
+fi
 
 # --- 写入与校验 -------------------------------------------------------------
 PROTOCOL=combined-cloudfront

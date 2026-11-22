@@ -30,6 +30,7 @@
 
 ## 3. 各客户端注意事项
 
+- **模式 6（VLESS Reality 直连 + CloudFront）**：订阅同时下发两个本机节点——Reality 直连（`flow=xtls-rprx-vision` + `public-key` / `short-id`）与 CloudFront VLESS HTTPUpgrade（客户端显式约束 `alpn: ["http/1.1"]`）。Reality 节点在 Mihomo 侧**不写** `support-x25519mlkem768`（保持经典 X25519，与服务端 sing-box 1.14.4 握手一致）；sing-box 官方客户端使用自带的 Reality 实现，无需额外开关。直连不可用时切到 CDN 节点即可。
 - **sing-box 官方客户端（SFA / SFI / SFM / SFT / SFW / SFL）**：
   - 内核必须 **≥ 1.14.0**（旧版本会报错无法启动）。
   - 首次启动需联网拉取内置规则集；官方 sing-box 不支持的协议（如 `xhttp`、`mieru`）会在生成订阅时自动跳过。

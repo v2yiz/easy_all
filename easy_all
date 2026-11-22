@@ -85,7 +85,8 @@ launcher_usage() {
 用法: easy_all [命令]
 
   install          交互选择安装模式（1 AnyTLS 直连 / 2 纯 CloudFlare /
-                   3 AnyTLS + CloudFlare / 4 纯 CloudFront / 5 AnyTLS + CloudFront）
+                   3 AnyTLS + CloudFlare / 4 纯 CloudFront / 5 AnyTLS + CloudFront /
+                   6 Reality + CloudFront）
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
@@ -97,6 +98,9 @@ launcher_usage() {
   purge-cloud 清理 easy_all 创建的 Cloudflare 与 CloudFront/ACM 资源（可在未安装状态使用）
   update-core      重装/修复当前锁定版本的核心（sing-box + Caddy）
   renew-cert       重新签发/部署当前模式的 TLS 证书
+  hellogfw [--since <时间范围>] [--my-ip <IPv4> ...]
+                   分析直连 TCP 443 主动探测日志（仅 anytls / combined-cloudflare /
+                   combined-cloudfront / reality-self；`hellogfw -h` 免 root 查看帮助）
   status           显示运行状态
   cleanup-partial  清理上次中断安装留下的本机残留（未安装状态使用；不改云端资源）
   uninstall        卸载当前模式的本机内容并清理本工具创建的云端资源
@@ -236,6 +240,7 @@ choose_install_mode() {
     printf '  3. AnyTLS + CloudFlare（直连与橙云节点，橙云域名同时提供订阅）\n' >&2
     printf '  4. 纯 CloudFront（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
     printf '  5. AnyTLS + CloudFront（一次部署直连与 CDN 两个入口）\n' >&2
+    printf '  6. Reality + CloudFront（自偷 Reality 直连伪装回落 + AWS CloudFront）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'anytls\n' ;;
@@ -243,6 +248,7 @@ choose_install_mode() {
     3) printf 'combined-cloudflare\n' ;;
     4) printf 'cloudfront\n' ;;
     5) printf 'combined-cloudfront\n' ;;
+    6) printf 'reality-self\n' ;;
     *) launcher_die "不支持的安装模式：${choice}" ;;
     esac
 }
@@ -255,11 +261,9 @@ launcher_state_complete() {
 }
 
 # 输出既能识别又能门禁的模式分类：
-#   anytls / cloudfront / cloudflare / combined-cloudfront / combined-cloudflare（新链路）
+#   anytls / reality-self / cloudfront / cloudflare / combined-cloudfront / combined-cloudflare
 #   cdn / combined（旧 Cloudflare 链路，仅卸载）
 #   incomplete-*（新协议但字段不齐，仅卸载）
-# 输出既能识别又能门禁的模式：anytls / cloudfront / cloudflare / combined-cloudfront /
-# combined-cloudflare（结构完整）或 incomplete-<protocol>（schema 1 但字段不齐，仅卸载）。
 # schema 1 但协议不可识别（缺失或写坏）输出 incomplete-unknown：不猜协议，只保留本机卸载通道。
 # 旧 schema 与已删除的协议（reality / cdn / combined）一律拒绝：
 # 覆盖代码前不做自动迁移，必须先由写该状态的旧版本卸载。
@@ -276,9 +280,9 @@ detect_installed_mode() {
         state_schema_supported "${state_version}" \
             || launcher_die "$(state_legacy_rejection_message "${state_version:-缺失}")"
         case "${protocol}" in
-        anytls | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) ;;
+        anytls | reality-self | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) ;;
         reality | cdn | combined)
-            launcher_die "检测到已删除的旧协议（PROTOCOL=${protocol}，schema ${state_version}）；当前版本只支持 anytls/cloudfront/cloudflare/combined-cloudfront/combined-cloudflare。请先用安装该版本的旧 easy_all 执行 sudo easy_all uninstall（旧版可加 --purge-cloud 一并清理云端；当前版本的 uninstall 已默认清理云端、不再接受该参数），再重新安装。"
+            launcher_die "检测到已删除的旧协议（PROTOCOL=${protocol}，schema ${state_version}）；当前版本只支持 anytls/reality-self/cloudfront/cloudflare/combined-cloudfront/combined-cloudflare。请先用安装该版本的旧 easy_all 执行 sudo easy_all uninstall（旧版可加 --purge-cloud 一并清理云端；当前版本的 uninstall 已默认清理云端、不再接受该参数），再重新安装。"
             ;;
         *)
             # 状态本身已损坏（如 PROTOCOL 丢失）：整个卸载通道不能跟着失效，
@@ -318,6 +322,7 @@ profile_file() {
     local mode=$1 candidate
     case "${mode}" in
     anytls | incomplete-anytls) candidate="${EASY_ALL_ROOT}/profiles/anytls.sh" ;;
+    reality-self | incomplete-reality-self) candidate="${EASY_ALL_ROOT}/profiles/reality-self.sh" ;;
     cloudfront | incomplete-cloudfront) candidate="${EASY_ALL_ROOT}/profiles/cloudfront.sh" ;;
     cloudflare | incomplete-cloudflare) candidate="${EASY_ALL_ROOT}/profiles/cloudflare.sh" ;;
     combined-cloudfront | incomplete-combined-cloudfront)
@@ -448,11 +453,16 @@ launcher_unknown_command() {
 launcher_command_known() {
     case "$1" in
     install | show | subscription | apply | tcp-resume | apply-cloud | edit-sub \
-        | update-core | cdn-traffic-sync | renew-cert | status | self-update | uninstall)
+        | update-core | cdn-traffic-sync | renew-cert | hellogfw | status | self-update | uninstall)
         return 0
         ;;
     *) return 1 ;;
     esac
+}
+
+# hellogfw 的公开参数面只有 --since <值>、可重复的 --my-ip <值> 与单独使用的 -h/--help。
+launcher_hellogfw_hint() {
+    printf 'hellogfw 仅支持 --since <时间范围>、可重复的 --my-ip <IPv4>，或单独使用 -h/--help；直连端口固定 443'
 }
 
 dispatch_validate_arguments() {
@@ -468,6 +478,22 @@ dispatch_validate_arguments() {
     self-update) return 0 ;;
     update-core)
         (($# == 0)) || launcher_die "${command} 不接受额外参数"
+        ;;
+    hellogfw)
+        # 免 root 帮助出口只接受严格形式；任何夹带其他参数的 --help/-h 都必须在这里非零拒绝。
+        if (($# == 1)) && [[ "$1" == "-h" || "$1" == "--help" ]]; then
+            return 0
+        fi
+        while (($# > 0)); do
+            case "$1" in
+            --since | --my-ip)
+                (($# >= 2)) && [[ "$2" != -* ]] \
+                    || launcher_die "$(launcher_hellogfw_hint)；$1 需要一个不以 - 开头的值"
+                shift 2
+                ;;
+            *) launcher_die "hellogfw 不支持参数：$1（$(launcher_hellogfw_hint)）" ;;
+            esac
+        done
         ;;
     *)
         (($# == 0)) || launcher_die "${command} 不接受额外参数"
@@ -490,7 +516,7 @@ dispatch_profile_command() {
     tcp-resume) resume_skyline_after_reboot "$@" ;;
     apply-cloud)
         case "${mode}" in
-        anytls | cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) ;;
+        anytls | reality-self | cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) ;;
         *) launcher_die "apply-cloud 仅适用于 CDN 与带订阅站点的模式" ;;
         esac
         apply_cloud_resources
@@ -499,22 +525,32 @@ dispatch_profile_command() {
     update-core) update_current_core "$@" ;;
     cdn-traffic-sync)
         case "${mode}" in
-        cloudfront | combined-cloudfront) cdn_traffic_protection_sync ;;
+        cloudfront | combined-cloudfront | reality-self) cdn_traffic_protection_sync ;;
         *) launcher_die "cdn-traffic-sync 仅适用于 CloudFront 模式" ;;
         esac
         ;;
     renew-cert)
         case "${mode}" in
-        anytls | cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) renew_certificate ;;
+        anytls | reality-self | cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) renew_certificate ;;
         *) launcher_die "当前模式不使用本工具签发的 TLS 证书" ;;
+        esac
+        ;;
+    hellogfw)
+        case "${mode}" in
+        anytls | combined-cloudflare | combined-cloudfront | reality-self)
+            require_root
+            run_hellogfw "$@"
+            ;;
+        *) launcher_die "hellogfw 仅支持含直连 443 的模式（anytls / combined-cloudflare / combined-cloudfront / reality-self）" ;;
         esac
         ;;
     status) show_status ;;
     self-update) unified_self_update "$@" ;;
     uninstall)
         case "${mode}" in
-        incomplete-anytls | incomplete-cloudfront | incomplete-combined-cloudfront \
-            | incomplete-cloudflare | incomplete-combined-cloudflare | incomplete-unknown)
+        incomplete-anytls | incomplete-reality-self | incomplete-cloudfront \
+            | incomplete-combined-cloudfront | incomplete-cloudflare | incomplete-combined-cloudflare \
+            | incomplete-unknown)
             uninstall_incomplete
             ;;
         *) uninstall_all "$@" ;;
@@ -525,6 +561,18 @@ dispatch_profile_command() {
 
 main() {
     local command=${1:-install} mode="" module
+    # 免 root/免安装帮助：仅当原始参数恰为 `hellogfw -h` 或 `hellogfw --help` 时，
+    # 在 detect_installed_mode、launcher_require_installed_mode、Profile source 与
+    # root 门禁之前直接 source 无副作用的 probe-log 库并转交帮助。夹带任何其他参数
+    # 都不进这个出口，必须落到 dispatch_validate_arguments 非零拒绝。
+    if [[ "${1:-}" == "hellogfw" && $# -eq 2 && ( "${2}" == "-h" || "${2}" == "--help" ) ]]; then
+        [[ -f "${EASY_ALL_ROOT}/lib/probe-log.sh" ]] \
+            || launcher_die "easy_all 运行时文件不完整：${EASY_ALL_ROOT}/lib/probe-log.sh"
+        # shellcheck source=lib/probe-log.sh
+        source "${EASY_ALL_ROOT}/lib/probe-log.sh"
+        run_hellogfw "${2}" || exit 1
+        exit 0
+    fi
     shift || true
 
     if [[ "${command}" == "help" || "${command}" == "-h" || "${command}" == "--help" ]]; then
@@ -566,6 +614,32 @@ main() {
         (($# == 0)) || launcher_die "verify-release 不接受参数"
         runtime_tree_is_complete "${EASY_ALL_ROOT}" \
             || launcher_die "easy_all 运行时文件不完整：${EASY_ALL_ROOT}"
+        return
+    fi
+    # 内部入口（不对外文档化）：直连 443 探测日志的 rule-only 重放与清理。
+    # 两者都不取 runtime 写锁（父进程已持锁，再等同一把锁会死锁）：
+    #   * apply 要求完整安装状态且 PROTOCOL 属于 1/3/5/6，陈旧 unit 不得在纯 CDN 模式重插规则；
+    #   * remove 只要求 root，不读也不猜 PROTOCOL，使 ExecStop 在无 state 场景也能清理。
+    if [[ "${command}" == "internal-probe-log-apply" \
+        || "${command}" == "internal-probe-log-remove-rules" ]]; then
+        (($# == 0)) || launcher_die "${command} 不接受参数"
+        [[ "$(id -u)" -eq 0 ]] || launcher_die "请使用 root 用户运行此脚本"
+        # shellcheck source=lib/log.sh
+        source "${EASY_ALL_ROOT}/lib/log.sh"
+        # shellcheck source=lib/probe-log.sh
+        source "${EASY_ALL_ROOT}/lib/probe-log.sh"
+        if [[ "${command}" == "internal-probe-log-remove-rules" ]]; then
+            probe_log_rules_remove \
+                || launcher_die "清理 TCP 443 GFW_CHK: 采集规则失败"
+            return
+        fi
+        mode=$(detect_installed_mode)
+        launcher_require_installed_mode "${mode}" "${command}"
+        case "${mode}" in
+        anytls | combined-cloudflare | combined-cloudfront | reality-self) ;;
+        *) launcher_die "当前模式（${mode}）不使用直连 TCP 443 探测日志；拒绝重放采集规则" ;;
+        esac
+        probe_log_rules_replay || launcher_die "重放 TCP 443 GFW_CHK: 采集规则失败"
         return
     fi
     # 内部入口（不对外文档化）：服务启动前的计量准备、定时证书 hook 与定时重启的部署。

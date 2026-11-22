@@ -23,12 +23,12 @@
 2. **内存与 Swap**：安装包含内核与网络优化，内存 ≤ 1GB 的机器请确保根分区剩余 ≥ 1.5GB 以便自动创建 Swap，避免编译 Skyline 时 OOM。
 3. **安全组与防火墙**：
    - 放行 SSH 端口；
-   - 模式 1/3/4/5 放行公网 TCP `443`（模式 5 另需放行 TCP `8443`）；
-   - 模式 2 的 `443` 以及模式 1 deploy / 3 的 `8443` 仅对 Cloudflare 官方回源 IPv4 段放行（UFW 自动配置，云安全组需同步放行）。
+   - 模式 1/3/4/5/6 放行公网 TCP `443`（模式 5/6 另需放行 TCP `8443`）；
+   - 模式 2 的 `443` 以及模式 1 deploy / 3 的 `8443` 仅对 Cloudflare 官方回源 IPv4 段放行（UFW 自动配置，云安全组需同步放行）；模式 5/6 的源站 `8443` 对公网可达，由 `X-Easy-All-Origin-Key` 精确校验；模式 6 的伪装站只听回环 `127.0.0.1:9443`，**不得**对公网放行。
    - **回源端口不得预先全局放行**：机器上若已有 `ufw allow 443/tcp` 或 `ufw allow 8443/tcp`（来源 `Anywhere`、`Any` 或 `0.0.0.0/0`），安装会在写入防火墙规则与云资源**之前**中止，并提示先 `ufw status` 查明后移除；否则回源端口仍对全网开放，绕过 Cloudflare-only 边界。
 4. **云端凭据准备**：
    - **Cloudflare API Token**（全模式）：`Zone Read` + `DNS Edit`；模式 1 deploy / 2 / 3 另需 `Zone Settings Read`（校验 `Full (strict)`），模式 1 deploy / 3 另需 `Origin Rules Edit`，模式 2 另需 `SSL and Certificates Edit`。
-   - **AWS IAM 密钥**（仅模式 4/5）：仅需 CloudFront 与 ACM（`us-east-1`）权限，仅在内存暂存不落盘。
+   - **AWS IAM 密钥**（仅模式 4/5/6）：仅需 CloudFront 与 ACM（`us-east-1`）权限，仅在内存暂存不落盘。
    - 权限明细与域名规划详见 [前置准备手册](docs/preparation-guide.md)。
 
 ---
@@ -52,7 +52,7 @@ Host *
 
 ## 模式选择
 
-五种模式共用同一套本机运行时（sing-box 节点入站 + Caddy 订阅与回源分发）。**客户端节点与订阅入口统一使用 443 端口**。
+六种模式共用同一套本机运行时（sing-box 节点入站 + Caddy 订阅与回源分发）。**客户端节点与订阅入口统一使用 443 端口**。
 
 $\textcolor{red}{\textbf{模式推荐：线路好选模式 5，}}$<br>
 $\textcolor{red}{\textbf{线路一般就直接模式 4；}}$<br>
@@ -66,18 +66,19 @@ $\textcolor{red}{\textbf{纯直连在非常时期被封的概率太高，不推�
 | **3. AnyTLS + CloudFlare** | 同时需要直连与橙云 CDN 节点 | `direct:443` + `cf:443` | `cf:443` | Cloudflare Token | 2 |
 | **4. 纯 CloudFront** | 只要 CDN 入口隐藏源站 IP | `cf:443` (AWS CDN) | `cf:443` | Cloudflare Token + AWS 密钥 | 2 |
 | **5. AnyTLS + CloudFront** | 同时需要直连与 CDN 节点 | `direct:443` + `cf:443` | `cf:443` | Cloudflare Token + AWS 密钥 | 2 |
+| **6. Reality + CloudFront** | IP 未封但要抗 GFW 主动探测，同时需要 CDN 入口 | `direct:443` (VLESS Reality) + `cf:443` | `cf:443` | Cloudflare Token + AWS 密钥 | 2 |
 
 > **核心约定**：
 > - **域名规划**：全模式只需 **1 个根域名**（托管于同一 Cloudflare Zone），安装器会自动创建对应数量的一级子域名。
-> - **端口规范**：客户端统一连接 `443`，全模式不开放 `80`。回源端口在模式 1 deploy、2 与 3 仅对 Cloudflare 官方回源 IP 放行（模式 1/3 为 `8443`，模式 2 为 `443`）；模式 5 源站 `8443` 对公网可达，由 `X-Easy-All-Origin-Key` 密钥精确校验。
-> - **协议与证书**：CDN 节点均为 **VLESS WebSocket**。模式 1/3/5 直连与模式 4/5 源站使用 Let's Encrypt（DNS-01 自动签发），模式 4/5 的 CloudFront 客户端证书由 AWS ACM 托管，模式 2 回源使用 Cloudflare Origin CA（客户端连接 CF 边缘证书）。
+> - **端口规范**：客户端统一连接 `443`，全模式不开放 `80`。回源端口在模式 1 deploy、2、3 仅对 Cloudflare 官方回源 IP 放行（模式 1/3 为 `8443`，模式 2 为 `443`）；模式 4 的源站 `443` 与模式 5/6 的源站 `8443` 对公网可达，由 `X-Easy-All-Origin-Key` 密钥精确校验。
+> - **协议与证书**：CDN 节点均为 **VLESS HTTPUpgrade**（客户端显式约束 `alpn: ["http/1.1"]`）；模式 6 直连为 **VLESS Reality**（`xtls-rprx-vision`），非 Reality 握手透明回落到本机 `127.0.0.1:9443` 的伪装登录站。模式 1/3 直连与模式 4/5/6 源站使用 Let's Encrypt（DNS-01 自动签发），CloudFront 客户端证书由 AWS ACM 托管，模式 2 回源使用 Cloudflare Origin CA（客户端连接 CF 边缘证书）。
 > - **Cloudflare SSL**：模式 1 deploy、2、3 要求目标 Zone 的 SSL/TLS 必须为 **Full (strict)**。
 > - **升级提示**：不支持从 4.x 直接升级，请先执行旧版 `sudo easy_all uninstall` 后重新安装。
 
 > [!WARNING]
 > **Cloudflare 提供免费套餐，但官方规则限制通过 CDN 代理翻墙流量，模式 2 与模式 3 存在潜在封禁风险，请自行评估使用。**
 >
-> **模式 4 与模式 5 使用 CloudFront。注册 AWS 账号时需要绑定信用卡，使用 CloudFront 流量超过 1 TB 会产生费用。**
+> **模式 4、模式 5 与模式 6 使用 CloudFront。注册 AWS 账号时需要绑定信用卡，使用 CloudFront 流量超过 1 TB 会产生费用。**
 >
 > **Cloudflare注册简单，CloudFront更稳定，晚高峰效果好。**
 
@@ -92,8 +93,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstra
 ```
 
 根据终端交互引导完成配置：
-1. **选择模式**：输入 `1`–`5` 选择部署模式。
-2. **填写参数**：根据提示输入域名、Cloudflare Token 及订阅配置（支持直接回车使用推荐默认值；模式 4/5 会提示输入 AWS 密钥）。模式 2–5 还会提示 `CDN 优选前缀`（直接回车采用随机 10 位前缀，拼装成优选域名）。
+1. **选择模式**：输入 `1`–`6` 选择部署模式。
+2. **填写参数**：根据提示输入域名、Cloudflare Token 及订阅配置（支持直接回车使用推荐默认值；模式 4/5/6 会提示输入 AWS 密钥）。模式 2–6 还会提示 `CDN 优选前缀`（直接回车采用随机 10 位前缀，拼装成优选域名）。
 3. **全自动部署**：自动配置 Swap、TCP 加速、申请证书、下发云端分发与解析，并完成可用性验收。
 
 > [!CAUTION]
@@ -138,7 +139,8 @@ sudo easy_all subscription
 | `sudo easy_all apply-cloud` | **同步云端资源**：重新收敛 DNS、证书、CloudFront 分发或 Origin Rule |
 | `sudo easy_all edit-sub` | 交互式管理用户 Token 与外部聚合节点（也可改或删除 `cdnEdgeAddress` 优选连接地址） |
 | `sudo easy_all renew-cert` | 重新签发或轮换当前模式的 TLS 证书 |
-| `sudo easy_all cdn-traffic-sync` | （仅模式 4/5）手动采样 CDN 流量并同步熔断状态 |
+| `sudo easy_all hellogfw [--since <时间范围>] [--my-ip <IPv4> ...]` | （仅模式 1/3/5/6）分析直连 TCP 443 主动探测日志线索；`hellogfw -h` 免 root |
+| `sudo easy_all cdn-traffic-sync` | （仅模式 4/5/6）手动采样 CDN 流量并同步熔断状态 |
 | `sudo easy_all update-core` | 重装或修复锁定版本的 sing-box 与 Caddy 核心 |
 | `sudo easy_all self-update` | 从 GitHub 更新 `easy_all` 脚本自身（`--dev` 切换开发分支） |
 | `sudo easy_all cleanup-partial` | 清理安装中断留下的本机临时残留（不改动云端资源） |
@@ -152,8 +154,9 @@ sudo easy_all subscription
 - **端口隐蔽与防爆破**：全模式不开放 80 端口（证书走 DNS-01），安装成功后把 SSH 端口迁移为 `22222` 并禁用原 `22`（重启后生效），由 Fail2ban 实时封禁恶意爆破 IP。
 - **源站访问鉴权**：
   - 模式 1/2/3 回源端口在 UFW 层面仅放行 Cloudflare 官方回源网段；
-  - 模式 4/5 源站注入 `X-Easy-All-Origin-Key` 密钥并由 Caddy 精确校验，防探测与未授权直连。
-- **CloudFront 流量熔断保护（模式 4/5）**：本机内置 985 GB 近似流量计量监控，达到阈值自动熔断 CDN 访问（直连不受影响），降低 AWS 超额账单风险（详见[运维指南](docs/operations-guide.md#6-cdn-流量保护985-gb-熔断仅模式-45)）。
+  - 模式 4/5/6 源站注入 `X-Easy-All-Origin-Key` 密钥并由 Caddy 精确校验，防探测与未授权直连。
+- **CloudFront 流量熔断保护（模式 4/5/6）**：本机内置 985 GB 近似流量计量监控，达到阈值自动熔断 CDN 访问（直连与模式 6 的伪装站不受影响），降低 AWS 超额账单风险（详见[运维指南](docs/operations-guide.md#6-cdn-流量保护985-gb-熔断仅模式-456)）。
 - **内网与恶意流量阻断**：sing-box 默认拦截回环、私有网段及元数据请求，防止节点被用于 SSRF 滥用。
+- **直连主动探测日志（模式 1/3/5/6）**：安装或 `apply` 时落一条限速（30/min）的内核 LOG 规则（前缀 `GFW_CHK:`，只记 TCP 443 SYN），配合一个 oneshot systemd 单元在重启与 UFW reload 后重放；平时不跑常驻进程，用 `sudo easy_all hellogfw` 按需做启发式分析（`hellogfw -h` 免 root）。同一时机写入的 journald drop-in 设置 `MaxRetentionSec=30day`——**这是 systemd-journald 的全局保留上限，影响主机全部日志**，超出上限的主机历史日志可能被 vacuum 且无法恢复，详见[运维指南](docs/operations-guide.md#8-直连主动探测日志分析仅模式-1356)。
 
 完整架构设计与实现细节请参阅 [系统技术参考](docs/technical-reference.md)。

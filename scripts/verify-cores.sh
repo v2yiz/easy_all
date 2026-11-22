@@ -97,7 +97,16 @@ render_mode() {
         if state_protocol_has_direct_entry "${PROTOCOL}"; then
             DIRECT_DOMAIN=direct.example.com
             DIRECT_NODE_NAME=direct
+        fi
+        if state_protocol_has_anytls_entry "${PROTOCOL}"; then
             ANYTLS_PASSWORD=0123456789abcdefaaaabbbb
+        fi
+        if state_protocol_has_reality_entry "${PROTOCOL}"; then
+            VLESS_UUID=11111111-2222-3333-4444-555555555555
+            # 仅供真实核心校验的固定 32 字节示例值（不是一对匹配密钥）。
+            REALITY_PRIVATE_KEY=QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE
+            REALITY_PUBLIC_KEY=QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI
+            REALITY_SHORT_ID=0123456789abcdef
         fi
         if state_protocol_has_cdn_entry "${PROTOCOL}"; then
             CF_NODE_DOMAIN=cf.example.com
@@ -106,7 +115,8 @@ render_mode() {
             VLESS_PATH=/vless-0123456789ab
         fi
         if state_protocol_uses_cloudfront "${PROTOCOL}"; then
-            CF_ORIGIN_DOMAIN=origin.example.com
+            # 模式 5/6 的源站域名复用直连域名（一个名字、一条灰云 A、一份 LE 证书）。
+            CF_ORIGIN_DOMAIN=${DIRECT_DOMAIN:-origin.example.com}
             SUBSCRIPTION_DOMAIN=cf.example.com
             ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef
             CDN_TRAFFIC_PROTECTION_GB=985
@@ -138,7 +148,7 @@ render_mode() {
     printf 'ok - %s 配置通过真实核心校验\n' "${profile}"
 }
 
-for profile in anytls cloudfront cloudflare combined combined-cloudflare; do
+for profile in anytls reality-self cloudfront cloudflare combined combined-cloudflare; do
     render_mode "${profile}" "${WORK_DIR}/${profile}"
 done
 

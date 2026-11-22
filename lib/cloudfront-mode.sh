@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Shared AWS CloudFront core for mode 4 (CloudFront only) and mode 5
-# (AnyTLS + CloudFront).
+# Shared AWS CloudFront core for mode 4 (CloudFront only), mode 5
+# (AnyTLS + CloudFront) and mode 6 (Reality direct + CloudFront).
 #
 # Profile contract provided before this file is sourced:
 #   CDN_PROFILE_KEY          install marker / profile key (cloudfront / combined)
@@ -12,7 +12,7 @@
 # plus the hooks (empty results instead of guessing):
 #   collect_install_inputs      collect this profile's inputs (calls the shared input collector)
 #   cdn_direct_domains          direct A-record domains (empty for mode 4)
-#   cdn_prepare_direct_runtime  persist the AnyTLS identity (no-op for mode 4)
+#   cdn_prepare_direct_runtime  persist the direct-entry identity (no-op for mode 4)
 #   cdn_validate_direct_runtime local acceptance of the direct entry (no-op for mode 4)
 #
 # AWS identity/ACM/distribution ownership, DNS, the 985GB protection state machine
@@ -216,6 +216,12 @@ collect_cloudfront_install_inputs() {
         printf '%s-%s-4%s-8%s-%s\n' "${u:0:8}" "${u:8:4}" "${u:13:3}" "${u:17:3}" "${u:20:12}"
     ))}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
+    # 模式 6 的 Reality short_id 在此确定；keypair 依赖已安装的 sing-box，留到 core 阶段生成。
+    if runtime_has_reality_entry; then
+        REALITY_SHORT_ID=${REALITY_SHORT_ID:-$(openssl rand -hex 8)}
+        [[ "${REALITY_SHORT_ID}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
+            || die "Reality short_id 无效：${REALITY_SHORT_ID}"
+    fi
     ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(generate_secret)}
     [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] || die "源站头密钥格式无效"
 
@@ -891,25 +897,25 @@ cdn_public_subscription_ok() {
     local token body decoded
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS:-[]}") || return 1
     [[ -n "${token}" && "${token}" != "null" ]] || return 1
-    # 正确 Token：默认 Base64 必须含 WebSocket 节点，强制 clash 必须含 ws 传输。
+    # 正确 Token：默认 Base64 必须含 HTTPUpgrade 节点，强制 clash 必须含 ws 传输上的 HTTPUpgrade 开关。
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
-    [[ "${decoded}" == *"type=ws"* ]] || return 1
+    [[ "${decoded}" == *"type=httpupgrade"* ]] || return 1
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
-    [[ "${body}" == *"network: ws"* ]] || return 1
+    [[ "${body}" == *"network: ws"* && "${body}" == *"v2ray-http-upgrade: true"* ]] || return 1
     # os=ios 走 Mihomo iOS 变体，node=all 走带 optional 节点的额外产物。
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' --data-urlencode 'os=ios' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
-    [[ "${body}" == *"network: ws"* ]] || return 1
+    [[ "${body}" == *"network: ws"* && "${body}" == *"v2ray-http-upgrade: true"* ]] || return 1
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'node=all' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
-    [[ "${decoded}" == *"type=ws"* ]]
+    [[ "${decoded}" == *"type=httpupgrade"* ]]
 }
 
 cdn_public_token_rejection_ok() {
@@ -1036,7 +1042,10 @@ cdn_deny_subscription_runtime() {
 
 build_node_links() {
     local extra
-    if runtime_has_direct_entry; then
+    if singbox_protocol_has_reality; then
+        build_reality_link
+        printf '\n'
+    elif runtime_has_direct_entry; then
         build_anytls_link
         printf '\n'
     fi
@@ -1049,7 +1058,10 @@ build_node_links() {
 
 build_mihomo_nodes() {
     local extra
-    if runtime_has_direct_entry; then
+    if singbox_protocol_has_reality; then
+        build_mihomo_reality_node
+        printf '\n'
+    elif runtime_has_direct_entry; then
         build_mihomo_anytls_node
         printf '\n'
     fi
@@ -1354,7 +1366,10 @@ show_status() {
     printf '模式: %s\n' "${CDN_MODE_LABEL}"
     printf '协议: %s\n' "$(runtime_protocol_label)"
     show_tcp_acceleration_status
-    if runtime_has_direct_entry; then
+    if runtime_has_reality_entry; then
+        printf '直连域名: %s（VLESS Reality，TCP 443；非 Reality 握手回落 127.0.0.1:%s 伪装站）\n' \
+            "${DIRECT_DOMAIN}" "$(caddy_reality_camouflage_port)"
+    elif runtime_has_direct_entry; then
         printf '直连域名: %s（AnyTLS，TCP 443）\n' "${DIRECT_DOMAIN}"
     fi
     if runtime_has_cdn_entry; then
@@ -1425,6 +1440,17 @@ cdn_commit_local_runtime() {
     fi
 }
 
+# 只有模式 5/6 有直连 TCP 443 入口；模式 4 必须 remove，以清除旧版本、异常中断或
+# 先前直连模式留下的 unit/规则/drop-in。条件不得用「是否 CloudFront」代替。
+# 失败显式传播：调用点据此 return 1 或 die。
+cloudfront_probe_log_sync() {
+    if [[ "${PROTOCOL}" == "combined-cloudfront" || "${PROTOCOL}" == "reality-self" ]]; then
+        probe_log_enable_and_replay || return 1
+    else
+        remove_probe_log || return 1
+    fi
+}
+
 apply_easy_all() {
     require_root
     acquire_runtime_write_lock
@@ -1455,6 +1481,7 @@ apply_easy_all() {
     save_state
     cdn_commit_local_runtime
     commit_subscription_update
+    cloudfront_probe_log_sync || return 1
     success "本机配置与订阅已应用；未修改 DNS 与云端资源"
 }
 
@@ -1510,6 +1537,7 @@ apply_cloud_resources() {
     save_state
     cdn_commit_local_runtime
     commit_subscription_update
+    cloudfront_probe_log_sync || return 1
     success "本机配置、订阅与云端资源已同步"
 }
 
@@ -1643,6 +1671,7 @@ cdn_local_uninstall_common() {
     stop_maintenance_services || true
     remove_cdn_traffic_protection_timer || true
     stop_services
+    reality_remove_camouflage_page
     # 先停核心再回收计量；失败时不删除 state/命令，保留重试依据。
     cdn_traffic_counters_remove \
         || { warn "回收 mangle 计量规则失败；已保留本机状态与命令，修正后重试 uninstall"; return 1; }
@@ -1654,6 +1683,8 @@ cdn_local_uninstall_common() {
     }
     restore_preinstall_firewall
     restore_preinstall_ipv6
+    remove_probe_log \
+        || { warn "回收 TCP 443 探测日志规则与单元失败；已保留本机状态与命令，修正后重试 uninstall"; return 1; }
     if ! remove_daily_reboot_schedule; then
         # 不能把「root crontab 没改成功」当成卸载完成：否则命令链接、业务目录和状态一起被删，
         # 而标记任务仍会写入一个已不存在的环境。保留现场供修正后重试。
@@ -1697,6 +1728,10 @@ uninstall_all() {
 
 cleanup_partial_install() {
     cleanup_partial_install_local || return 1
+    # 中断清理按固定资源名无条件回收，不以「当前是纯 CDN」跳过。
+    remove_probe_log \
+        || { warn "回收 TCP 443 探测日志规则与单元失败；已保留安装进度标记与状态，修正后重试 sudo easy_all cleanup-partial"; return 1; }
+    reality_remove_camouflage_page
     remove_cdn_traffic_protection_timer || true
     cdn_traffic_counters_remove \
         || { warn "回收 mangle 计量规则失败；已保留安装进度标记与状态，修正后重试 cleanup-partial"; return 1; }
@@ -1736,7 +1771,8 @@ install_all() {
     install_failure_begin "${CDN_PROFILE_KEY}"
     prepare_fresh_install \
         "$(runtime_public_tcp_ports)" "$(runtime_cloudflare_only_port)" \
-        "$(runtime_cdn_loopback_port)"
+        "$(runtime_cdn_loopback_port)" \
+        $(runtime_has_reality_entry && caddy_reality_camouflage_port || true)
     install_progress_begin "${CDN_PROFILE_KEY}" cloudfront
     snapshot_fresh_install
 
@@ -1798,7 +1834,9 @@ install_all() {
     save_state
     cdn_commit_local_runtime
     # 安装已成功：迁移 SSH 端口并同步 UFW/Fail2ban；仍在回滚钩子内，失败可完整回滚。
+    # 安装收尾的 SSH/UFW 同步会再次 reload UFW；探测规则必须在这之后重放，否则会被清掉。
     configure_post_install_ssh_port
+    cloudfront_probe_log_sync || die "同步直连 TCP 443 探测日志失败；安装中止并回滚"
     INSTALL_ROLLBACK_ON_EXIT=0
     install_progress_clear
     clear_profile_credentials

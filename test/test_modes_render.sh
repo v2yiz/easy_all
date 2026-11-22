@@ -19,7 +19,7 @@ assert_equal() {
 
 # 每个模式都在独立 bash 里渲染：Profile 常量是 readonly，不能在同一进程内切换。
 render_mode() {
-    local profile=$1 out_dir=$2
+    local profile=$1 out_dir=$2 subscription_mode=${3:-deploy}
     RUNTIME_TMP_OVERRIDE="${out_dir}/runtime"
     mkdir -p "${RUNTIME_TMP_OVERRIDE}"
     (
@@ -29,6 +29,7 @@ render_mode() {
         export SINGBOX_CONFIG="${out_dir}/config.json"
         export CADDY_CONFIG="${out_dir}/Caddyfile"
         export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${out_dir}/subscriptions"
+        export CAMOUFLAGE_DIR="${out_dir}/camouflage"
         export CLOUDFLARE_UFW_PORT=443
         # shellcheck source=/dev/null
         source "${ROOT_DIR}/profiles/${profile}.sh"
@@ -41,7 +42,15 @@ render_mode() {
         if state_protocol_has_direct_entry "${PROTOCOL}"; then
             DIRECT_DOMAIN=direct.example.com
             DIRECT_NODE_NAME="🇺🇸直连"
+        fi
+        if state_protocol_has_anytls_entry "${PROTOCOL}"; then
             ANYTLS_PASSWORD=0123456789abcdefaaaabbbb
+        fi
+        if state_protocol_has_reality_entry "${PROTOCOL}"; then
+            VLESS_UUID=11111111-2222-3333-4444-555555555555
+            REALITY_PRIVATE_KEY=$(printf 'A%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')
+            REALITY_PUBLIC_KEY=$(printf 'B%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')
+            REALITY_SHORT_ID=0123456789abcdef
         fi
         if state_protocol_has_cdn_entry "${PROTOCOL}"; then
             CF_NODE_DOMAIN=cf.example.com
@@ -82,6 +91,9 @@ render_mode() {
             render_caddy_config "${CADDY_CONFIG}" 0 1
         fi
         printf '%s\n' "${PROTOCOL}" >"${out_dir}/protocol"
+        if [[ "${PROTOCOL}" == "cloudfront" ]]; then
+            build_distribution_config "${out_dir}/distribution.json" "test-caller"
+        fi
         build_node_links >"${out_dir}/links.txt"
         build_mihomo_nodes >"${out_dir}/nodes.yaml"
         build_mihomo_proxy_groups >"${out_dir}/groups.yaml"
@@ -123,16 +135,22 @@ out="${TMP_DIR}/cloudfront"
 render_mode cloudfront "${out}"
 assert_contains "模式 4 有回环 CDN 入站" "${out}/config.json" '"listen": "127.0.0.1"'
 assert_contains "模式 4 CDN 入站端口 10086" "${out}/config.json" '"listen_port": 10086'
-assert_contains "模式 4 传输是 ws" "${out}/config.json" '"type": "ws"'
+assert_contains "模式 4 传输是 httpupgrade" "${out}/config.json" '"type": "httpupgrade"'
 assert_not_contains "模式 4 没有 AnyTLS 入站" "${out}/config.json" 'anytls-in'
 assert_contains "模式 4 源站站点监听 443" "${out}/Caddyfile" 'https://origin.example.com:443 {'
 assert_contains "模式 4 精确代理路径" "${out}/Caddyfile" 'handle /vless-0123456789ab {'
 assert_contains "模式 4 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
 assert_contains "模式 4 源站守卫在最前" "${out}/Caddyfile" 'abort @easy_all_bad_origin'
-assert_contains "模式 4 节点是 VLESS ws" "${out}/links.txt" 'type=ws'
+assert_contains "模式 4 节点是 VLESS httpupgrade" "${out}/links.txt" 'type=httpupgrade'
+assert_contains "模式 4 节点显式约束 ALPN" "${out}/links.txt" 'alpn=http%2F1.1'
 assert_not_contains "模式 4 节点不泄露源站密钥" "${out}/links.txt" '0123456789abcdef0123456789abcdef'
 assert_not_contains "模式 4 无 Reality 参数" "${out}/links.txt" 'security=reality'
 assert_contains "模式 4 Mihomo ws 节点" "${out}/nodes.yaml" 'network: ws'
+assert_contains "模式 4 Mihomo 启用 v2ray-http-upgrade" "${out}/nodes.yaml" 'v2ray-http-upgrade: true'
+assert_equal "模式 4 回源响应超时对齐官方上限" "120" \
+    "$(jq -r '.Origins.Items[0].CustomOriginConfig.OriginReadTimeout' "${out}/distribution.json")"
+assert_equal "模式 4 回源保活超时" "120" \
+    "$(jq -r '.Origins.Items[0].CustomOriginConfig.OriginKeepaliveTimeout' "${out}/distribution.json")"
 [[ ! -s "${out}/groups.yaml" ]] || fail "模式 4 不应生成额外代理组"
 assert_equal "模式 4 PROXY 成员只有 CDN 节点" $'        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
 
@@ -155,7 +173,7 @@ assert_contains "模式 5 CDN 入站在回环" "${out}/config.json" '"listen_por
 assert_contains "模式 5 源站站点监听 8443" "${out}/Caddyfile" 'https://origin.example.com:8443 {'
 assert_contains "模式 5 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
 assert_contains "模式 5 节点含直连" "${out}/links.txt" 'anytls://'
-assert_contains "模式 5 节点含 CDN" "${out}/links.txt" 'type=ws'
+assert_contains "模式 5 节点含 CDN" "${out}/links.txt" 'type=httpupgrade'
 assert_not_contains "模式 5 无 AUTO 组" "${out}/groups.yaml" 'AUTO'
 assert_not_contains "模式 5 无 CDN-FALLBACK 组" "${out}/groups.yaml" 'CDN-FALLBACK'
 [[ ! -s "${out}/groups.yaml" ]] || fail "模式 5 不应生成额外代理组"
@@ -163,7 +181,7 @@ assert_equal "模式 5 PROXY 成员顺序" \
     $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
 assert_not_contains "模式 5 PROXY 不含 AUTO" "${out}/names.yaml" "AUTO"
 assert_not_contains "模式 5 PROXY 不含 CDN-FALLBACK" "${out}/names.yaml" "CDN-FALLBACK"
-assert_not_contains "模式 5 不使用 httpupgrade" "${out}/config.json" 'httpupgrade'
+assert_contains "模式 5 传输是 httpupgrade" "${out}/config.json" '"type": "httpupgrade"'
 
 # 节点名推荐默认值：必须在交互提示里出现（加载运行时库前由 Profile 赋值），
 # 否则会被 singbox-runtime.sh 的 AnyTLS / VLESS-WS 兜底值覆盖。
@@ -200,9 +218,11 @@ assert_contains "模式 3 有订阅入口" "${out}/Caddyfile" '@easy_all_sub pat
 assert_contains "模式 3 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
 assert_not_contains "模式 3 没有 Caddy 源站守卫" "${out}/Caddyfile" 'X-Easy-All-Origin-Key'
 assert_contains "模式 3 节点含直连" "${out}/links.txt" 'anytls://'
-assert_contains "模式 3 节点含橙云 CDN" "${out}/links.txt" 'type=ws'
+assert_contains "模式 3 节点含橙云 CDN" "${out}/links.txt" 'type=httpupgrade'
+assert_contains "模式 3 节点显式约束 ALPN" "${out}/links.txt" 'alpn=http%2F1.1'
 assert_contains "模式 3 Mihomo 含 AnyTLS" "${out}/nodes.yaml" 'type: anytls'
 assert_contains "模式 3 Mihomo 含 ws" "${out}/nodes.yaml" 'network: ws'
+assert_contains "模式 3 Mihomo 启用 v2ray-http-upgrade" "${out}/nodes.yaml" 'v2ray-http-upgrade: true'
 assert_not_contains "模式 3 无 Reality 参数" "${out}/links.txt" 'security=reality'
 assert_equal "模式 3 PROXY 成员顺序" \
     $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
@@ -290,4 +310,41 @@ assert_equal "A7: 后续调用覆盖后最终 Caddyfile 不含裸 503" "0" \
 assert_equal "A7: 后续调用覆盖后产物路径恢复" "2" \
     "$(grep -c 'rewrite \* /mihomo.yaml' "${a7_early}/Caddyfile" || true)"
 
-printf 'ok - 五模式渲染测试通过\n'
+# --- 模式 6：Reality 443 + CloudFront 源站/订阅 8443 + 回环伪装站 9443 -------
+out="${TMP_DIR}/reality-self"
+render_mode reality-self "${out}"
+assert_contains "模式 6 Reality 入站" "${out}/config.json" '"tag": "vless-reality-in"'
+assert_contains "模式 6 Reality 监听 0.0.0.0:443" "${out}/config.json" '"listen": "0.0.0.0"'
+assert_contains "模式 6 Reality 端口 443" "${out}/config.json" '"listen_port": 443'
+assert_contains "模式 6 启用 vision 流控" "${out}/config.json" '"flow": "xtls-rprx-vision"'
+assert_contains "模式 6 握手目标回环 9443" "${out}/config.json" '"server_port": 9443'
+assert_contains "模式 6 双入站保留回环 CDN" "${out}/config.json" '"tag": "vless-cdn-in"'
+assert_not_contains "模式 6 没有 AnyTLS 入站" "${out}/config.json" 'anytls-in'
+assert_contains "模式 6 伪装站 9443" "${out}/Caddyfile" 'https://direct.example.com:9443 {'
+assert_contains "模式 6 CloudFront 源站 8443" "${out}/Caddyfile" \
+    'https://origin.example.com:8443 {'
+assert_contains "模式 6 源站头守卫" "${out}/Caddyfile" 'abort @easy_all_bad_origin'
+assert_contains "模式 6 源站反代回环" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
+assert_contains "模式 6 订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
+camo_block=$(awk '/^https:\/\/[^[:space:]]+:9443 \{$/{inside=1;next} inside&&/^\}$/{exit} inside' "${out}/Caddyfile")
+[[ -n "${camo_block}" ]] || fail "模式 6 缺少 9443 伪装站块"
+grep -Fq 'bind 127.0.0.1' <<<"${camo_block}" || fail "模式 6 伪装站必须只绑回环"
+grep -Fq 'handle @easy_all_camo_page {' <<<"${camo_block}" \
+    || fail "模式 6 伪装站缺少登录页"
+if grep -Fq '@easy_all_health' <<<"${camo_block}"; then
+    fail "模式 6 伪装站不得暴露 health"
+fi
+if grep -Fq '@easy_all_bad_origin' <<<"${camo_block}"; then
+    fail "模式 6 伪装站不得暴露源站守卫"
+fi
+assert_contains "模式 6 节点是 Reality" "${out}/links.txt" 'security=reality'
+assert_contains "模式 6 节点含 VLESS httpupgrade" "${out}/links.txt" 'type=httpupgrade'
+assert_not_contains "模式 6 节点不是 AnyTLS" "${out}/links.txt" 'anytls://'
+assert_contains "模式 6 Mihomo reality-opts" "${out}/nodes.yaml" 'reality-opts:'
+assert_contains "模式 6 Mihomo ws 节点" "${out}/nodes.yaml" 'network: ws'
+assert_contains "模式 6 Mihomo 启用 v2ray-http-upgrade" "${out}/nodes.yaml" 'v2ray-http-upgrade: true'
+assert_not_contains "模式 6 Mihomo 不写 PQ 开关" "${out}/nodes.yaml" 'support-x25519mlkem768'
+assert_equal "模式 6 PROXY 成员是 Reality + CDN" \
+    $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
+
+printf 'ok - 六模式渲染测试通过\n'

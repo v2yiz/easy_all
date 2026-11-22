@@ -60,6 +60,10 @@ source "${RUNTIME_LIB_DIR}/network.sh"
 source "${RUNTIME_LIB_DIR}/mihomo-template.sh"
 # shellcheck source=lib/firewall.sh
 source "${RUNTIME_LIB_DIR}/firewall.sh"
+# 直连 443 探测日志：固定资源名、规则重放/查询/删除与 hellogfw 入口。
+# 统一在这里 source，使正常模式、损坏状态与 uninstall_incomplete 都能回收同一批资源。
+# shellcheck source=lib/probe-log.sh
+source "${RUNTIME_LIB_DIR}/probe-log.sh"
 # shellcheck source=lib/singbox-core.sh
 source "${RUNTIME_LIB_DIR}/singbox-core.sh"
 # shellcheck source=lib/caddy-core.sh
@@ -225,7 +229,7 @@ internal_traffic_prepare() {
         install_marker_chain_matches "${CDN_PROFILE_KEY:-}" \
             || die "安装进度标记缺少本模式要求的 CHAIN；拒绝启动 sing-box"
         case "${CDN_PROFILE_KEY:-}" in
-        cloudfront | combined-cloudfront) chain=cloudfront ;;
+        cloudfront | combined-cloudfront | reality-self) chain=cloudfront ;;
         cloudflare) chain=cloudflare ;;
         *) die "当前模式没有可校验的 saas 链：${CDN_PROFILE_KEY:-空}" ;;
         esac
@@ -295,10 +299,10 @@ normalize_vless_path() {
 subscription_link_domain() {
     case "${PROTOCOL:-}" in
     anytls)
-        subscription_enabled || die "模式 1 未部署订阅；没有可发布的订阅链接"
+        subscription_enabled || die "模式 1 未部署订阅（link）；没有可发布的订阅链接"
         caddy_require_host SUBSCRIPTION_DOMAIN
         ;;
-    cloudfront | combined-cloudfront) caddy_require_host SUBSCRIPTION_DOMAIN ;;
+    cloudfront | combined-cloudfront | reality-self) caddy_require_host SUBSCRIPTION_DOMAIN ;;
     cloudflare | combined-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
@@ -309,16 +313,25 @@ subscription_link_domain() {
 runtime_protocol_label() {
     case "${PROTOCOL:-}" in
     anytls) printf 'AnyTLS（direct TCP 443）' ;;
-    cloudfront) printf 'VLESS WebSocket over AWS CloudFront' ;;
-    cloudflare) printf 'VLESS WebSocket over Cloudflare 橙云' ;;
-    combined-cloudfront) printf 'AnyTLS（direct TCP 443）+ VLESS WebSocket over AWS CloudFront' ;;
-    combined-cloudflare) printf 'AnyTLS（direct TCP 443）+ VLESS WebSocket over Cloudflare 橙云' ;;
+    reality-self) printf 'Reality（direct TCP 443）+ VLESS HTTPUpgrade over AWS CloudFront' ;;
+    cloudfront) printf 'VLESS HTTPUpgrade over AWS CloudFront' ;;
+    cloudflare) printf 'VLESS HTTPUpgrade over Cloudflare 橙云' ;;
+    combined-cloudfront) printf 'AnyTLS（direct TCP 443）+ VLESS HTTPUpgrade over AWS CloudFront' ;;
+    combined-cloudflare) printf 'AnyTLS（direct TCP 443）+ VLESS HTTPUpgrade over Cloudflare 橙云' ;;
     *) printf '%s\n' "${PROTOCOL:-未知}" ;;
     esac
 }
 
 runtime_has_direct_entry() {
     state_protocol_has_direct_entry "${PROTOCOL:-}"
+}
+
+runtime_has_anytls_entry() {
+    state_protocol_has_anytls_entry "${PROTOCOL:-}"
+}
+
+runtime_has_reality_entry() {
+    state_protocol_has_reality_entry "${PROTOCOL:-}"
 }
 
 runtime_has_cdn_entry() {
@@ -329,6 +342,7 @@ runtime_has_cdn_entry() {
 runtime_public_tcp_ports() {
     case "${PROTOCOL:-}" in
     anytls) printf '443' ;;
+    reality-self) printf '443 8443' ;;
     cloudfront) printf '443' ;;
     cloudflare) printf '' ;;
     combined-cloudfront) printf '443 8443' ;;
@@ -338,6 +352,7 @@ runtime_public_tcp_ports() {
 }
 
 # 只允许 Cloudflare IPv4 段访问的业务端口；空表示本模式没有该端口。
+# 模式 6 的 8443 由 Caddy 的 X-Easy-All-Origin-Key 守卫（与模式 5 一致），不按源段限制。
 runtime_cloudflare_only_port() {
     case "${PROTOCOL:-}" in
     cloudflare) printf '443' ;;
@@ -355,21 +370,33 @@ runtime_cdn_loopback_port() {
 runtime_caddy_site_enabled() {
     case "${PROTOCOL:-}" in
     anytls) subscription_enabled ;;
+    # 模式 6 的 Caddy 始终运行：它同时承担 127.0.0.1:9443 的 Reality 伪装站与
+    # 0.0.0.0:8443 的 CloudFront 源站（含订阅）。
+    reality-self) return 0 ;;
     cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
 
+# 订阅站点是否启用：模式 6 与模式 5 同构，没有 link 模式，8443 订阅站点始终随之部署；
+# 其余模式的订阅站点与 Caddy 站点重合。
+runtime_subscription_site_enabled() {
+    case "${PROTOCOL:-}" in
+    reality-self) return 0 ;;
+    esac
+    runtime_caddy_site_enabled
+}
+
 runtime_singbox_exec_start_pre() {
     case "${PROTOCOL:-}" in
-    cloudfront | combined-cloudfront)
+    cloudfront | combined-cloudfront | reality-self)
         printf '%s internal-traffic-prepare' "${COMMAND_PATH}"
         ;;
     *) printf '' ;;
     esac
 }
 
-# --- 状态契约与订阅配置（五模式共用） ---------------------------------------
+# --- 状态契约与订阅配置（六模式共用） ---------------------------------------
 
 # AnyTLS 直连身份（模式 1/3/5 共用）：域名、节点名与密码先落盘再创建任何资源。
 # 域名与节点名分两步提示：模式 3/5 要先把所有域名问完，再把两个节点名排在一起。
@@ -462,7 +489,7 @@ dns_confirm_takeover() {
         || die "Cloudflare ${host} 的同名记录不是本工具创建的（注释：${comment}）；拒绝接管"
 }
 
-# DNS 记录的唯一写入入口（五模式共用）：先按名字读取全部记录，再校验类型/代理状态/目标/归属。
+# DNS 记录的唯一写入入口（六模式共用）：先按名字读取全部记录，再校验类型/代理状态/目标/归属。
 # 同名其他类型或多条同名记录一律阻止写入；非受管记录在交互终端下需确认是否强制接管。
 dns_ensure_record() {
     local host=$1 type=$2 content=$3 proxied=$4
@@ -775,7 +802,18 @@ cdn_validate_state_structure() {
     if runtime_has_direct_entry; then
         validate_domain "${DIRECT_DOMAIN}" || die "状态中的直连域名无效：${DIRECT_DOMAIN}"
         validate_node_name "${DIRECT_NODE_NAME}" || die "状态中的直连节点名无效：${DIRECT_NODE_NAME}"
+    fi
+    if runtime_has_anytls_entry; then
         [[ ${#ANYTLS_PASSWORD} -ge 16 ]] || die "状态中的 AnyTLS 密码过短"
+    fi
+    if runtime_has_reality_entry; then
+        validate_uuid "${VLESS_UUID}" || die "状态中的 VLESS UUID 无效"
+        [[ "${REALITY_PRIVATE_KEY}" =~ ^[A-Za-z0-9_-]{42,44}=?$ ]] \
+            || die "状态中的 Reality 私钥格式无效"
+        [[ "${REALITY_PUBLIC_KEY}" =~ ^[A-Za-z0-9_-]{42,44}=?$ ]] \
+            || die "状态中的 Reality 公钥格式无效"
+        [[ "${REALITY_SHORT_ID}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
+            || die "状态中的 Reality short_id 格式无效"
     fi
     if runtime_has_cdn_entry; then
         validate_domain "${CF_NODE_DOMAIN}" || die "状态中的节点域名无效：${CF_NODE_DOMAIN}"
@@ -1295,6 +1333,64 @@ certificate_remove_lineage() {
         "${etc_dir}/renewal/${CERTBOT_LINEAGE_NAME}.conf"
 }
 
+# --- Reality 自偷入口（模式 6） ---------------------------------
+
+# 伪装站静态页面与 Caddy 配置同生命周期：写 Caddy 配置前必须先有页面，
+# 否则 Caddy 的 root 指向不存在的文件，首页探活必失败（见 runtime_write_config）。
+reality_deploy_camouflage_page() {
+    local source="${SCRIPT_DIR}/../templates/camouflage-login.html"
+    [[ -s "${source}" ]] || die "缺少伪装站页面模板：${source}"
+    install -d -m 0755 "${CAMOUFLAGE_DIR}" \
+        || die "创建伪装站目录失败：${CAMOUFLAGE_DIR}"
+    install -m 0644 "${source}" "${CAMOUFLAGE_DIR}/index.html" \
+        || die "部署伪装站页面失败：${CAMOUFLAGE_DIR}/index.html"
+}
+
+reality_remove_camouflage_page() {
+    # 只有 Reality 模式写过伪装站；其他模式卸载不得碰到 /var/www 下的宿主路径。
+    runtime_has_reality_entry || return 0
+    [[ -n "${CAMOUFLAGE_DIR:-}" ]] || return 0
+    rm -f -- "${CAMOUFLAGE_DIR}/index.html" 2>/dev/null || true
+    # 只回收本工具创建的空目录；用户覆写的非空目录保留。
+    rmdir "${CAMOUFLAGE_DIR}" 2>/dev/null || true
+}
+
+# Reality keypair 必须在输入阶段之后、任何证书/配置写入之前生成并落盘。
+# 生成依赖已安装的 sing-box（generate reality-keypair）；落盘保证中断续装复用同一对密钥。
+reality_generate_keypair() {
+    [[ -z "${REALITY_PRIVATE_KEY:-}" || -z "${REALITY_PUBLIC_KEY:-}" ]] || return 0
+    local output private public
+    output=$("${SINGBOX_BIN}" generate reality-keypair 2>/dev/null) \
+        || die "sing-box generate reality-keypair 失败；已停止安装（未写入任何配置）"
+    private=$(printf '%s\n' "${output}" | sed -n 's/^PrivateKey:[[:space:]]*//p' | head -n 1)
+    public=$(printf '%s\n' "${output}" | sed -n 's/^PublicKey:[[:space:]]*//p' | head -n 1)
+    [[ -n "${private}" && -n "${public}" ]] \
+        || die "sing-box generate reality-keypair 输出缺少 PrivateKey/PublicKey；已停止安装"
+    REALITY_PRIVATE_KEY=${private}
+    REALITY_PUBLIC_KEY=${public}
+    # 身份目录可能尚未创建（首次安装早期）：这里建好再落盘，
+    # 否则 persist_install_identity 会静默跳过，续装就只能重新生成密钥。
+    install -d -m 0700 "$(install_state_dir_path)" \
+        || die "无法创建状态目录；已停止安装（避免续装更换密钥）"
+    persist_install_identity \
+        || die "无法落盘 Reality 密钥对；已停止安装（避免续装更换密钥）"
+}
+
+# 模式 6 的直连运行时：Reality 身份齐全 + 密钥对已生成 + 伪装页就位，然后落盘身份。
+reality_prepare_runtime() {
+    [[ -n "${DIRECT_DOMAIN:-}" && -n "${DIRECT_NODE_NAME:-}" ]] \
+        || die "直连域名/节点名缺失；请先执行 sudo easy_all uninstall 后重新安装"
+    [[ -n "${VLESS_UUID:-}" ]] \
+        || die "VLESS UUID 缺失；请先执行 sudo easy_all uninstall 后重新安装"
+    [[ -n "${REALITY_SHORT_ID:-}" ]] \
+        || die "Reality short_id 缺失；请先执行 sudo easy_all uninstall 后重新安装"
+    reality_generate_keypair
+    reality_deploy_camouflage_page
+    # 身份（UUID/short_id/keypair）必须在创建云端资源前落盘：续装要复用同一身份。
+    persist_install_identity \
+        || die "无法落盘安装身份；在生成运行配置前停止"
+}
+
 # --- 配置发布与服务 -----------------------------------------------------------
 
 # 共享实现只以 runtime_write_config 命名：四个模式库各自提供同名包装器
@@ -1303,6 +1399,11 @@ runtime_write_config() {
     local blocked=${1:-0} subscription_ok=${2:-0}
     write_singbox_config "${blocked}"
     if runtime_caddy_site_enabled; then
+        # 伪装站页面必须在任何 Caddy 配置写入之前就位：所有写配置的路径
+        # （安装/应用/阻断/受限恢复/renew-cert）都经过这里。
+        if runtime_has_reality_entry; then
+            reality_deploy_camouflage_page
+        fi
         write_caddy_config "${blocked}" "${subscription_ok}"
     fi
 }
@@ -1410,19 +1511,37 @@ runtime_singbox_required_ports() {
 }
 
 # sing-box 入站与 Caddy 站点分别验收：Caddy health 不能替代核心入站断言。
+# 模式 6 的伪装站不提供 /easy_all-health，因此订阅站点与伪装站分开判定，
+# 并用 443 回洛链路（sing-box → 127.0.0.1:9443）做真实探测。
+runtime_caddy_probe_ok() {
+    runtime_caddy_site_enabled || return 0
+    systemctl is-active --quiet "${CADDY_SERVICE}" 2>/dev/null || return 1
+    if runtime_subscription_site_enabled; then
+        runtime_local_probe_context
+        [[ "$(runtime_local_curl /easy_all-health || true)" == "easy_all ok" ]] || return 1
+    fi
+    runtime_reality_fallback_ok
+}
+
+# 非 Reality 模式没有回洛链路，直接视为通过。
+runtime_reality_fallback_ok() {
+    runtime_has_reality_entry || return 0
+    local response code
+    response=$(curl --proto '=https' --noproxy '*' -sS --connect-timeout 5 --max-time 20 \
+        -w '\n%{http_code}' --resolve "${DIRECT_DOMAIN}:443:127.0.0.1" \
+        "https://${DIRECT_DOMAIN}:443/" 2>/dev/null) || return 1
+    code=${response##*$'\n'}
+    [[ "${code}" == "200" ]] || return 1
+    # 回落响应必须是伪装站首页：既证明 443 已由 sing-box 接管，也证明它透明转发到了 9443。
+    [[ "${response}" == *'Workspace Sign In'* ]]
+}
+
 validate_protocol_runtime() {
-    local attempt port response
+    local attempt port
     for attempt in 1 2 3 4 5; do
         if systemctl is-active --quiet "${SINGBOX_SERVICE}" 2>/dev/null \
-            && runtime_ports_listening; then
-            if ! runtime_caddy_site_enabled; then
-                return 0
-            fi
-            if systemctl is-active --quiet "${CADDY_SERVICE}" 2>/dev/null; then
-                runtime_local_probe_context
-                response=$(runtime_local_curl /easy_all-health || true)
-                [[ "${response}" == "easy_all ok" ]] && return 0
-            fi
+            && runtime_ports_listening && runtime_caddy_probe_ok; then
+            return 0
         fi
         sleep 2
     done
@@ -1442,13 +1561,15 @@ runtime_ports_listening() {
 }
 
 runtime_base64_markers() {
-    runtime_has_direct_entry && printf 'anytls://\n'
-    runtime_has_cdn_entry && printf 'type=ws\n'
+    runtime_has_anytls_entry && printf 'anytls://\n'
+    runtime_has_reality_entry && printf 'security=reality\n'
+    runtime_has_cdn_entry && printf 'type=httpupgrade\n'
     return 0
 }
 
 runtime_mihomo_markers() {
-    runtime_has_direct_entry && printf 'type: anytls\n'
+    runtime_has_anytls_entry && printf 'type: anytls\n'
+    runtime_has_reality_entry && printf 'reality-opts:\n'
     runtime_has_cdn_entry && printf 'network: ws\n'
     return 0
 }
@@ -1463,7 +1584,7 @@ runtime_primary_node_name() {
 
 validate_subscription_runtime() {
     local token base64_response decoded mihomo_response status marker
-    runtime_caddy_site_enabled || return 0
+    runtime_subscription_site_enabled || return 0
     runtime_local_probe_context
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}") || die "订阅 Token 字典为空"
     base64_response=$(runtime_local_curl "/subscribe?token=${token}") \
@@ -1495,7 +1616,7 @@ validate_subscription_runtime() {
 # 且显式 YAML flag 仍然优先。CDN 流量保护的既有六产物门禁不受它影响。
 validate_singbox_subscription_runtime() {
     local token headers_file body ua_body all_body status disposition expected client
-    runtime_caddy_site_enabled || return 0
+    runtime_subscription_site_enabled || return 0
     runtime_local_probe_context
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS}") || die "订阅 Token 字典为空"
     headers_file="${RUNTIME_TMP}/singbox-subscription.headers"
@@ -1878,16 +1999,26 @@ uninstall_incomplete() {
         cdn_traffic_counters_remove \
             || die "回收 mangle 计量规则失败；已保留本机状态与命令，修正后重试 uninstall"
     fi
+    # 模式 6 可能已部署伪装站页面：这条路径不 source state、也不知道协议，
+    # 因此按固定路径回收，口径与 cleanup_partial_install 一致（只删本工具写的文件与空目录）。
+    if [[ -n "${CAMOUFLAGE_DIR:-}" ]]; then
+        rm -f -- "${CAMOUFLAGE_DIR}/index.html" 2>/dev/null || true
+        rmdir "${CAMOUFLAGE_DIR}" 2>/dev/null || true
+    fi
     remove_certbot_deploy_hook || true
     certificate_remove_lineage || true
     restore_platform_security_state || warn "SSH 配置恢复失败；请通过服务商 Console 检查"
     restore_preinstall_firewall
     restore_preinstall_ipv6
+    # 探测日志资源按固定资源名无条件回收（不依赖也不猜测 PROTOCOL）：失败时保留 state 与命令。
+    remove_probe_log \
+        || die "回收 TCP 443 探测日志规则与单元失败；已保留本机状态与命令，修正后重试 uninstall"
     remove_daily_reboot_schedule || warn "移除 easy_all 定时重启任务失败；请检查 root crontab"
     rm -f -- "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
-    rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" "$(dirname -- "${SUBSCRIPTION_DIR}")" \
+    rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" \
         "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"
+    rmdir "$(dirname -- "${SUBSCRIPTION_DIR}")" 2>/dev/null || true
     success "本机内容已清理；云端资源无法自动清理，需人工核对"
 }
 

@@ -118,12 +118,13 @@ assert_not_contains "失败信息不回显 Token 值" "${invalid_output}" "too-s
 assert_equal "失败的保存不覆盖已保存 Token" "${TOKEN}" "$(<"${token_dir}/cloudflare.token")"
 
 # --- 2. strict 校验顺序：先只读查 Zone ID，再在任何资源创建前判定 ----------------
-run_strict_case() { # $1=ssl 值或 403 $2=profile 名 $3=订阅模式
-    local ssl=$1 profile=$2 subscription_mode=${3:-deploy}
-    local log="${TMP_DIR}/strict-${profile}-${ssl//\//_}.log"
-    local script="${TMP_DIR}/strict-${profile}-${ssl//\//_}.sh"
-    local runtime="${TMP_DIR}/strict-runtime-${profile}-${ssl//\//_}"
-    local state="${TMP_DIR}/strict-state-${profile}-${ssl//\//_}"
+run_strict_case() { # $1=ssl 值或 403 $2=profile 名 $3=订阅模式 $4=websockets 值或 403
+    local ssl=$1 profile=$2 subscription_mode=${3:-deploy} websockets=${4:-on}
+    local case_tag="${websockets//\//_}"
+    local log="${TMP_DIR}/strict-${profile}-${ssl//\//_}-ws${case_tag}.log"
+    local script="${TMP_DIR}/strict-${profile}-${ssl//\//_}-ws${case_tag}.sh"
+    local runtime="${TMP_DIR}/strict-runtime-${profile}-${ssl//\//_}-ws${case_tag}"
+    local state="${TMP_DIR}/strict-state-${profile}-${ssl//\//_}-ws${case_tag}"
     local status=0
     mkdir -p "${runtime}" "${state}"
     # 独立进程执行：strict 失败必须靠 errexit 中止阶段，shell 函数里的 || 会关掉它。
@@ -149,6 +150,9 @@ cloudflare_api_request() {
     "GET /zones/zoneid/settings/ssl")
         [[ $(printf '%q' "${ssl}") == "403" ]] && return 1
         printf '{"value":"%s"}\n' $(printf '%q' "${ssl}") ;;
+    "GET /zones/zoneid/settings/websockets")
+        [[ $(printf '%q' "${websockets}") == "403" ]] && return 1
+        printf '{"value":"%s"}\n' $(printf '%q' "${websockets}") ;;
     *) return 1 ;;
     esac
 }
@@ -186,10 +190,36 @@ for ssl in strict full flexible off 403; do
     assert_not_contains "模式 2 ${ssl}：没有删除请求" "${log}" "DELETE "
 done
 
+# WebSockets 开关：橙云节点走 HTTPUpgrade（HTTP/1.1 Upgrade），关闭时链路必失败，
+# 因此必须在任何 DNS/证书写入前阻断。
+for ws in off 403; do
+    log=$(run_strict_case strict cloudflare deploy "${ws}")
+    assert_contains "模式 2 websockets ${ws}：查询了 WebSockets 设置" "${log}" \
+        "GET /zones/zoneid/settings/websockets"
+    assert_not_contains "模式 2 websockets ${ws}：不创建 DNS" "${log}" "DNS "
+    assert_not_contains "模式 2 websockets ${ws}：不签发证书" "${log}" "CERT"
+    assert_not_contains "模式 2 websockets ${ws}：非零退出" "${log}" "STATUS=0"
+    assert_not_contains "模式 2 websockets ${ws}：没有写请求" "${log}" "POST "
+    assert_not_contains "模式 2 websockets ${ws}：没有删除请求" "${log}" "DELETE "
+done
+
+# websockets=on 必须继续，且 SSL 校验先于 WebSockets 校验。
+ws_on_log=$(run_strict_case strict cloudflare deploy on)
+assert_contains "模式 2 websockets on：继续创建 DNS" "${ws_on_log}" "DNS cf.example.com"
+assert_contains "模式 2 websockets on：执行到证书签发" "${ws_on_log}" "CERT"
+assert_contains "模式 2 websockets on：成功结束" "${ws_on_log}" "STATUS=0"
+ssl_line=$(grep -n 'settings/ssl' <<<"${ws_on_log}" | head -n 1 | cut -d: -f1)
+ws_line=$(grep -n 'settings/websockets' <<<"${ws_on_log}" | head -n 1 | cut -d: -f1)
+[[ -n "${ssl_line}" && -n "${ws_line}" ]] \
+    || fail "模式 2 websockets on：必须同时查询 SSL 与 WebSockets 设置"
+((ssl_line < ws_line)) || fail "模式 2 websockets on：SSL 校验必须早于 WebSockets 校验"
+
 for ssl in strict full; do
     log=$(run_strict_case "${ssl}" anytls deploy)
     assert_contains "模式 1 ${ssl}：先只读查询 Zone ID" "${log}" \
         "GET /zones?name=example.com&status=active&per_page=50"
+    # 模式 1 不走 CDN 代理：无论 strict 是否通过，都不得查 WebSockets 开关。
+    assert_not_contains "模式 1 ${ssl}：不查询 WebSockets 开关" "${log}" "settings/websockets"
     if [[ "${ssl}" == "strict" ]]; then
         assert_contains "模式 1 strict：继续创建直连 DNS" "${log}" "DNS node.example.com"
         assert_contains "模式 1 strict：继续创建订阅 DNS" "${log}" "DNS sub.example.com"
@@ -200,6 +230,25 @@ for ssl in strict full; do
         assert_not_contains "模式 1 ${ssl}：非零退出" "${log}" "STATUS=0"
     fi
 done
+
+# 模式 3：橙云节点恒走 HTTPUpgrade，WebSockets 非 on 时阻断且不创建任何云资源。
+for ws in off 403; do
+    log=$(run_strict_case strict combined-cloudflare deploy "${ws}")
+    assert_contains "模式 3 websockets ${ws}：查询了 WebSockets 设置" "${log}" \
+        "GET /zones/zoneid/settings/websockets"
+    assert_not_contains "模式 3 websockets ${ws}：不创建 DNS" "${log}" "DNS "
+    assert_not_contains "模式 3 websockets ${ws}：不签发证书" "${log}" "CERT"
+    assert_not_contains "模式 3 websockets ${ws}：不配置 Origin Rule" "${log}" "RULE"
+    assert_not_contains "模式 3 websockets ${ws}：非零退出" "${log}" "STATUS=0"
+    assert_not_contains "模式 3 websockets ${ws}：没有写请求" "${log}" "POST "
+    assert_not_contains "模式 3 websockets ${ws}：没有删除请求" "${log}" "DELETE "
+done
+
+ws_on_log=$(run_strict_case strict combined-cloudflare deploy on)
+assert_contains "模式 3 websockets on：继续创建直连 DNS" "${ws_on_log}" "DNS node.example.com"
+assert_contains "模式 3 websockets on：执行到证书签发" "${ws_on_log}" "CERT"
+assert_contains "模式 3 websockets on：执行到 Origin Rule" "${ws_on_log}" "RULE"
+assert_contains "模式 3 websockets on：成功结束" "${ws_on_log}" "STATUS=0"
 
 # 模式 1 link：不调用 Zone Settings 接口（design §9）。
 link_runtime="${TMP_DIR}/link-runtime"

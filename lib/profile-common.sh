@@ -581,6 +581,7 @@ assert_install_ports_free() {
 profile_script_for() {
     case "${1:-}" in
     anytls) printf 'anytls.sh' ;;
+    reality-self) printf 'reality-self.sh' ;;
     cloudfront) printf 'cloudfront.sh' ;;
     cloudflare) printf 'cloudflare.sh' ;;
     combined-cloudfront) printf 'combined.sh' ;;
@@ -673,6 +674,9 @@ persist_install_identity() {
         --arg subscription_config "${SUBSCRIPTION_CONFIG:-}" \
         --arg direct_domain "${DIRECT_DOMAIN:-}" \
         --arg direct_name "${DIRECT_NODE_NAME:-}" \
+        --arg reality_private_key "${REALITY_PRIVATE_KEY:-}" \
+        --arg reality_public_key "${REALITY_PUBLIC_KEY:-}" \
+        --arg reality_short_id "${REALITY_SHORT_ID:-}" \
         --arg reboot_enabled "${SCHEDULED_REBOOT_ENABLED:-}" \
         --arg reboot_hour "${SCHEDULED_REBOOT_HOUR:-}" \
         --arg cf_cert "${CLOUDFLARE_ORIGIN_CERT_ID:-}" \
@@ -705,6 +709,9 @@ persist_install_identity() {
             subscription_config: $subscription_config,
             direct_domain: $direct_domain,
             direct_node_name: $direct_name,
+            reality_private_key: $reality_private_key,
+            reality_public_key: $reality_public_key,
+            reality_short_id: $reality_short_id,
             scheduled_reboot_enabled: $reboot_enabled,
             scheduled_reboot_hour: $reboot_hour,
             cloudflare_origin_cert_id: $cf_cert,
@@ -742,6 +749,9 @@ load_install_identity() {
         OWNER_TOKEN:owner_token ALLOWED_TOKENS:allowed_tokens \
         SUBSCRIPTION_CONFIG:subscription_config \
         DIRECT_DOMAIN:direct_domain DIRECT_NODE_NAME:direct_node_name \
+        REALITY_PRIVATE_KEY:reality_private_key \
+        REALITY_PUBLIC_KEY:reality_public_key \
+        REALITY_SHORT_ID:reality_short_id \
         SCHEDULED_REBOOT_ENABLED:scheduled_reboot_enabled \
         SCHEDULED_REBOOT_HOUR:scheduled_reboot_hour \
         CLOUDFLARE_ORIGIN_CERT_ID:cloudflare_origin_cert_id \
@@ -808,6 +818,8 @@ install_marker_chain_matches() {
     local current=$1 expected
     case "${current}" in
     anytls) expected=anytls ;;
+    # 模式 6 与模式 4/5 共用 cloudfront 链路（计量/启动门禁与持久阻断都按链判定）。
+    reality-self) expected=cloudfront ;;
     cloudfront | combined-cloudfront) expected=cloudfront ;;
     cloudflare | combined-cloudflare) expected=cloudflare ;;
     *) return 1 ;;

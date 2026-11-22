@@ -23,7 +23,7 @@ assert_not_contains() {
 source "${ROOT_DIR}/lib/state.sh"
 
 [[ "${EASY_ALL_STATE_SCHEMA_VERSION}" == "1" ]] || fail "schema 必须为 1"
-for protocol in anytls cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+for protocol in anytls reality-self cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     state_protocol_valid "${protocol}" || fail "协议应受支持：${protocol}"
 done
 for legacy in reality cdn combined ""; do
@@ -45,6 +45,11 @@ assert_absent "$(state_required_fields anytls link)" SUBSCRIPTION_DOMAIN \
     "模式 1 link 不得要求订阅域名"
 assert_absent "$(state_required_fields anytls link)" CLOUDFLARE_ORIGIN_RULE_ID \
     "模式 1 link 不得要求 Origin Rule"
+# ANYTLS_DEPLOY_FIELDS 的追加条件必须保留完整合取：mode 1 link 不部署订阅站点。
+assert_absent "$(state_required_fields anytls link)" CLOUDFLARE_ORIGIN_RULESET_ID \
+    "模式 1 link 不得要求 Origin Rule ruleset"
+assert_absent "$(state_required_fields anytls link)" SUBSCRIPTION_DOMAIN \
+    "模式 1 link 不得要求订阅域名（ANYTLS_DEPLOY_FIELDS）"
 
 fields=$(state_required_fields cloudfront deploy)
 grep -Fxq AWS_ACM_CERTIFICATE_ARN <<<"${fields}" || fail "模式 4 需要 ACM ARN"
@@ -68,6 +73,47 @@ grep -Fxq CLOUDFLARE_ORIGIN_RULE_ID <<<"${fields}" || fail "模式 3 需要 Orig
 assert_absent "${fields}" SUBSCRIPTION_DOMAIN "模式 3 的订阅域名由节点域名派生，不应落盘"
 assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 3 不使用 Origin CA"
 assert_absent "${fields}" ORIGIN_HEADER_SECRET "模式 3 不要求源站头密钥"
+
+# 模式 6：与模式 5 同构的 Reality 直连 + CloudFront（无 link 模式）。
+# 直连入口与 Reality 凭据分开，不继承 AnyTLS 密码；订阅走 CloudFront 字段集，不碰 Origin Rule。
+state_protocol_valid reality-self || fail "reality-self 应受支持"
+state_protocol_has_direct_entry reality-self || fail "reality-self 占用直连入口 443"
+state_protocol_has_reality_entry reality-self || fail "reality-self 必须要求 Reality 凭据"
+state_protocol_has_anytls_entry reality-self && fail "reality-self 不得要求 AnyTLS 密码"
+state_protocol_has_cdn_entry reality-self || fail "reality-self 必须有 CDN 入口"
+state_protocol_uses_cloudfront reality-self || fail "reality-self 走 CloudFront 链路"
+state_protocol_has_subscription_site reality-self deploy || fail "reality-self deploy 有订阅站点"
+state_protocol_has_subscription_site reality-self link \
+    || fail "reality-self 没有 link 模式：订阅站点恒存在"
+fields=$(state_required_fields reality-self deploy)
+for required in DIRECT_DOMAIN DIRECT_NODE_NAME VLESS_UUID REALITY_PRIVATE_KEY \
+    REALITY_PUBLIC_KEY REALITY_SHORT_ID CF_NODE_DOMAIN CF_NODE_PREFIX VLESS_PATH \
+    SUBSCRIPTION_DOMAIN CF_ORIGIN_DOMAIN ORIGIN_HEADER_SECRET \
+    AWS_CLOUDFRONT_DISTRIBUTION_ID AWS_ACM_CERTIFICATE_ARN CDN_TRAFFIC_PROTECTION_GB; do
+    grep -Fxq "${required}" <<<"${fields}" || fail "模式 6 deploy 需要 ${required}"
+done
+assert_absent "${fields}" ANYTLS_PASSWORD "模式 6 不得要求 AnyTLS 密码"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_RULESET_ID "模式 6 不使用 Origin Rule"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_RULE_ID "模式 6 不使用 Origin Rule"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 6 不使用 Origin CA"
+assert_absent "${fields}" REALITY_TARGET "模式 6 不得保留旧 Reality 字段"
+# VLESS_UUID 只能由 CDN 字段集提供一次（重复会写出重复键，也让“缺失字段”错位）。
+[[ "$(grep -Fxc VLESS_UUID <<<"${fields}")" == "1" ]] \
+    || fail "模式 6 的 VLESS_UUID 必须恰好出现一次"
+[[ "$(grep -Fxc SUBSCRIPTION_DOMAIN <<<"${fields}")" == "1" ]] \
+    || fail "模式 6 的 SUBSCRIPTION_DOMAIN 必须恰好出现一次"
+state_field_allows_empty reality-self deploy MIHOMO_TEMPLATE_SNAPSHOT 0 \
+    && fail "模式 6 恒发布订阅，模板快照必须落盘"
+state_field_allows_empty reality-self link SCHEDULED_REBOOT_HOUR 0 \
+    || fail "模式 6 关闭定时重启时小时字段可为空"
+
+# 字段集不得跨组重复：重复行会让 state_render 写出重复键，也让“缺失字段”判断错位。
+for protocol in anytls reality-self cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+    for mode in deploy link; do
+        duplicates=$(state_required_fields "${protocol}" "${mode}" | sort | uniq -d)
+        [[ -z "${duplicates}" ]] || fail "${protocol}/${mode} 字段集有重复：${duplicates}"
+    done
+done
 
 state_required_fields nope >/dev/null && fail "未知协议必须返回非零"
 
@@ -273,7 +319,7 @@ assert_contains "已删除协议提示" "${reality_state}" "已删除的旧协�
 
 printf 'ok - 状态 schema 门禁测试通过\n'
 
-# --- 安装菜单编号：1 AnyTLS / 2 纯 CloudFlare / 3 AnyTLS+CloudFlare / 4 纯 CloudFront / 5 AnyTLS+CloudFront
+# --- 安装菜单编号：1 AnyTLS / 2 纯 CloudFlare / 3 AnyTLS+CloudFlare / 4 纯 CloudFront / 5 AnyTLS+CloudFront / 6 Reality+CloudFront
 # 编号只影响交互菜单与文档，落盘状态用 PROTOCOL 字符串；这里锁住菜单文案顺序与选择映射。
 install_menu_body=$(awk '/^choose_install_mode\(\) \{/,/^\}/' "${ROOT_DIR}/easy_all")
 [[ -n "${install_menu_body}" ]] || fail "easy_all 缺少 choose_install_mode"
@@ -287,6 +333,9 @@ done <<'MENU'
 4	纯 CloudFront	cloudfront
 5	AnyTLS + CloudFront	combined-cloudfront
 MENU
+assert_contains "菜单 6 文案" "${install_menu_body}" \
+    "6. Reality + CloudFront（自偷 Reality 直连伪装回落 + AWS CloudFront）"
+assert_contains "菜单 6 映射" "${install_menu_body}" "6) printf 'reality-self\\n'"
 [[ $(printf '%s\n' "${install_menu_body}" | grep -n "  2\. 纯 CloudFlare" | cut -d: -f1) \
     -lt $(printf '%s\n' "${install_menu_body}" | grep -n "  4\. 纯 CloudFront" | cut -d: -f1) ]] \
     || fail "菜单编号顺序错误：2 应为纯 CloudFlare、4 应为纯 CloudFront"

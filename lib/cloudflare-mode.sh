@@ -329,11 +329,11 @@ cdn_public_subscription_ok() {
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         "https://${CF_NODE_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
-    [[ "${decoded}" == *"type=ws"* ]] || return 1
+    [[ "${decoded}" == *"type=httpupgrade"* ]] || return 1
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' \
         "https://${CF_NODE_DOMAIN}/subscribe") || return 1
-    [[ "${body}" == *"network: ws"* ]]
+    [[ "${body}" == *"network: ws"* && "${body}" == *"v2ray-http-upgrade: true"* ]]
 }
 
 cdn_public_token_rejection_ok() {
@@ -439,6 +439,9 @@ apply_easy_all() {
     save_state
     register_easy_all_command
     commit_subscription_update
+    # 模式 2 没有直连 443 入口：安装/apply 只清除旧版本、异常中断或先前直连模式留下的资源。
+    # 失败不回滚已提交的配置，但必须让命令非零退出，绝不能接着报成功。
+    remove_probe_log || return 1
     success "本机配置与订阅已应用；未修改 DNS 与云端资源"
 }
 
@@ -449,6 +452,8 @@ apply_cloud_phase() {
     # 只读查询 Zone ID 必须先于 strict 校验（design §9）：创建任何资源前完成。
     cdn_ensure_zone_id
     cloudflare_ensure_zone_ssl_strict
+    # 橙云 VLESS 节点走 HTTPUpgrade（HTTP/1.1 Upgrade）：Zone 关闭 WebSockets 时链路必失败。
+    cloudflare_ensure_zone_websockets_on
     cdn_ensure_dns
     cdn_issue_certificate
 }
@@ -480,6 +485,7 @@ apply_cloud_resources() {
     cloudflare_finalize_certificate_rotation
     commit_subscription_update
     clear_profile_credentials
+    remove_probe_log || return 1
     success "本机配置、订阅与 Cloudflare 云端资源已同步"
 }
 
@@ -552,6 +558,8 @@ cdn_local_uninstall_common() {
     }
     restore_preinstall_firewall
     restore_preinstall_ipv6
+    remove_probe_log \
+        || { warn "回收 TCP 443 探测日志规则与单元失败；已保留本机状态与命令，修正后重试 uninstall"; return 1; }
     if ! remove_daily_reboot_schedule; then
         warn "卸载未完成：移除 easy_all 定时重启任务失败，本机状态与命令已保留；修正 root crontab 后重试 uninstall"
         return 1
@@ -592,6 +600,9 @@ uninstall_all() {
 cleanup_partial_install() {
     local failed=0 path
     cleanup_partial_install_local || return 1
+    # 中断清理按固定资源名无条件回收，不以「当前是纯 CDN」跳过。
+    remove_probe_log \
+        || { warn "回收 TCP 443 探测日志规则与单元失败；已保留安装进度标记与状态，修正后重试 sudo easy_all cleanup-partial"; return 1; }
     remove_daily_reboot_schedule || true
     for path in "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}" \
         "${SUBSCRIPTION_DIR}" "$(dirname -- "${SUBSCRIPTION_DIR}")" \
@@ -657,6 +668,7 @@ install_all() {
     persist_cloudflare_token
     cdn_ensure_zone_id
     cloudflare_ensure_zone_ssl_strict
+    cloudflare_ensure_zone_websockets_on
     cdn_ensure_dns
     cdn_issue_certificate
     # 证书已签发：立即落盘 ID/到期时间，续装可直接复用而不是重复 POST /certificates。
@@ -674,8 +686,10 @@ install_all() {
     install_progress_stage state
     save_state
     register_easy_all_command
-    # 安装已成功：迁移 SSH 端口并同步 UFW/Fail2ban；仍在回滚钩子内，失败可完整回滚。
+    # 安装收尾会迁移 SSH 端口并再 reload 一次 UFW，因此探测资源必须在这之后收敛；
+    # 仍在回滚钩子内，失败可完整回滚。
     configure_post_install_ssh_port
+    remove_probe_log || die "清理残留的直连 TCP 443 探测日志失败；安装中止并回滚"
     # 状态已落盘：uninstall 可用，后续失败不再回滚本机。
     INSTALL_ROLLBACK_ON_EXIT=0
     install_progress_clear

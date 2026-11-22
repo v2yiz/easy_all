@@ -58,6 +58,7 @@ export CADDY_CONFIG="${TMP_DIR}/caddy/Caddyfile"
 export CADDY_SERVICE_FILE="${TMP_DIR}/systemd/easy_all-caddy.service"
 export CADDY_ADMIN_SOCKET="${TMP_DIR}/run/easy_all-caddy/admin.sock"
 export SUBSCRIPTION_DIR="${TMP_DIR}/subscriptions"
+export CAMOUFLAGE_DIR="${TMP_DIR}/camouflage"
 export CERT_FILE="${TMP_DIR}/certs/fullchain.pem"
 export KEY_FILE="${TMP_DIR}/certs/private.key"
 mkdir -p "${CADDY_BIN%/*}" "${TMP_DIR}/certs" "${SUBSCRIPTION_DIR}"
@@ -71,6 +72,7 @@ source "${CADDY_RUNTIME}"
 
 PROTOCOL=cloudfront
 CF_NODE_DOMAIN="cf.example.com"
+DIRECT_DOMAIN="direct.example.com"
 SUBSCRIPTION_DOMAIN="sub.example.com"
 CF_ORIGIN_DOMAIN="origin.example.com"
 VLESS_PATH="/vless-abcdef123456"
@@ -286,6 +288,174 @@ for non_cf_mode in anytls cloudflare combined-cloudflare; do
     assert_not_contains "${non_cf_mode} 不下发 Subscription-Userinfo" "${non_cf_body}" \
         "Subscription-Userinfo"
 done
+
+# --- 模式 6：Reality 伪装站 + CloudFront 源站（design §2.3） ------------------
+# 与模式 5 同构：9443 回环伪装站 + 8443 CloudFront 源站/订阅站，没有 link 变体。
+render_reality_caddy() { # $1=文件 [$2=blocked] [$3=subscription_ok]
+    ( PROTOCOL=reality-self render_caddy_config "$1" "${2:-0}" "${3:-1}" ) \
+        || fail "Reality 渲染失败：${1##*/}"
+}
+reality_ready_file="${TMP_DIR}/Caddyfile-reality-self-ready"
+reality_blocked_file="${TMP_DIR}/Caddyfile-reality-self-blocked"
+reality_unready_file="${TMP_DIR}/Caddyfile-reality-self-unready"
+render_reality_caddy "${reality_ready_file}" 0 1
+render_reality_caddy "${reality_blocked_file}" 1 1
+render_reality_caddy "${reality_unready_file}" 0 0
+reality_ready=$(<"${reality_ready_file}")
+
+# 站点主机/端口与模式 5 完全一致：模式 6 没有 link 变体，SUBSCRIPTION_MODE 不影响派生。
+assert_equal "Reality 源站主机/端口对齐模式 5" "origin.example.com 8443" \
+    "$( PROTOCOL=reality-self SUBSCRIPTION_MODE=deploy
+        printf '%s %s' "$(caddy_site_host)" "$(caddy_site_port)" )"
+assert_equal "Reality 不受 link 订阅模式影响" "origin.example.com 8443" \
+    "$( PROTOCOL=reality-self SUBSCRIPTION_MODE=link
+        printf '%s %s' "$(caddy_site_host)" "$(caddy_site_port)" )"
+assert_equal "Reality 回环端口固定 9443" "9443" "$(caddy_reality_camouflage_port)"
+assert_equal "Reality 只渲染两个顶层站点块" "2" \
+    "$(grep -Ec '^https://[^[:space:]]+:[0-9]+ \{$' <<<"${reality_ready}")"
+
+origin_ready_file="${TMP_DIR}/reality-origin-ready"
+caddy_site_block_lines "${reality_ready_file}" 8443 >"${origin_ready_file}"
+
+# 9443 伪装站：只绑回环、只有登录门户，严禁源站守卫与订阅入口。
+camo_block=$(caddy_site_block_lines "${reality_ready_file}" 9443)
+origin_block=$(<"${origin_ready_file}")
+assert_contains "伪装站地址 9443" "${reality_ready}" "https://direct.example.com:9443 {"
+assert_contains "伪装站只绑回环" "${camo_block}" "bind 127.0.0.1"
+assert_contains "伪装站使用正式证书" "${reality_ready}" "tls ${CERT_FILE} ${KEY_FILE}"
+assert_contains "伪装站缓存头" "${camo_block}" 'header Cache-Control "no-store"'
+assert_contains "伪装站禁 iframe" "${camo_block}" 'header X-Frame-Options "DENY"'
+assert_contains "伪装站 nosniff" "${camo_block}" 'header X-Content-Type-Options "nosniff"'
+assert_contains "伪装站 Referrer-Policy" "${camo_block}" 'header Referrer-Policy "same-origin"'
+assert_contains "伪装站静态根目录" "${camo_block}" "root * ${CAMOUFLAGE_DIR}"
+assert_contains "登录页 matcher" "${camo_block}" "@easy_all_camo_page {"
+assert_contains "登录页 handle" "${camo_block}" "handle @easy_all_camo_page {"
+assert_contains "登录页重写到 index" "${camo_block}" "rewrite * /index.html"
+assert_contains "登录失败 401" "${camo_block}" \
+    'respond @easy_all_camo_auth "{\"error\":\"Invalid email or password\"}" 401'
+assert_contains "robots.txt 用真实多行字符串" "${camo_block}" \
+    $'respond @easy_all_camo_robots "User-agent: *\nDisallow: /\n" 200'
+assert_contains "favicon 返回 204" "${camo_block}" "respond @easy_all_camo_favicon 204"
+assert_contains "其余路径回登录页" "${camo_block}" "redir * /login 302"
+# 指令必须写成标准多行块：matcher/handle 不得出现单行块，也不得用分号并指令。
+if grep -Eq '@easy_all_camo_[a-z]+ \{.*\}|handle @easy_all_camo_page \{.*\}' <<<"${camo_block}"; then
+    fail "伪装站 matcher/handle 必须写成多行块"
+fi
+if grep -Eq ';[[:space:]]*$' <<<"${camo_block}"; then
+    fail "伪装站不得在同一行用分号串联指令"
+fi
+assert_equal "伪装站只有一处 file_server" "1" \
+    "$(grep -c '^[[:space:]]*file_server[[:space:]]*$' <<<"${camo_block}" || true)"
+assert_before "伪装站 file_server 在登录页 handle 之后" \
+    "$(line_of "${reality_ready_file}" 'handle @easy_all_camo_page {')" \
+    "$(line_of "${reality_ready_file}" 'file_server')"
+assert_not_contains "伪装站不提供订阅入口" "${camo_block}" "@easy_all_sub"
+assert_not_contains "伪装站不暴露 health" "${camo_block}" "/easy_all-health"
+assert_not_contains "伪装站不暴露源站守卫" "${camo_block}" "@easy_all_bad_origin"
+assert_not_contains "伪装站不引用源站头" "${camo_block}" "X-Easy-All-Origin-Key"
+assert_not_contains "伪装站不开公网绑定" "${camo_block}" "bind 0.0.0.0"
+
+# 8443 CloudFront 源站：守卫早于任何 handle，VLESS 路径反代回环 10086，订阅/health 齐全。
+assert_contains "源站地址 8443" "${reality_ready}" "https://origin.example.com:8443 {"
+assert_contains "源站只绑公网" "${origin_block}" "bind 0.0.0.0"
+assert_contains "源站守卫 matcher" "${origin_block}" \
+    "@easy_all_bad_origin expression {http.request.header.X-Easy-All-Origin-Key}"
+assert_contains "源站守卫 abort" "${origin_block}" "abort @easy_all_bad_origin"
+assert_before "源站守卫 matcher 早于任何 handle" \
+    "$(line_of "${origin_ready_file}" '@easy_all_bad_origin expression')" \
+    "$(line_of "${origin_ready_file}" 'handle /vless-abcdef123456 {')"
+assert_before "源站守卫 abort 早于任何 handle" \
+    "$(line_of "${origin_ready_file}" 'abort @easy_all_bad_origin')" \
+    "$(line_of "${origin_ready_file}" 'handle /vless-abcdef123456 {')"
+assert_contains "源站精确代理路径" "${origin_block}" "handle /vless-abcdef123456 {"
+assert_contains "源站反代回环 10086" "${origin_block}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "源站订阅入口" "${origin_block}" "@easy_all_sub path /subscribe /sub"
+assert_contains "源站 health" "${origin_block}" \
+    'respond @easy_all_health "easy_all ok" 200'
+assert_contains "源站兜底 404" "${origin_block}" "respond 404"
+assert_count "Reality 两站点各一处 file_server" "${reality_ready}" "file_server" 2
+
+# blocked=1：只砍掉 CDN 回源（代理路径 503、无 10086 反代），Reality 直连与伪装站照旧。
+blocked_origin=$(caddy_site_block_lines "${reality_blocked_file}" 8443)
+assert_contains "blocked 代理路径 503" "${blocked_origin}" "respond 503"
+assert_not_contains "blocked 不反代回环" "${blocked_origin}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "blocked 保留订阅入口" "${blocked_origin}" "@easy_all_sub path /subscribe /sub"
+assert_contains "blocked 保留 9443 伪装站" "$(<"${reality_blocked_file}")" \
+    "https://direct.example.com:9443 {"
+assert_contains "blocked 保留源站头守卫" "${blocked_origin}" "abort @easy_all_bad_origin"
+
+# 订阅未就绪：8443 渲染成裸 503（不下发产物、不挂 file_server），伪装站不受影响。
+unready_origin=$(caddy_site_block_lines "${reality_unready_file}" 8443)
+assert_contains "订阅未就绪时 503" "${unready_origin}" "respond 503"
+assert_not_contains "订阅未就绪时不下发产物" "${unready_origin}" "rewrite *"
+assert_not_contains "订阅未就绪时订阅站不挂 file_server" "${unready_origin}" "file_server"
+assert_contains "订阅未就绪不影响伪装站" "$(<"${reality_unready_file}")" \
+    "https://direct.example.com:9443 {"
+
+(
+    CADDY_BIN=${TMP_DIR}/absent/caddy
+    PROTOCOL=reality-self
+    validate_caddy_config "${reality_ready_file}" || exit 1
+    validate_caddy_config "${reality_blocked_file}" || exit 1
+    validate_caddy_config "${reality_unready_file}" || exit 1
+    # 正例：目录名含 /sub、/subscribe 子串，证书路径含 /subscribe，域名以 subscribe/sub2 开头。
+    for pattern in 'sub-camo' 'subscribe-camo'; do
+        sed "s|^\t\troot \* .*|\t\troot * ${TMP_DIR}/${pattern}|" "${reality_ready_file}" \
+            >"${TMP_DIR}/reality-camo-${pattern}"
+        validate_caddy_config "${TMP_DIR}/reality-camo-${pattern}" || exit 1
+    done
+    sed "s|^\ttls .*|\ttls ${TMP_DIR}/subscribe-certs/fullchain.pem ${TMP_DIR}/subscribe-certs/private.key|" \
+        "${reality_ready_file}" >"${TMP_DIR}/reality-camo-subscribe-cert"
+    validate_caddy_config "${TMP_DIR}/reality-camo-subscribe-cert" || exit 1
+    for host in subscribe.example.com sub2.example.com; do
+        sed "s|^https://direct.example.com:9443 {|https://${host}:9443 {|" "${reality_ready_file}" \
+            >"${TMP_DIR}/reality-camo-host"
+        validate_caddy_config "${TMP_DIR}/reality-camo-host" || exit 1
+    done
+    # 负例：伪装块出现 health / 订阅入口 / 源站守卫，任一项都必须被拒。
+    awk '{print} /^\t\troot \* / {print "\t\t@easy_all_health path /easy_all-health"; \
+        print "\t\trespond @easy_all_health \"easy_all ok\" 200"}' \
+        "${reality_ready_file}" >"${TMP_DIR}/reality-camo-health"
+    validate_caddy_config "${TMP_DIR}/reality-camo-health" >/dev/null 2>&1 && exit 1
+    awk '{print} /^\t\troot \* / {print "\t\t@easy_all_sub path /subscribe /sub"}' \
+        "${reality_ready_file}" >"${TMP_DIR}/reality-camo-sub"
+    validate_caddy_config "${TMP_DIR}/reality-camo-sub" >/dev/null 2>&1 && exit 1
+    awk '{print} /^\t\troot \* / {
+        print "\t\t@easy_all_bad_origin expression {http.request.header.X-Easy-All-Origin-Key} != \x27x\x27";
+        print "\t\tabort @easy_all_bad_origin"}' \
+        "${reality_ready_file}" >"${TMP_DIR}/reality-camo-guard"
+    validate_caddy_config "${TMP_DIR}/reality-camo-guard" >/dev/null 2>&1 && exit 1
+    # 负例：伪装块多一处 file_server（不在页面 handle 内）必须被拒。
+    awk '{print} /^\troute \{$/ && !seen {print "\t\tfile_server"; seen = 1}' \
+        "${reality_ready_file}" >"${TMP_DIR}/reality-camo-file-server"
+    validate_caddy_config "${TMP_DIR}/reality-camo-file-server" >/dev/null 2>&1 && exit 1
+    # 负例：8443 源站守卫晚于 handle（把两行守卫挪到首个 handle 之后）。
+    awk '
+        /^[\t]+@easy_all_bad_origin expression/ { matcher = $0; next }
+        /^[\t]+abort @easy_all_bad_origin[[:space:]]*$/ { abort_line = $0; next }
+        {
+            print
+            if (!moved && $0 ~ /^[\t]+handle \/vless-/) { print matcher; print abort_line; moved = 1 }
+        }
+    ' "${reality_ready_file}" >"${TMP_DIR}/reality-guard-late"
+    validate_caddy_config "${TMP_DIR}/reality-guard-late" >/dev/null 2>&1 && exit 1
+    # 负例：8443 源站完全缺少守卫。
+    sed '/@easy_all_bad_origin/d' "${reality_ready_file}" >"${TMP_DIR}/reality-guard-missing"
+    validate_caddy_config "${TMP_DIR}/reality-guard-missing" >/dev/null 2>&1 && exit 1
+    # 负例：多出第三个顶层站点块（渲染器重复写入）。
+    cp "${reality_ready_file}" "${TMP_DIR}/reality-three-blocks"
+    cat >>"${TMP_DIR}/reality-three-blocks" <<'EXTRA'
+https://extra.example.com:10443 {
+	bind 127.0.0.1
+	tls /x /y
+	route {
+		respond 404
+	}
+}
+EXTRA
+    validate_caddy_config "${TMP_DIR}/reality-three-blocks" >/dev/null 2>&1 && exit 1
+    exit 0
+) || fail "Reality 结构校验行为不符合预期"
 
 # --- 输入校验 ---------------------------------------------------------------
 if (PROTOCOL=anytls; SUBSCRIPTION_MODE=link; render_caddy_config "${TMP_DIR}/x" 0 1) >/dev/null 2>&1; then

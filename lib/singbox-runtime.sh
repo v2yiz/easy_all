@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
-# 五模式 sing-box 本机配置与客户端节点（design §7、§12）。
+# 六模式 sing-box 本机配置与客户端节点（design §7、§12）。
 # 依赖调用方提供 log.sh 的 die/warn/info/fail，以及模式字段：
 # PROTOCOL、DIRECT_DOMAIN、DIRECT_NODE_NAME、ANYTLS_PASSWORD、VLESS_UUID、VLESS_PATH、
+# REALITY_PRIVATE_KEY、REALITY_PUBLIC_KEY、REALITY_SHORT_ID、
 # CF_NODE_DOMAIN、CF_NODE_PREFIX。CF_EDGE_ADDRESS 可选：非空时只替换本机 CDN 节点的
-# 连接地址，SNI 与 WebSocket Host 仍是 CF_NODE_DOMAIN（订阅配置里的 cdnEdgeAddress）。
+# 连接地址，SNI 与 HTTPUpgrade Host 仍是 CF_NODE_DOMAIN（订阅配置里的 cdnEdgeAddress）。
 # 证书路径与核心路径可用环境变量覆盖（测试隔离）。
 
 SINGBOX_RUNTIME_LIB_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
@@ -19,7 +20,7 @@ source "${SINGBOX_RUNTIME_LIB_DIR}/singbox-core.sh"
 
 singbox_require_protocol() {
     case "${PROTOCOL:-}" in
-    anytls | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
+    anytls | reality-self | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
@@ -31,9 +32,13 @@ singbox_protocol_has_anytls() {
     return 1
 }
 
+singbox_protocol_has_reality() {
+    [[ "${PROTOCOL:-}" == "reality-self" ]]
+}
+
 singbox_protocol_has_cdn() {
     case "${PROTOCOL:-}" in
-    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
+    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare | reality-self) return 0 ;;
     esac
     return 1
 }
@@ -73,7 +78,36 @@ singbox_anytls_inbound_json() {
         }'
 }
 
-# blocked=1 时省略 CDN 入站：模式 5 保留 AnyTLS，重启核心即终止旧 CDN 长连接。
+# Reality 自偷入站：443 上完成 REALITY 握手，非 Reality 探测由 sing-box 透明转发到
+# 127.0.0.1:9443 的 Caddy 伪装站（端口常量见 caddy_reality_camouflage_port）。
+singbox_reality_inbound_json() {
+    singbox_protocol_has_reality || { printf 'null'; return 0; }
+    [[ -n "${DIRECT_DOMAIN:-}" ]] || die "缺少 DIRECT_DOMAIN，无法生成 Reality 入站"
+    [[ -n "${VLESS_UUID:-}" ]] || die "缺少 VLESS_UUID，无法生成 Reality 入站"
+    [[ -n "${REALITY_PRIVATE_KEY:-}" ]] || die "缺少 REALITY_PRIVATE_KEY，无法生成 Reality 入站"
+    [[ -n "${REALITY_SHORT_ID:-}" ]] || die "缺少 REALITY_SHORT_ID，无法生成 Reality 入站"
+    jq -cn --arg uuid "${VLESS_UUID}" --arg domain "${DIRECT_DOMAIN}" \
+        --arg key "${REALITY_PRIVATE_KEY}" --arg sid "${REALITY_SHORT_ID}" '
+        {
+          type: "vless",
+          tag: "vless-reality-in",
+          listen: "0.0.0.0",
+          listen_port: 443,
+          users: [{name: "easy_all", uuid: $uuid, flow: "xtls-rprx-vision"}],
+          tls: {
+            enabled: true,
+            server_name: $domain,
+            reality: {
+              enabled: true,
+              handshake: {server: "127.0.0.1", server_port: 9443},
+              private_key: $key,
+              short_id: [$sid]
+            }
+          }
+        }'
+}
+
+# blocked=1 时省略 CDN 入站：模式 5/6 保留直连入站，重启核心即终止旧 CDN 长连接。
 singbox_vless_inbound_json() {
     local blocked=$1
     singbox_protocol_has_cdn || { printf 'null'; return 0; }
@@ -87,15 +121,16 @@ singbox_vless_inbound_json() {
           listen: "127.0.0.1",
           listen_port: 10086,
           users: [{name: "easy_all", uuid: $uuid}],
-          transport: {type: "ws", path: $path}
+          transport: {type: "httpupgrade", path: $path}
         }'
 }
 
 singbox_inbounds_json() {
     local blocked=$1
     jq -cn --argjson anytls "$(singbox_anytls_inbound_json)" \
+        --argjson reality "$(singbox_reality_inbound_json)" \
         --argjson vless "$(singbox_vless_inbound_json "${blocked}")" \
-        '[$anytls, $vless] | map(select(. != null))'
+        '[$anytls, $reality, $vless] | map(select(. != null))'
 }
 
 render_singbox_config() {
@@ -214,6 +249,34 @@ build_mihomo_anytls_node() {
         "    client-fingerprint: chrome\n    udp: true\n    skip-cert-verify: false\n"'
 }
 
+build_reality_link() {
+    [[ -n "${DIRECT_DOMAIN:-}" ]] || die "缺少 DIRECT_DOMAIN，无法生成 Reality 节点链接"
+    [[ -n "${VLESS_UUID:-}" ]] || die "缺少 VLESS_UUID，无法生成 Reality 节点链接"
+    [[ -n "${REALITY_PUBLIC_KEY:-}" ]] || die "缺少 REALITY_PUBLIC_KEY，无法生成 Reality 节点链接"
+    [[ -n "${REALITY_SHORT_ID:-}" ]] || die "缺少 REALITY_SHORT_ID，无法生成 Reality 节点链接"
+    # 节点名可含空格/表情/分隔符，必须 URI 编码后才能出现在 # 片段。
+    printf 'vless://%s@%s:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&packetEncoding=xudp#%s' \
+        "${VLESS_UUID}" "${DIRECT_DOMAIN}" "${DIRECT_DOMAIN}" \
+        "${REALITY_PUBLIC_KEY}" "${REALITY_SHORT_ID}" \
+        "$(singbox_uri_encode "${DIRECT_NODE_NAME}")"
+}
+
+# 不开 support-x25519mlkem768：保持经典 X25519，与服务端 sing-box 1.14.4 握手一致。
+build_mihomo_reality_node() {
+    [[ -n "${DIRECT_DOMAIN:-}" ]] || die "缺少 DIRECT_DOMAIN，无法生成 Reality 节点"
+    [[ -n "${VLESS_UUID:-}" ]] || die "缺少 VLESS_UUID，无法生成 Reality 节点"
+    [[ -n "${REALITY_PUBLIC_KEY:-}" ]] || die "缺少 REALITY_PUBLIC_KEY，无法生成 Reality 节点"
+    [[ -n "${REALITY_SHORT_ID:-}" ]] || die "缺少 REALITY_SHORT_ID，无法生成 Reality 节点"
+    jq -nr --arg name "${DIRECT_NODE_NAME}" --arg server "${DIRECT_DOMAIN}" \
+        --arg uuid "${VLESS_UUID}" --arg pbk "${REALITY_PUBLIC_KEY}" \
+        --arg sid "${REALITY_SHORT_ID}" '
+        "  - name: \($name|@json)\n    type: vless\n    server: \($server|@json)\n    port: 443\n" +
+        "    uuid: \($uuid|@json)\n    tls: true\n    udp: true\n" +
+        "    flow: xtls-rprx-vision\n    servername: \($server|@json)\n" +
+        "    client-fingerprint: chrome\n    packet-encoding: xudp\n" +
+        "    reality-opts:\n      public-key: \($pbk|@json)\n      short-id: \($sid|@json)\n"'
+}
+
 build_vless_ws_link() {
     [[ -n "${CF_NODE_DOMAIN:-}" ]] || die "缺少 CF_NODE_DOMAIN，无法生成 VLESS 节点链接"
     [[ -n "${VLESS_UUID:-}" ]] || die "缺少 VLESS_UUID，无法生成 VLESS 节点链接"
@@ -221,13 +284,13 @@ build_vless_ws_link() {
     local encoded_host
     encoded_host=$(singbox_uri_encode "${CF_NODE_DOMAIN}")
     # 连接地址可用 cdnEdgeAddress 换成优选域名；sni/host 仍是分发域名（证书与分发按它选）。
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&host=%s&path=%s&packetEncoding=xudp#%s' \
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=httpupgrade&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${CF_EDGE_ADDRESS:-${CF_NODE_DOMAIN}}" "${encoded_host}" "${encoded_host}" \
         "$(singbox_uri_encode "${VLESS_PATH}")" \
         "$(singbox_uri_encode "${CF_NODE_PREFIX}")"
 }
 
-# server 是连接地址（可为优选域名），servername 与 ws Host 必须是节点域名。
+# server 是连接地址（可为优选域名），servername 与 HTTPUpgrade Host 必须是节点域名。
 build_mihomo_ws_node() {
     [[ -n "${CF_NODE_DOMAIN:-}" ]] || die "缺少 CF_NODE_DOMAIN，无法生成 VLESS 节点"
     [[ -n "${VLESS_UUID:-}" ]] || die "缺少 VLESS_UUID，无法生成 VLESS 节点"
@@ -239,7 +302,9 @@ build_mihomo_ws_node() {
         "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
         "    skip-cert-verify: false\n    servername: \($host|@json)\n" +
         "    client-fingerprint: chrome\n    packet-encoding: xudp\n" +
-        "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($host|@json)\n"'
+        "    alpn:\n      - http/1.1\n" +
+        "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($host|@json)\n" +
+        "      v2ray-http-upgrade: true\n      v2ray-http-upgrade-fast-open: true\n"'
 }
 
 # --- sing-box 客户端订阅节点 -------------------------------------------------
@@ -255,7 +320,23 @@ build_singbox_anytls_outbound() {
                utls: {enabled: true, fingerprint: "chrome"}}}'
 }
 
-# 本机 CDN 节点：连接地址可用 cdnEdgeAddress 换成优选域名；SNI 与 WebSocket Host
+build_singbox_reality_outbound() {
+    [[ -n "${DIRECT_DOMAIN:-}" ]] || die "缺少 DIRECT_DOMAIN，无法生成 sing-box Reality 节点"
+    [[ -n "${VLESS_UUID:-}" ]] || die "缺少 VLESS_UUID，无法生成 sing-box Reality 节点"
+    [[ -n "${REALITY_PUBLIC_KEY:-}" ]] || die "缺少 REALITY_PUBLIC_KEY，无法生成 sing-box Reality 节点"
+    [[ -n "${REALITY_SHORT_ID:-}" ]] || die "缺少 REALITY_SHORT_ID，无法生成 sing-box Reality 节点"
+    jq -cn --arg tag "${DIRECT_NODE_NAME}" --arg server "${DIRECT_DOMAIN}" \
+        --arg uuid "${VLESS_UUID}" --arg pbk "${REALITY_PUBLIC_KEY}" \
+        --arg sid "${REALITY_SHORT_ID}" '
+        {type: "vless", tag: $tag, server: $server, server_port: 443, uuid: $uuid,
+         flow: "xtls-rprx-vision",
+         tls: {enabled: true, server_name: $server,
+               utls: {enabled: true, fingerprint: "chrome"},
+               reality: {enabled: true, public_key: $pbk, short_id: $sid}},
+         packet_encoding: "xudp"}'
+}
+
+# 本机 CDN 节点：连接地址可用 cdnEdgeAddress 换成优选域名；SNI 与 HTTPUpgrade Host
 # 仍是节点域名，源站头永不进入客户端。
 build_singbox_ws_outbound() {
     [[ -n "${CF_NODE_DOMAIN:-}" ]] || die "缺少 CF_NODE_DOMAIN，无法生成 sing-box VLESS 节点"
@@ -264,8 +345,8 @@ build_singbox_ws_outbound() {
     jq -cn --arg tag "${CF_NODE_PREFIX}" --arg server "${CF_EDGE_ADDRESS:-${CF_NODE_DOMAIN}}" \
         --arg host "${CF_NODE_DOMAIN}" --arg uuid "${VLESS_UUID}" --arg path "${VLESS_PATH}" '
         {type: "vless", tag: $tag, server: $server, server_port: 443, uuid: $uuid,
-         tls: {enabled: true, server_name: $host,
+         tls: {enabled: true, server_name: $host, alpn: ["http/1.1"],
                utls: {enabled: true, fingerprint: "chrome"}},
-         transport: {type: "ws", path: $path, headers: {Host: $host}},
+         transport: {type: "httpupgrade", host: $host, path: $path},
          packet_encoding: "xudp"}'
 }

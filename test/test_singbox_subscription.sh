@@ -41,6 +41,9 @@ VLESS_UUID="11111111-2222-4111-8111-111111111111"
 VLESS_PATH="/vless-abcdef123456"
 REALITY_UUID="22222222-3333-4444-8555-666666666666"
 REALITY_PBK="q1w2e3r4t5y6u7i8o9p0asdfghjklzxcvbnm1234567"
+# 模式 6 服务端私钥：固定 32 字节示例值，只用于断言它绝不进入客户端订阅。
+REALITY_PRIV="$(printf 'A%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')"
+REALITY_SID="ab12cd34"
 ORIGIN_SECRET="origin-secret-do-not-leak"
 # 聚合节点：1 个可用 Reality，其余分别为关闭 MLKEM 的 Reality、xhttp 与 mieru。
 AGGREGATION_NODES_FIXTURE=$(jq -cn --arg uuid "${REALITY_UUID}" --arg pbk "${REALITY_PBK}" '[
@@ -101,6 +104,7 @@ render_mode() { # $1=profile $2=输出目录（$3=可选的 cdnEdgeAddress）
         export SINGBOX_CONFIG="${out}/config.json"
         export CADDY_CONFIG="${out}/Caddyfile"
         export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${out}/subs"
+        export CAMOUFLAGE_DIR="${out}/camouflage"
         # shellcheck source=/dev/null
         source "${ROOT_DIR}/profiles/${profile}.sh"
         CF_ZONE=example.com
@@ -113,7 +117,15 @@ render_mode() { # $1=profile $2=输出目录（$3=可选的 cdnEdgeAddress）
         if state_protocol_has_direct_entry "${PROTOCOL}"; then
             DIRECT_DOMAIN=direct.example.com
             DIRECT_NODE_NAME="🇺🇸直连"
+        fi
+        if state_protocol_has_anytls_entry "${PROTOCOL}"; then
             ANYTLS_PASSWORD=${ANYTLS_PASSWORD}
+        fi
+        if state_protocol_has_reality_entry "${PROTOCOL}"; then
+            VLESS_UUID=${VLESS_UUID}
+            REALITY_PRIVATE_KEY=${REALITY_PRIV}
+            REALITY_PUBLIC_KEY=${REALITY_PBK}
+            REALITY_SHORT_ID=${REALITY_SID}
         fi
         if state_protocol_has_cdn_entry "${PROTOCOL}"; then
             CF_NODE_DOMAIN=cf.example.com
@@ -187,10 +199,10 @@ assert_equal "AnyTLS 节点字段" \
     "anytls direct.example.com 443 ${ANYTLS_PASSWORD} direct.example.com false chrome" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸直连") |
         "\(.type) \(.server) \(.server_port) \(.password) \(.tls.server_name) \(.tls.insecure // false) \(.tls.utls.fingerprint)"' "${default_json}")"
-assert_equal "VLESS WS 节点字段" \
-    "vless cf.example.com 443 ${VLESS_UUID} ws ${VLESS_PATH} cf.example.com xudp" \
+assert_equal "VLESS HTTPUpgrade 节点字段" \
+    "vless cf.example.com 443 ${VLESS_UUID} httpupgrade ${VLESS_PATH} cf.example.com [\"http/1.1\"] xudp" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
-        "\(.type) \(.server) \(.server_port) \(.uuid) \(.transport.type) \(.transport.path) \(.transport.headers.Host) \(.packet_encoding)"' "${default_json}")"
+        "\(.type) \(.server) \(.server_port) \(.uuid) \(.transport.type) \(.transport.path) \(.transport.host) \(.tls.alpn) \(.packet_encoding)"' "${default_json}")"
 assert_equal "Reality 节点字段" \
     "vless reality.example.com 8443 ${REALITY_UUID} xtls-rprx-vision reality.example.com ${REALITY_PBK} ab12cd34 chrome xudp" \
     "$(jq -r '.outbounds[] | select(.tag == "R-可用") |
@@ -382,11 +394,39 @@ while IFS='|' read -r profile expected_default has_direct; do
     assert_contains "${profile} all 订阅包含 optional 节点" "$(tags "${mode_out}/subs/singbox-all.json")" "R-可用"
 done <<'PROFILES'
 anytls|🇺🇸直连|yes
+reality-self|🇺🇸直连|yes
 cloudfront|🇺🇸CF|no
 cloudflare|🇺🇸CF|no
 combined|🇺🇸直连|yes
 combined-cloudflare|🇺🇸直连|yes
 PROFILES
+
+# --- 模式 6：Reality + CloudFront 双本地节点进入 JSON 订阅 -------------------
+reality_out="${TMP_DIR}/reality-self"
+render_mode reality-self "${reality_out}" >"${reality_out}.log" 2>&1 || {
+    cat "${reality_out}.log" >&2
+    fail "模式 6 订阅渲染失败"
+}
+reality_json="${reality_out}/subs/singbox.json"
+assert_equal "模式 6 本机 Reality 节点字段" \
+    "vless direct.example.com 443 ${VLESS_UUID} xtls-rprx-vision direct.example.com ${REALITY_PBK} ab12cd34 chrome xudp" \
+    "$(jq -r '.outbounds[] | select(.tag == "🇺🇸直连") |
+        "\(.type) \(.server) \(.server_port) \(.uuid) \(.flow) \(.tls.server_name) \(.tls.reality.public_key) \(.tls.reality.short_id) \(.tls.utls.fingerprint) \(.packet_encoding)"' "${reality_json}")"
+assert_equal "模式 6 本机 CloudFront 节点字段" \
+    "vless cf.example.com 443 ${VLESS_UUID} httpupgrade cf.example.com ${VLESS_PATH} xudp" \
+    "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
+        "\(.type) \(.server) \(.server_port) \(.uuid) \(.transport.type) \(.tls.server_name) \(.transport.path) \(.packet_encoding)"' "${reality_json}")"
+assert_equal "模式 6 两个本机节点按 Reality → CloudFront 顺序" \
+    '["🇺🇸直连","🇺🇸CF"]' \
+    "$(jq -c '[.outbounds[] | select(.tag == "🇺🇸直连" or .tag == "🇺🇸CF") | .tag]' "${reality_json}")"
+assert_equal "模式 6 不写 PQ 开关" 'null' \
+    "$(jq -c '.outbounds[] | select(.tag == "🇺🇸直连") | .tls.reality.support_x25519mlkem768 // null' "${reality_json}")"
+assert_not_contains "模式 6 订阅不泄私钥" "$(<"${reality_json}")" "${REALITY_PRIV}"
+assert_not_contains "模式 6 订阅不泄源站密钥" "$(<"${reality_json}")" "${ORIGIN_SECRET}"
+assert_equal "模式 6 不生成 AnyTLS 节点" "0" \
+    "$(jq -r '[.outbounds[] | select(.type == "anytls")] | length' "${reality_json}")"
+assert_equal "模式 6 PROXY 默认选择 Reality 节点" '"🇺🇸直连"' \
+    "$(jq -c '.outbounds[] | select(.tag == "PROXY") | .default' "${reality_json}")"
 
 # --- 候选校验拒绝错误配置 -----------------------------------------------------
 validate_with_lib() {
@@ -519,7 +559,7 @@ for edge_artifact in singbox.json singbox-all.json; do
     assert_equal "优选地址替换 ${edge_artifact} 本机 CDN 节点" \
         "k2v8nq4zt6.cloudfront.182682.xyz cf.example.com cf.example.com" \
         "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
-            "\(.server) \(.tls.server_name) \(.transport.headers.Host)"' \
+            "\(.server) \(.tls.server_name) \(.transport.host)"' \
             "${edge_out}/subs/${edge_artifact}")"
 done
 for edge_artifact in mihomo.yaml mihomo-all.yaml; do

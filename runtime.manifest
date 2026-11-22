@@ -1,5 +1,6 @@
 # Files installed as the easy_all runtime.
 profiles/anytls.sh
+profiles/reality-self.sh
 profiles/cloudfront.sh
 profiles/cloudflare.sh
 profiles/combined.sh
@@ -12,6 +13,7 @@ lib/profile-common.sh
 lib/network.sh
 lib/mihomo-template.sh
 lib/firewall.sh
+lib/probe-log.sh
 lib/scheduled-maintenance.sh
 lib/subscription-auth.sh
 lib/local-aggregation.sh
@@ -33,3 +35,5 @@ templates/singbox.json
 templates/aggregation.example.json
 templates/mihomo-common.yaml
 templates/mihomo-classic.yaml
+templates/camouflage-login.html
+scripts/hellogfw.py

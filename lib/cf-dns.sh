@@ -167,6 +167,25 @@ cloudflare_ensure_zone_ssl_strict() {
     esac
 }
 
+# Zone 级 WebSockets 开关只读预检：橙云 VLESS 节点走 HTTPUpgrade（HTTP/1.1 Upgrade），
+# 与 WebSocket 共用同一升级机制，因此 Zone 关闭 WebSockets 时链路必然失败。
+# 与 SSL 模式校验同一口径：只读、不修改全区设置，且必须先于任何 DNS/证书/Origin Rule 写入。
+cloudflare_ensure_zone_websockets_on() {
+    local zone_id=${1:-${CLOUDFLARE_ZONE_ID:-}} response value
+    [[ -n "${zone_id}" ]] || die "缺少 Cloudflare Zone ID；无法校验 WebSockets 开关"
+    response=$(cloudflare_api_request GET "/zones/${zone_id}/settings/websockets") || return 1
+    value=$(jq -r '.value // empty' <<<"${response}") || value=""
+    case "${value}" in
+    on) return 0 ;;
+    "")
+        die "Cloudflare Zone ${zone_id} 的 WebSockets 设置读取结果为空；请在控制台确认 Network -> WebSockets 为 On 后重试"
+        ;;
+    *)
+        die "Cloudflare Zone ${zone_id} 的 WebSockets 设置是 ${value}，HTTPUpgrade/WebSocket 链路要求开启 WebSockets：请在控制台 Network -> WebSockets 开启后重试（本工具不会自动修改全区设置）"
+        ;;
+    esac
+}
+
 cloudflare_lookup_parent_zone() {
     local domain=$1 candidate zone
     candidate=${domain}
