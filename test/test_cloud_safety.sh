@@ -250,6 +250,93 @@ assert_contains "模式 3 websockets on：执行到证书签发" "${ws_on_log}" 
 assert_contains "模式 3 websockets on：执行到 Origin Rule" "${ws_on_log}" "RULE"
 assert_contains "模式 3 websockets on：成功结束" "${ws_on_log}" "STATUS=0"
 
+# 交互终端下预检失败时给 1 次重试机会：首次 off → 提示后回车 → 变为 on 则通过，仍 off 则阻断。
+run_interactive_ws_retry_case() {
+    local second_value=$1
+    local case_dir="${TMP_DIR}/ws-retry-${second_value}"
+    local log="${case_dir}/run.log"
+    local script="${case_dir}/run.sh"
+    local count_file="${case_dir}/ws.count"
+    mkdir -p "${case_dir}/runtime" "${case_dir}/state"
+    cat >"${script}" <<RETRY
+set -Eeuo pipefail
+export RUNTIME_TMP=$(printf '%q' "${case_dir}/runtime")
+export EASY_ALL_STATE_DIR_OVERRIDE=$(printf '%q' "${case_dir}/state")
+export EASY_ALL_CERT_DIR_OVERRIDE=$(printf '%q' "${case_dir}/state/certs")
+export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE=$(printf '%q' "${case_dir}/state/subscriptions")
+source $(printf '%q' "${ROOT_DIR}/profiles/cloudflare.sh")
+CF_ZONE=example.com
+VPS_PUBLIC_IPV4=203.0.113.10
+CF_NODE_DOMAIN=cf.example.com
+CLOUDFLARE_API_TOKEN=$(printf '%q' "${TOKEN}")
+COUNT_FILE=$(printf '%q' "${count_file}")
+cloudflare_api_request() {
+    printf '%s %s\n' "\$1" "\$2" >>$(printf '%q' "${log}")
+    case "\$1 \$2" in
+    "GET /zones?name=example.com&status=active&per_page=50")
+        printf '[{"name":"example.com","id":"zoneid"}]\n' ;;
+    "GET /zones/zoneid/settings/ssl")
+        printf '{"value":"strict"}\n' ;;
+    "GET /zones/zoneid/settings/websockets")
+        local n=0
+        [[ -f "\${COUNT_FILE}" ]] && n=\$(<"\${COUNT_FILE}")
+        n=\$((n + 1))
+        printf '%s\n' "\${n}" >"\${COUNT_FILE}"
+        if ((n == 1)); then
+            printf '{"value":"off"}\n'
+        else
+            printf '{"value":"%s"}\n' $(printf '%q' "${second_value}")
+        fi ;;
+    *) return 1 ;;
+    esac
+}
+persist_cloudflare_token() { :; }
+dns_ensure_record() { printf 'DNS %s\n' "\$1" >>$(printf '%q' "${log}"); }
+cdn_issue_certificate() { printf 'CERT\n' >>$(printf '%q' "${log}"); }
+apply_cloud_phase
+RETRY
+    local status=0
+    python3 - "${script}" <<'PY' >"${case_dir}/tty.out" 2>&1 || status=$?
+import os, pty, select, subprocess, sys
+master, slave = pty.openpty()
+proc = subprocess.Popen(["bash", sys.argv[1]], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+os.close(slave)
+sent = False
+buf = b""
+while True:
+    r, _, _ = select.select([master], [], [], 5.0)
+    if not r:
+        break
+    try:
+        chunk = os.read(master, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    buf += chunk
+    if not sent and "按回车重试".encode("utf-8") in buf:
+        os.write(master, b"\n")
+        sent = True
+os.close(master)
+sys.stdout.buffer.write(buf)
+sys.exit(proc.wait())
+PY
+    printf 'STATUS=%s\n' "${status}" >>"${log}"
+    cat "${log}"
+}
+
+retry_pass_log=$(run_interactive_ws_retry_case on)
+assert_contains "交互重试后变为 on：成功结束" "${retry_pass_log}" "STATUS=0"
+assert_contains "交互重试后变为 on：继续创建 DNS" "${retry_pass_log}" "DNS cf.example.com"
+assert_equal "交互重试后变为 on：恰查询 2 次 WebSockets" "2" \
+    "$(grep -c 'settings/websockets' <<<"${retry_pass_log}")"
+
+retry_fail_log=$(run_interactive_ws_retry_case off)
+assert_not_contains "交互重试后仍 off：非零阻断" "${retry_fail_log}" "STATUS=0"
+assert_not_contains "交互重试后仍 off：不创建 DNS" "${retry_fail_log}" "DNS "
+assert_equal "交互重试后仍 off：恰查询 2 次 WebSockets（仅 1 次重试机会）" "2" \
+    "$(grep -c 'settings/websockets' <<<"${retry_fail_log}")"
+
 # 模式 1 link：不调用 Zone Settings 接口（design §9）。
 link_runtime="${TMP_DIR}/link-runtime"
 link_state="${TMP_DIR}/link-state"

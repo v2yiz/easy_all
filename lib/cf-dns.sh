@@ -148,42 +148,43 @@ cloudflare_configure_origin_firewall() {
     ufw reload >/dev/null || die "重载 UFW 失败"
 }
 
-# Zone 级 SSL/TLS 模式严格校验（design §9）：只读、不修改全区设置。
-# 只有 value=strict 才继续；权限不足 403 与 full/flexible/off 都必须在此停止，
+# Zone 级设置只读预检（design §9）：只读、不修改全区设置；
+# 仅在交互终端且读到不合规值时给 1 次提示重试机会，非交互或 403 立即阻断。
+_cloudflare_ensure_zone_setting() {
+    local zone_id=$1 setting_path=$2 expected=$3 label=$4 hint=$5
+    local response value retried=0 _ignored
+    [[ -n "${zone_id}" ]] || die "缺少 Cloudflare Zone ID；无法校验 ${label}"
+    while true; do
+        response=$(cloudflare_api_request GET "/zones/${zone_id}/settings/${setting_path}") || return 1
+        value=$(jq -r '.value // empty' <<<"${response}") || value=""
+        [[ "${value}" == "${expected}" ]] && return 0
+        if ((retried == 0)) && [[ -t 0 ]]; then
+            retried=1
+            warn "Cloudflare Zone ${zone_id} 的 ${label} 当前为 ${value:-空}（要求 ${expected}）：请${hint}，完成后按回车重试（Ctrl+C 退出；本工具不会自动修改全区设置）"
+            IFS= read -r _ignored || true
+            continue
+        fi
+        if [[ -z "${value}" ]]; then
+            die "Cloudflare Zone ${zone_id} 的 ${label} 读取结果为空；请${hint}后重试"
+        fi
+        die "Cloudflare Zone ${zone_id} 的 ${label} 是 ${value}，本工具要求 ${expected}：请${hint}后重试（本工具不会自动修改全区设置）"
+    done
+}
+
+# Zone 级 SSL/TLS 模式严格校验（design §9）：只有 value=strict 才继续，
 # 且必须发生在任何 DNS/证书/Origin Rule 写入之前。
 cloudflare_ensure_zone_ssl_strict() {
-    local zone_id=${1:-${CLOUDFLARE_ZONE_ID:-}} response value
-    [[ -n "${zone_id}" ]] || die "缺少 Cloudflare Zone ID；无法校验 SSL 模式"
-    response=$(cloudflare_api_request GET "/zones/${zone_id}/settings/ssl") || return 1
-    value=$(jq -r '.value // empty' <<<"${response}") || value=""
-    case "${value}" in
-    strict) return 0 ;;
-    "")
-        die "Cloudflare Zone ${zone_id} 的 SSL 模式读取结果为空；请在控制台确认 SSL/TLS 为 Full (strict) 后重试"
-        ;;
-    *)
-        die "Cloudflare Zone ${zone_id} 的 SSL 模式是 ${value}，本工具只支持 Full (strict)：请人工把 SSL/TLS 改为 Full (strict) 后重试（本工具不会自动修改全区设置）"
-        ;;
-    esac
+    _cloudflare_ensure_zone_setting \
+        "${1:-${CLOUDFLARE_ZONE_ID:-}}" \
+        "ssl" "strict" "SSL 模式" "在 Cloudflare 控制台将 SSL/TLS 改为 Full (strict)"
 }
 
 # Zone 级 WebSockets 开关只读预检：橙云 VLESS 节点走 WebSocket，
 # Zone 关闭 WebSockets 时链路必然失败。
-# 与 SSL 模式校验同一口径：只读、不修改全区设置，且必须先于任何 DNS/证书/Origin Rule 写入。
 cloudflare_ensure_zone_websockets_on() {
-    local zone_id=${1:-${CLOUDFLARE_ZONE_ID:-}} response value
-    [[ -n "${zone_id}" ]] || die "缺少 Cloudflare Zone ID；无法校验 WebSockets 开关"
-    response=$(cloudflare_api_request GET "/zones/${zone_id}/settings/websockets") || return 1
-    value=$(jq -r '.value // empty' <<<"${response}") || value=""
-    case "${value}" in
-    on) return 0 ;;
-    "")
-        die "Cloudflare Zone ${zone_id} 的 WebSockets 设置读取结果为空；请在控制台确认 Network -> WebSockets 为 On 后重试"
-        ;;
-    *)
-        die "Cloudflare Zone ${zone_id} 的 WebSockets 设置是 ${value}，WebSocket 链路要求开启 WebSockets：请在控制台 Network -> WebSockets 开启后重试（本工具不会自动修改全区设置）"
-        ;;
-    esac
+    _cloudflare_ensure_zone_setting \
+        "${1:-${CLOUDFLARE_ZONE_ID:-}}" \
+        "websockets" "on" "WebSockets 设置" "在 Cloudflare 控制台开启 Network -> WebSockets"
 }
 
 cloudflare_lookup_parent_zone() {
