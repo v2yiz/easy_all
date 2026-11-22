@@ -129,24 +129,24 @@ sudo easy_all subscription
 
 ## 常用运维命令
 
-安装后全局注册 `easy_all` 命令：
+安装后全局注册 `easy_all` 命令（需 root 权限运行，非 root 用户请加 `sudo`）：
 
 | 命令 | 功能说明 |
 | :--- | :--- |
-| `sudo easy_all status` | 查看系统负载、TCP 加速、服务运行状况、证书与流量保护额度 |
-| `sudo easy_all subscription` | 查看节点信息与所有用户的专属订阅链接 |
-| `sudo easy_all show` | 打印各节点详细参数、VLESS 链接与客户端配置片段 |
-| `sudo easy_all apply` | **纯本机重建**：刷新服务配置与订阅产物（不请求云端 API） |
-| `sudo easy_all apply-cloud` | **同步云端资源**：重新收敛 DNS、证书、CloudFront 分发或 Origin Rule |
-| `sudo easy_all edit-sub` | 交互式管理用户 Token 与外部聚合节点（也可改或删除 `cdnEdgeAddress` 优选连接地址） |
-| `sudo easy_all renew-cert` | 重新签发或轮换当前模式的 TLS 证书 |
-| `sudo easy_all hellogfw` | （仅模式 3/4/5/6）分析直连 TCP 443 主动探测日志线索；`hellogfw -h` 免 root<br>示例：`sudo easy_all hellogfw --since "7 days ago" --my-ip 203.0.113.10 --my-ip 198.51.100.20` |
-| `sudo easy_all cdn-traffic-sync` | （仅模式 2/3/5）手动采样 CDN 流量并同步熔断状态 |
-| `sudo easy_all update-core` | 重装或修复锁定版本的 sing-box 与 Caddy 核心 |
-| `sudo easy_all self-update` | 从 GitHub 更新 `easy_all` 脚本自身（`--dev` 切换开发分支） |
-| `sudo easy_all cleanup-partial` | 清理安装中断留下的本机临时残留（不改动云端资源） |
-| `sudo easy_all purge-cloud` | 独立清理当前域名下的 easy_all Cloudflare 与 CloudFront/ACM 资源 |
-| `sudo easy_all uninstall` | 完整卸载本机服务并同步清理关联云端资源 |
+| `easy_all status` | 查看系统负载、TCP 加速、服务运行状况、证书与流量保护额度 |
+| `easy_all subscription` | 查看节点信息与所有用户的专属订阅链接 |
+| `easy_all show` | 打印各节点详细参数、VLESS 链接与客户端配置片段 |
+| `easy_all apply` | **纯本机重建**：刷新服务配置与订阅产物（不请求云端 API） |
+| `easy_all apply-cloud` | **同步云端资源**：重新收敛 DNS、证书、CloudFront 分发或 Origin Rule |
+| `easy_all edit-sub` | 交互式管理用户 Token 与外部聚合节点<br>（也可改或删除 `cdnEdgeAddress` 优选连接地址） |
+| `easy_all renew-cert` | 重新签发或轮换当前模式的 TLS 证书 |
+| `easy_all hellogfw` | （仅模式 3/4/5/6）分析直连 TCP 443 主动探测日志线索；`hellogfw -h` 免 root<br>示例：`easy_all hellogfw --since "7 days ago" --my-ip 203.0.113.10 --my-ip 198.51.100.20` |
+| `easy_all cdn-traffic-sync` | （仅模式 2/3/5）手动采样 CDN 流量并同步熔断状态 |
+| `easy_all update-core` | 重装或修复锁定版本的 sing-box 与 Caddy 核心 |
+| `easy_all self-update` | 从 GitHub 更新 `easy_all` 脚本自身（`--dev` 切换开发分支） |
+| `easy_all cleanup-partial` | 清理安装中断留下的本机临时残留（不改动云端资源） |
+| `easy_all purge-cloud` | 独立清理当前域名下的 easy_all Cloudflare 与 CloudFront/ACM 资源 |
+| `easy_all uninstall` | 完整卸载本机服务并同步清理关联云端资源 |
 
 ---
 
