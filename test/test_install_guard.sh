@@ -1178,6 +1178,7 @@ rollback_retry_output=$(EASY_ALL_GUARD_STATE_DIR="${TMP_DIR}/rb-state2" \
         remove_certbot_deploy_hook() { :; }
         cdn_remove_origin_lineage() { :; }
         remove_daily_reboot_schedule() { :; }
+        remove_probe_log() { :; }
         cleanup_partial_install_files() { install_progress_clear; }
         cdn_print_cloud_inventory() { :; }
         rollback_fresh_install
