@@ -140,7 +140,7 @@ sudo easy_all subscription
 | `easy_all apply-cloud` | **同步云端资源**：重新收敛 DNS、证书、CloudFront 分发或 Origin Rule |
 | `easy_all edit-sub` | 交互式管理用户 Token 与外部聚合节点<br>（也可改或删除 `cdnEdgeAddress` 优选连接地址） |
 | `easy_all renew-cert` | 重新签发或轮换当前模式的 TLS 证书 |
-| `easy_all hellogfw` | （仅模式 3/4/5/6）分析直连 TCP 443 主动探测日志线索；`hellogfw -h` 免 root<br>示例：`easy_all hellogfw --since "7 days ago" --my-ip 203.0.113.10 --my-ip 198.51.100.20` |
+| `easy_all hellogfw` | （仅模式 3/4/5/6）分析直连 TCP 443 主动探测日志线索；`hellogfw -h` 免 root<br>示例：`easy_all hellogfw --since "7 days ago" --my-ip 203.0.113.10 --my-ip 198.51.100.20`<br>`--my-ip` 为可选项；不加时仅自动识别高频参照，输出里的候选 IP 也可能是你自己的客户端请求 |
 | `easy_all cdn-traffic-sync` | （仅模式 2/3/5）手动采样 CDN 流量并同步熔断状态 |
 | `easy_all update-core` | 重装或修复锁定版本的 sing-box 与 Caddy 核心 |
 | `easy_all self-update` | 从 GitHub 更新 `easy_all` 脚本自身（`--dev` 切换开发分支） |
