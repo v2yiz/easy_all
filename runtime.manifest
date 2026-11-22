@@ -1,6 +1,5 @@
 # Files installed as the easy_all runtime.
-profiles/anytls.sh
-profiles/reality-self.sh
+profiles/reality-cloudfront.sh
 profiles/reality-cloudflare.sh
 profiles/cloudfront.sh
 profiles/cloudflare.sh

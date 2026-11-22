@@ -23,7 +23,7 @@
 # 公网验收重试次数/间隔；测试可经 *_OVERRIDE 缩短，生产默认不变。
 readonly CDN_PUBLIC_ACCEPT_ATTEMPTS="${CDN_PUBLIC_ACCEPT_ATTEMPTS_OVERRIDE:-6}"
 readonly CDN_PUBLIC_ACCEPT_SECONDS="${CDN_PUBLIC_ACCEPT_SECONDS_OVERRIDE:-10}"
-# 模式 2 的 DNS 归属注释：创建与删除必须使用同一常量（design §9）。
+# 模式 1 的 DNS 归属注释：创建与删除必须使用同一常量（design §9）。
 readonly CDN_RECORD_COMMENT="easy_all cloudflare"
 CLOUDFLARE_ORIGIN_IPS_FILE="${STATE_DIR}/cloudflare-origin-ipv4-443.txt"
 readonly CLOUDFLARE_ORIGIN_CA_ROOT_FILE="${CERT_DIR}/cloudflare-origin-ca-ecc.pem"
@@ -51,7 +51,7 @@ CDN_SUBSCRIPTION_CORRUPT=0
 # 否则下一次卸载只知道旧 ID，长期有效的孤儿证书无人知晓。
 # --- Profile adapters ---------------------------------------------------------
 
-# 运行时派生字段（不落盘）：模式 2 的订阅域名就是橙云节点域名。
+# 运行时派生字段（不落盘）：模式 1 的订阅域名就是橙云节点域名。
 # 本机探活必须信任 Cloudflare Origin CA 根：回源证书由它签发。
 runtime_probe_ca_file() {
     printf '%s\n' "${CLOUDFLARE_ORIGIN_CA_ROOT_FILE}"
@@ -145,7 +145,7 @@ collect_cloudflare_install_inputs() {
 
 # --- Cloudflare token and DNS -------------------------------------------------
 
-# 收集、格式校验与 0600 持久化都在 lib/cf-dns.sh（五模式共用）。
+# 收集、格式校验与 0600 持久化都在 lib/cf-dns.sh（六模式共用）。
 
 cdn_record_belongs_to_easy_all() {
     [[ "${1:-}" == easy_all* ]]
@@ -202,7 +202,7 @@ cdn_issue_certificate() {
 
 # --- 运行配置与订阅渲染 -------------------------------------------------------
 
-# 模式 2 没有 985GB 熔断：Caddy 代理路径始终可用，订阅始终可用。
+# 模式 1 没有 985GB 熔断：Caddy 代理路径始终可用，订阅始终可用。
 write_runtime_config() {
     # 订阅产物是否可用：配置损坏时不得把 503 降级站点判成就绪（对齐 anytls-mode 的写法）。
     local subscription_ok=0
@@ -239,7 +239,7 @@ build_mihomo_proxy_names() {
         '($names + $extra)[] | "        - \(.|@json)"'
 }
 
-# 模式 2 没有额外 CDN 分组；模板占位必须成功输出空内容。
+# 模式 1 没有额外 CDN 分组；模板占位必须成功输出空内容。
 build_mihomo_proxy_groups() {
     printf ''
     return 0
@@ -439,7 +439,7 @@ apply_easy_all() {
     save_state
     register_easy_all_command
     commit_subscription_update
-    # 模式 2 没有直连 443 入口：安装/apply 只清除旧版本、异常中断或先前直连模式留下的资源。
+    # 模式 1 没有直连 443 入口：安装/apply 只清除旧版本、异常中断或先前直连模式留下的资源。
     # 失败不回滚已提交的配置，但必须让命令非零退出，绝不能接着报成功。
     remove_probe_log || return 1
     success "本机配置与订阅已应用；未修改 DNS 与云端资源"

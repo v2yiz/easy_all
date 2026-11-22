@@ -351,7 +351,7 @@ rule-providers:
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/telegram.mrs'
         path: ./ruleset/geoip-telegram.mrs
 
-# 代理节点（AnyTLS 直连 / VLESS CDN / 聚合节点）由订阅按模式注入，模板本身不放置占位凭据。
+# 代理节点（AnyTLS / VLESS Reality 直连 / VLESS CDN / 聚合节点）由订阅按模式注入，模板本身不放置占位凭据。
 proxies:
 # EASY_ALL_PROXY_NODE
 

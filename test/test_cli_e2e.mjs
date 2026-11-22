@@ -2,7 +2,7 @@
 // 只通过真实 launcher 与真实 state 文件验证行为，不 mock 内部函数。
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, chmodSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,15 +35,16 @@ function writeState(lines) {
   writeFileSync(stateFile, lines.join('\n') + '\n');
 }
 
-// 1. 帮助：五模式、全 443、删除的旧命令不再出现。
+// 1. 帮助：六模式、全 443、删除的旧命令不再出现。
 const help = run(['help']);
 assert.equal(help.status, 0, help.stderr);
-assert.match(help.stdout, /1 AnyTLS 直连/);
-assert.match(help.stdout, /2 纯 CloudFlare/);
-assert.match(help.stdout, /3 AnyTLS \+ CloudFlare/);
-assert.match(help.stdout, /4 纯 CloudFront/);
+assert.match(help.stdout, /1 纯 CloudFlare/);
+assert.match(help.stdout, /2 纯 CloudFront/);
+assert.match(help.stdout, /3 Reality \+ CloudFront/);
+assert.match(help.stdout, /4 Reality \+ CloudFlare/);
 assert.match(help.stdout, /5 AnyTLS \+ CloudFront/);
-assert.match(help.stdout, /6 Reality \+ CloudFront/);
+assert.match(help.stdout, /6 AnyTLS \+ CloudFlare/);
+assert.doesNotMatch(help.stdout, /AnyTLS 直连/);
 assert.match(help.stdout, /443/);
 assert.doesNotMatch(help.stdout, /reality-target/);
 assert.doesNotMatch(help.stdout, /rotate-dynamic-ports/);
@@ -172,7 +173,7 @@ const removedProtocol = run(['status'], stateEnv);
 assert.notEqual(removedProtocol.status, 0);
 assert.match(removedProtocol.stderr, /已删除的旧协议/);
 
-// 6. 结构完整的五模式可被分类；字段不齐只给卸载通道。
+// 6. 结构完整的六模式可被分类；字段不齐只给卸载通道。
 writeState([
   'STATE_VERSION=1',
   'PROTOCOL=cloudfront',
@@ -252,19 +253,19 @@ const hellogfwExtraHelp = sourceLauncher(
   'dispatch_validate_arguments hellogfw --help --port 8443', {});
 assert.notEqual(hellogfwExtraHelp.status, 0);
 assert.match(hellogfwExtraHelp.stderr, /hellogfw 不支持参数：--help/);
-// 模式 4 的完整状态（沿用上一节的 stateFile）非 help 调用必须被模式门禁拒绝。
+// 模式 2 的完整状态（沿用上一节的 stateFile）非 help 调用必须被模式门禁拒绝。
 const hellogfwModeGate = run(['hellogfw'], stateEnv);
 assert.notEqual(hellogfwModeGate.status, 0);
 assert.match(hellogfwModeGate.stderr,
-  /hellogfw 仅支持含直连 443 的模式（anytls \/ combined-cloudflare \/ combined-cloudfront \/ reality-self \/ reality-cloudflare）/);
+  /hellogfw 仅支持含直连 443 的模式（combined-cloudflare \/ combined-cloudfront \/ reality-cloudfront \/ reality-cloudflare）/);
 assert.doesNotMatch(hellogfwModeGate.stderr, /请使用 root 用户运行此脚本/,
   '模式门禁必须先于 root 门禁给出可操作的拒绝理由');
 
 // 6b. 模式路由：命令面按协议分流，拒绝项不得进入实现。
-const anytlsStateFile = join(tmp, 'state-anytls.env');
-writeFileSync(anytlsStateFile, [
+const mode1StateFile = join(tmp, 'state-mode1.env');
+writeFileSync(mode1StateFile, [
   'STATE_VERSION=1',
-  'PROTOCOL=anytls',
+  'PROTOCOL=cloudflare',
   'TCP_ACCELERATION=off',
   'VPS_PUBLIC_IPV4=203.0.113.10',
   'CF_ZONE=example.com',
@@ -277,24 +278,24 @@ writeFileSync(anytlsStateFile, [
   'MIHOMO_TEMPLATE_SNAPSHOT=1',
   'SCHEDULED_REBOOT_ENABLED=0',
   'SCHEDULED_REBOOT_HOUR=4',
-  'DIRECT_DOMAIN=node.example.com',
-  'DIRECT_NODE_NAME=direct',
-  'ANYTLS_PASSWORD=password-abcdefgh',
-  'SUBSCRIPTION_DOMAIN=sub.example.com',
-  'CLOUDFLARE_ORIGIN_RULESET_ID=rs1',
-  'CLOUDFLARE_ORIGIN_RULE_ID=rule1',
+  'CF_NODE_DOMAIN=cf.example.com',
+  'CF_NODE_PREFIX=CF',
+  'VLESS_UUID=11111111-2222-4333-8444-555555555555',
+  'VLESS_PATH=/vless-0123456789ab',
+  'CLOUDFLARE_ORIGIN_CERT_ID=cert1',
+  'CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON=2030-01-01',
 ].join('\n') + '\n');
-const anytlsEnv = { EASY_ALL_STATE_FILE_OVERRIDE: anytlsStateFile };
-const anytlsMode = sourceLauncher('detect_installed_mode', anytlsEnv);
-assert.equal(anytlsMode.stdout.trim(), 'anytls', anytlsMode.stderr);
-const syncRejected = run(['cdn-traffic-sync'], anytlsEnv);
+const mode1Env = { EASY_ALL_STATE_FILE_OVERRIDE: mode1StateFile };
+const mode1Mode = sourceLauncher('detect_installed_mode', mode1Env);
+assert.equal(mode1Mode.stdout.trim(), 'cloudflare', mode1Mode.stderr);
+const syncRejected = run(['cdn-traffic-sync'], mode1Env);
 assert.notEqual(syncRejected.status, 0);
 assert.match(syncRejected.stderr, /cdn-traffic-sync 仅适用于 CloudFront 模式/);
-const applyCloudReached = run(['apply-cloud'], anytlsEnv);
+const applyCloudReached = run(['apply-cloud'], mode1Env);
 assert.match(applyCloudReached.stderr, /请使用 root 用户运行此脚本/,
   'apply-cloud 在模式 1 应进入实现（root 门禁），而不是被路由拒绝');
 
-// 6bb. 模式 3：结构完整可分类；命令面与模式 1 同样可达，但不跑 CloudFront 计量。
+// 6bb. 模式 6：结构完整可分类；命令面与模式 1 同样可达，但不跑 CloudFront 计量。
 const combinedCfStateFile = join(tmp, 'state-combined-cloudflare.env');
 writeFileSync(combinedCfStateFile, [
   'STATE_VERSION=1',
@@ -329,9 +330,9 @@ assert.notEqual(combinedCfSync.status, 0);
 assert.match(combinedCfSync.stderr, /cdn-traffic-sync 仅适用于 CloudFront 模式/);
 const combinedCfApplyCloud = run(['apply-cloud'], combinedCfEnv);
 assert.match(combinedCfApplyCloud.stderr, /请使用 root 用户运行此脚本/,
-  'apply-cloud 在模式 3 应进入实现（root 门禁），而不是被路由拒绝');
+  'apply-cloud 在模式 6 应进入实现（root 门禁），而不是被路由拒绝');
 
-// 6bc. 模式 6（Reality + CloudFront）：与模式 5 同构的字段集，订阅恒 deploy；旧 PROTOCOL=reality 仍拒绝。
+// 6bc. 模式 3（Reality + CloudFront）：与模式 5 同构的字段集，订阅恒 deploy；旧 PROTOCOL=reality 仍拒绝。
 const realityKeys = {
   private: Buffer.alloc(32, 0x41).toString('base64url'),
   public: Buffer.alloc(32, 0x42).toString('base64url'),
@@ -339,7 +340,7 @@ const realityKeys = {
 function realityState() {
   return [
     'STATE_VERSION=1',
-    'PROTOCOL=reality-self',
+    'PROTOCOL=reality-cloudfront',
     'TCP_ACCELERATION=off',
     'VPS_PUBLIC_IPV4=203.0.113.10',
     'CF_ZONE=example.com',
@@ -361,7 +362,7 @@ function realityState() {
     'CF_NODE_DOMAIN=cf.example.com',
     'CF_NODE_PREFIX=CF',
     'VLESS_PATH=/vless-0123456789ab',
-    // 模式 6 与模式 5 一样复用直连域名做源站域名、节点域名做订阅域名。
+    // 模式 3 与模式 5 一样复用直连域名做源站域名、节点域名做订阅域名。
     'CF_ORIGIN_DOMAIN=direct.example.com',
     'SUBSCRIPTION_DOMAIN=cf.example.com',
     'ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef',
@@ -371,35 +372,35 @@ function realityState() {
     'AWS_ACM_CERTIFICATE_ARN=arn:aws:acm:us-east-1:123456789012:certificate/x',
   ];
 }
-const realityFile = join(tmp, 'state-reality-self.env');
+const realityFile = join(tmp, 'state-reality-cloudfront.env');
 writeFileSync(realityFile, realityState().join('\n') + '\n');
 const realityEnv = { EASY_ALL_STATE_FILE_OVERRIDE: realityFile };
 const realityMode = sourceLauncher('detect_installed_mode', realityEnv);
-assert.equal(realityMode.stdout.trim(), 'reality-self', realityMode.stderr);
+assert.equal(realityMode.stdout.trim(), 'reality-cloudfront', realityMode.stderr);
 const realityApplyCloud = run(['apply-cloud'], realityEnv);
 assert.match(realityApplyCloud.stderr, /请使用 root 用户运行此脚本/,
-  'apply-cloud 在模式 6 应进入实现（root 门禁），而不是被路由拒绝');
+  'apply-cloud 在模式 3 应进入实现（root 门禁），而不是被路由拒绝');
 const realitySync = run(['cdn-traffic-sync'], realityEnv);
 assert.notEqual(realitySync.status, 0);
 assert.doesNotMatch(realitySync.stderr, /cdn-traffic-sync 仅适用于 CloudFront 模式/,
-  '模式 6 必须被 cdn-traffic-sync 放行');
+  '模式 3 必须被 cdn-traffic-sync 放行');
 assert.match(realitySync.stderr, /请使用 root 用户运行此脚本/,
-  'cdn-traffic-sync 在模式 6 应进入实现（root 门禁）');
-const incompleteRealityFile = join(tmp, 'state-reality-self-incomplete.env');
+  'cdn-traffic-sync 在模式 3 应进入实现（root 门禁）');
+const incompleteRealityFile = join(tmp, 'state-reality-cloudfront-incomplete.env');
 writeFileSync(incompleteRealityFile,
   realityState().filter((line) => !line.startsWith('REALITY_SHORT_ID=')).join('\n') + '\n');
 const incompleteReality = sourceLauncher('detect_installed_mode', {
   EASY_ALL_STATE_FILE_OVERRIDE: incompleteRealityFile,
 });
-assert.equal(incompleteReality.stdout.trim(), 'incomplete-reality-self', incompleteReality.stderr);
-// PROTOCOL=reality（旧模式）在 schema 1 下仍必须拒绝，不得被 reality-self 兼容掉。
+assert.equal(incompleteReality.stdout.trim(), 'incomplete-reality-cloudfront', incompleteReality.stderr);
+// PROTOCOL=reality（旧模式）在 schema 1 下仍必须拒绝，不得被 reality-cloudfront 兼容掉。
 const legacyRealityFile = join(tmp, 'state-reality-legacy.env');
 writeFileSync(legacyRealityFile, 'STATE_VERSION=1\nPROTOCOL=reality\n');
 assert.match(run(['status'], { EASY_ALL_STATE_FILE_OVERRIDE: legacyRealityFile }).stderr,
   /已删除的旧协议/,
-  '旧的 PROTOCOL=reality 必须继续被拒绝，不得被 reality-self 兼容掉');
+  '旧的 PROTOCOL=reality 必须继续被拒绝，不得被 reality-cloudfront 兼容掉');
 
-// 6bd. 模式 7（Reality + CloudFlare）：橙云回源字段集，无 AWS/源站头；命令面进实现。
+// 6bd. 模式 4（Reality + CloudFlare）：橙云回源字段集，无 AWS/源站头；命令面进实现。
 function realityCfState() {
   return [
     'STATE_VERSION=1',
@@ -436,14 +437,14 @@ const realityCfMode = sourceLauncher('detect_installed_mode', realityCfEnv);
 assert.equal(realityCfMode.stdout.trim(), 'reality-cloudflare', realityCfMode.stderr);
 for (const command of ['apply-cloud', 'renew-cert']) {
   const res = run([command], realityCfEnv);
-  assert.notEqual(res.status, 0, `${command} 在模式 7 的非 root 调用必须非零`);
+  assert.notEqual(res.status, 0, `${command} 在模式 4 的非 root 调用必须非零`);
   assert.match(res.stderr, /请使用 root 用户运行此脚本/,
-    `${command} 在模式 7 应进入实现（root 门禁），而不是被路由拒绝`);
+    `${command} 在模式 4 应进入实现（root 门禁），而不是被路由拒绝`);
 }
 const realityCfSync = run(['cdn-traffic-sync'], realityCfEnv);
 assert.notEqual(realityCfSync.status, 0);
 assert.match(realityCfSync.stderr, /cdn-traffic-sync 仅适用于 CloudFront 模式/,
-  '模式 7 没有 CloudFront 计量，必须被 cdn-traffic-sync 拒绝');
+  '模式 4 没有 CloudFront 计量，必须被 cdn-traffic-sync 拒绝');
 const incompleteRealityCfFile = join(tmp, 'state-reality-cloudflare-incomplete.env');
 writeFileSync(incompleteRealityCfFile,
   realityCfState().filter((line) => !line.startsWith('REALITY_SHORT_ID=')).join('\n') + '\n');
@@ -470,9 +471,21 @@ for (const command of ['register-command', 'self-update']) {
 }
 rmSync(markerFile, { force: true });
 
+// 6c-bis. 已删除的 anytls 与已重命名的 reality-self：分别给出卸载/迁移提示。
 writeState(['STATE_VERSION=1', 'PROTOCOL=anytls', 'SUBSCRIPTION_MODE=deploy']);
+const legacyAnytls = sourceLauncher('detect_installed_mode', stateEnv);
+assert.notEqual(legacyAnytls.status, 0);
+assert.match(legacyAnytls.stderr, /已删除的旧协议/);
+writeState(['STATE_VERSION=1', 'PROTOCOL=reality-self', 'SUBSCRIPTION_MODE=deploy']);
+const renamedReality = sourceLauncher('detect_installed_mode', stateEnv);
+assert.notEqual(renamedReality.status, 0);
+assert.match(renamedReality.stderr, /重命名为 reality-cloudfront/);
+assert.match(renamedReality.stderr, /迁移脚本/);
+assert.doesNotMatch(renamedReality.stderr, /请先用安装该版本的旧 easy_all/);
+// 不完整状态（合法协议但字段不齐）仍只保留卸载通道。
+writeState(['STATE_VERSION=1', 'PROTOCOL=combined-cloudflare', 'SUBSCRIPTION_MODE=deploy']);
 const incomplete = sourceLauncher('detect_installed_mode', stateEnv);
-assert.equal(incomplete.stdout.trim(), 'incomplete-anytls');
+assert.equal(incomplete.stdout.trim(), 'incomplete-combined-cloudflare');
 const incompleteInstall = run(['install'], { ...stateEnv, FORCE: '1' });
 assert.notEqual(incompleteInstall.status, 0);
 // 不完整状态在 install 入口先被 schema/root 门禁拒绝，不会进入任何安装阶段。
@@ -513,7 +526,34 @@ const currentMarker = sourceLauncher('launcher_marker_schema_gate 1', markerEnv)
 assert.equal(currentMarker.status, 0, currentMarker.stderr);
 assert.doesNotMatch(currentMarker.stderr, /旧版本/);
 
-process.stdout.write('ok - CLI 门禁与七模式入口测试通过\n');
+// 7b. cleanup-partial 对已删除（anytls）与已重命名（reality-self）的旧标记必须拒绝并给出处置。
+// 门禁函数与 launcher_marker_schema_gate 同口径；root 门禁在它之前，真实调用需 root，
+// 因此直接验证门禁函数本身，并断言它排在 profile_file 之前。
+for (const [legacyMode, expected] of [
+  ['anytls', /已删除的模式 1/],
+  ['reality-self', /重命名为 reality-cloudfront/],
+]) {
+  const gate = sourceLauncher(
+    `launcher_marker_mode_gate ${legacyMode} /var/lib/easy_all/install-progress.env`,
+    markerEnv,
+  );
+  assert.notEqual(gate.status, 0, `cleanup-partial 必须拒绝旧标记 ${legacyMode}`);
+  assert.match(gate.stderr, expected);
+  assert.match(gate.stderr, /cleanup-partial|迁移脚本/);
+  assert.doesNotMatch(gate.stderr, /不支持的安装模式/,
+    '旧标记必须有可执行的处置提示，而不是笼统的路由错误');
+}
+const launcherText = readFileSync(launcher, 'utf8');
+const cleanupBody = launcherText.slice(
+  launcherText.indexOf('cleanup_partial_install_command() {'),
+  launcherText.indexOf('choose_install_mode() {'),
+);
+const gateCallAt = cleanupBody.indexOf('launcher_marker_mode_gate "${mode}" "${progress_file}"');
+assert.ok(gateCallAt > 0, 'cleanup-partial 必须调用 launcher_marker_mode_gate');
+assert.ok(gateCallAt < cleanupBody.indexOf('profile_file "${mode}"'),
+  '旧标记门禁必须早于 profile_file，否则会退化成不支持的安装模式');
+
+process.stdout.write('ok - CLI 门禁与六模式入口测试通过\n');
 
 // 8. hellogfw 的直连模式路由：1/3/5/6/7 进入实现后命中 root 门禁，2 被模式门禁拒绝。
 // 不走完整 launcher 是因为这里只需要验证 dispatch_profile_command 的路由分支；
@@ -528,8 +568,8 @@ function dispatchHellogfw(profile) {
 const cloudflareRoute = dispatchHellogfw('cloudflare');
 assert.notEqual(cloudflareRoute.status, 0);
 assert.match(cloudflareRoute.stderr,
-  /hellogfw 仅支持含直连 443 的模式（anytls \/ combined-cloudflare \/ combined-cloudfront \/ reality-self \/ reality-cloudflare）/);
-for (const profile of ['anytls', 'combined-cloudflare', 'combined-cloudfront', 'reality-self',
+  /hellogfw 仅支持含直连 443 的模式（combined-cloudflare \/ combined-cloudfront \/ reality-cloudfront \/ reality-cloudflare）/);
+for (const profile of ['combined-cloudflare', 'combined-cloudfront', 'reality-cloudfront',
   'reality-cloudflare']) {
   if (process.getuid() !== 0) {
     const res = dispatchHellogfw(profile);

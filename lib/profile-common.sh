@@ -50,7 +50,7 @@ prompt_value() {
 }
 
 # 静默读进目标变量：必须在调用方当前 shell 里直接调用，不得包进 $( )：
-# 实测子 shell 里的终端读会不等输入就返回空（安装模式 4/5 的 Token/AWS 提示就卡在这里）。
+# 实测子 shell 里的终端读会不等输入就返回空（安装模式 2/5 的 Token/AWS 提示就卡在这里）。
 # 无终端时返回非零，由调用方给出提示。
 prompt_secret_into() {
     local variable=$1 label=$2
@@ -69,7 +69,7 @@ read_confirmation() {
 }
 
 # --- CDN 优选连接地址（cdnEdgeAddress）的安装交互 -------------------------------
-# 模式 4/5/6 拼 CloudFront 泛域名后缀，模式 2/3/7 拼 Cloudflare 泛域名后缀（由 WeTest 公布并解析）。
+# 模式 2/3/5 拼 CloudFront 泛域名后缀，模式 1/4/6 拼 Cloudflare 泛域名后缀（由 WeTest 公布并解析）。
 CDN_EDGE_CLOUDFRONT_SUFFIX="cloudfront.182682.xyz"
 CDN_EDGE_CLOUDFLARE_SUFFIX="cloudflare.182682.xyz"
 # 安装时生成的优选地址形态：10 位前缀 + 当前模式的泛域名后缀（首位字母，后九位字母或数字）。
@@ -79,7 +79,7 @@ CDN_EDGE_ALNUM="0123456789abcdefghijklmnopqrstuvwxyz"
 
 cdn_edge_mode_suffix() {
     case "${PROTOCOL:-}" in
-    cloudfront | combined-cloudfront | reality-self) printf '%s' "${CDN_EDGE_CLOUDFRONT_SUFFIX}" ;;
+    cloudfront | combined-cloudfront | reality-cloudfront) printf '%s' "${CDN_EDGE_CLOUDFRONT_SUFFIX}" ;;
     cloudflare | combined-cloudflare | reality-cloudflare) printf '%s' "${CDN_EDGE_CLOUDFLARE_SUFFIX}" ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
@@ -150,7 +150,7 @@ cdn_edge_interactive() {
     [[ -t 0 ]]
 }
 
-# 安装收集器（模式 2-6）：先问优选前缀（安装顺序上它排在订阅配置之前），
+# 安装收集器（模式 1-6）：先问优选前缀（安装顺序上它排在订阅配置之前），
 # 随后由 apply_cdn_edge_prefix 写进配置，再由调用方的 cdn_apply_subscription_config 强校验。
 # 此刻订阅配置还没问：续装时身份里有旧的前缀可沿用，首装则生成新的。
 collect_cdn_edge_address() {
@@ -582,8 +582,7 @@ assert_install_ports_free() {
 # 每个模式对应的 profile 文件：跨模式清理时按 marker 记录的旧模式恢复。
 profile_script_for() {
     case "${1:-}" in
-    anytls) printf 'anytls.sh' ;;
-    reality-self) printf 'reality-self.sh' ;;
+    reality-cloudfront) printf 'reality-cloudfront.sh' ;;
     reality-cloudflare) printf 'reality-cloudflare.sh' ;;
     cloudfront) printf 'cloudfront.sh' ;;
     cloudflare) printf 'cloudflare.sh' ;;
@@ -820,10 +819,9 @@ resume_partial_install() {
 install_marker_chain_matches() {
     local current=$1 expected
     case "${current}" in
-    anytls) expected=anytls ;;
-    # 模式 6 与模式 4/5 共用 cloudfront 链路（计量/启动门禁与持久阻断都按链判定）；
-    # 模式 7 与模式 3 共用 cloudflare 链路（橙云回源与 Origin Rule）。
-    reality-self) expected=cloudfront ;;
+    # 模式 3 与模式 2/5 共用 cloudfront 链路（计量/启动门禁与持久阻断都按链判定）；
+    # 模式 4 与模式 6 共用 cloudflare 链路（橙云回源与 Origin Rule）。
+    reality-cloudfront) expected=cloudfront ;;
     cloudfront | combined-cloudfront) expected=cloudfront ;;
     cloudflare | combined-cloudflare | reality-cloudflare) expected=cloudflare ;;
     *) return 1 ;;

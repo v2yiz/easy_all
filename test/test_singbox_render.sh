@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 阶段 1 基础库：sing-box 固定版本/摘要、五模式配置渲染、运行校验与安装。
+# 阶段 1 基础库：sing-box 固定版本/摘要、六模式配置渲染、运行校验与安装。
 # 用户视角：只通过公开接口与产物断言；外部边界（curl/tar 之外的下载、候选核心）用替身。
 set -Eeuo pipefail
 
@@ -71,7 +71,7 @@ DIRECT_DOMAIN="direct.example.com"
 CF_NODE_DOMAIN="cf.example.com"
 DIRECT_NODE_NAME="AnyTLS"
 CF_NODE_PREFIX="CDN-WS"
-# 模式 6（Reality）：固定 32 字节示例值，只验证配置结构与客户端产物，不用于真实握手。
+# 模式 3（Reality）：固定 32 字节示例值，只验证配置结构与客户端产物，不用于真实握手。
 REALITY_PRIVATE_KEY="$(printf 'A%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')"
 REALITY_PUBLIC_KEY="$(printf 'B%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')"
 REALITY_SHORT_ID="0123456789abcdef"
@@ -98,7 +98,7 @@ if (singbox_arch riscv64) >/dev/null 2>&1; then
     fail "未知架构必须失败"
 fi
 
-# --- 五模式渲染 -------------------------------------------------------------
+# --- 六模式渲染 -------------------------------------------------------------
 render() { # $1=protocol $2=blocked -> stdout
     local out="${TMP_DIR}/render-${1}-${2}.json"
     rm -f -- "${out}"
@@ -107,21 +107,8 @@ render() { # $1=protocol $2=blocked -> stdout
     cat "${out}"
 }
 
-anytls_json=$(render anytls 0)
-assert_equal "模式 1 只有 AnyTLS 入站" "anytls-in" \
-    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${anytls_json}")"
-assert_equal "AnyTLS 入站监听 0.0.0.0:443" "0.0.0.0 443" \
-    "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"${anytls_json}")"
-assert_equal "AnyTLS 用户密码" "${ANYTLS_PASSWORD}" \
-    "$(jq -r '.inbounds[0].users[0].password' <<<"${anytls_json}")"
-assert_equal "AnyTLS TLS 使用直连域名与证书" \
-    "direct.example.com ${CERT_FILE} ${KEY_FILE}" \
-    "$(jq -r '.inbounds[0].tls | "\(.server_name) \(.certificate_path) \(.key_path)"' <<<"${anytls_json}")"
-assert_equal "AnyTLS 入站不启用 CDN 传输" "null" \
-    "$(jq -c '.inbounds[0].transport' <<<"${anytls_json}")"
-
 cloudfront_json=$(render cloudfront 0)
-assert_equal "模式 4 只有 VLESS 入站" "vless-cdn-in" \
+assert_equal "模式 2 只有 VLESS 入站" "vless-cdn-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${cloudfront_json}")"
 assert_equal "VLESS 入站监听回环 10086" "127.0.0.1 10086" \
     "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"${cloudfront_json}")"
@@ -135,18 +122,27 @@ assert_equal "回环 CDN 入站不启用 TLS" "null" \
     "$(jq -c '.inbounds[0].tls' <<<"${cloudfront_json}")"
 
 cloudflare_json=$(render cloudflare 0)
-assert_equal "模式 2 与模式 4 的本机入站一致" "${cloudfront_json}" "${cloudflare_json}"
+assert_equal "模式 1 与模式 2 的本机入站一致" "${cloudfront_json}" "${cloudflare_json}"
 
 combined_json=$(render combined-cloudfront 0)
 assert_equal "模式 5 同时有 AnyTLS 与 VLESS" "anytls-in,vless-cdn-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${combined_json}")"
+assert_equal "AnyTLS 入站监听 0.0.0.0:443" "0.0.0.0 443" \
+    "$(jq -r '.inbounds[] | select(.tag == "anytls-in") | "\(.listen) \(.listen_port)"' <<<"${combined_json}")"
+assert_equal "AnyTLS 用户密码" "${ANYTLS_PASSWORD}" \
+    "$(jq -r '.inbounds[] | select(.tag == "anytls-in") | .users[0].password' <<<"${combined_json}")"
+assert_equal "AnyTLS TLS 使用直连域名与证书" \
+    "direct.example.com ${CERT_FILE} ${KEY_FILE}" \
+    "$(jq -r '.inbounds[] | select(.tag == "anytls-in") | .tls | "\(.server_name) \(.certificate_path) \(.key_path)"' <<<"${combined_json}")"
+assert_equal "AnyTLS 入站不启用 CDN 传输" "null" \
+    "$(jq -c '.inbounds[] | select(.tag == "anytls-in") | .transport' <<<"${combined_json}")"
 
 combined_cf_json=$(render combined-cloudflare 0)
-assert_equal "模式 3 同时有 AnyTLS 与 VLESS" "anytls-in,vless-cdn-in" \
+assert_equal "模式 6 同时有 AnyTLS 与 VLESS" "anytls-in,vless-cdn-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${combined_cf_json}")"
-assert_equal "模式 3 AnyTLS 监听 443" "443" \
+assert_equal "模式 6 AnyTLS 监听 443" "443" \
     "$(jq -r '.inbounds[] | select(.tag == "anytls-in") | .listen_port' <<<"${combined_cf_json}")"
-assert_equal "模式 3 回环 CDN 入站 10086" "127.0.0.1 10086" \
+assert_equal "模式 6 回环 CDN 入站 10086" "127.0.0.1 10086" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | "\(.listen) \(.listen_port)"' <<<"${combined_cf_json}")"
 
 # blocked 只省略 CDN 入站；模式 5 保留 AnyTLS。
@@ -155,30 +151,28 @@ for proto in cloudfront cloudflare; do
     assert_equal "${proto} blocked 省略 CDN 入站" "[]" \
         "$(jq -c '.inbounds' <<<"${blocked_json}")"
 done
-assert_equal "模式 1 blocked 仍保留 AnyTLS" "anytls-in" \
-    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render anytls 1)")"
 assert_equal "模式 5 blocked 只保留 AnyTLS" "anytls-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render combined-cloudfront 1)")"
-assert_equal "模式 3 blocked 只保留 AnyTLS" "anytls-in" \
+assert_equal "模式 6 blocked 只保留 AnyTLS" "anytls-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render combined-cloudflare 1)")"
 
-# 模式 7：Reality 直连 + 回环 VLESS WS；没有 AnyTLS 入站，blocked 只省略 CDN 入站。
+# 模式 4：Reality 直连 + 回环 VLESS WS；没有 AnyTLS 入站，blocked 只省略 CDN 入站。
 reality_cf_json=$(render reality-cloudflare 0)
-assert_equal "模式 7 只有 Reality 与 VLESS 入站" "vless-reality-in,vless-cdn-in" \
+assert_equal "模式 4 只有 Reality 与 VLESS 入站" "vless-reality-in,vless-cdn-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${reality_cf_json}")"
-assert_equal "模式 7 Reality 入站监听 0.0.0.0:443" "0.0.0.0 443" \
+assert_equal "模式 4 Reality 入站监听 0.0.0.0:443" "0.0.0.0 443" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-reality-in") | "\(.listen) \(.listen_port)"' <<<"${reality_cf_json}")"
-assert_equal "模式 7 Reality 回落至回环 9443" "127.0.0.1 9443" \
+assert_equal "模式 4 Reality 回落至回环 9443" "127.0.0.1 9443" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-reality-in") | .tls.reality.handshake | "\(.server) \(.server_port)"' <<<"${reality_cf_json}")"
-assert_equal "模式 7 Reality 用户为 xtls-rprx-vision" "xtls-rprx-vision" \
+assert_equal "模式 4 Reality 用户为 xtls-rprx-vision" "xtls-rprx-vision" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-reality-in") | .users[0].flow' <<<"${reality_cf_json}")"
-assert_equal "模式 7 回环 CDN 入站 10086" "127.0.0.1 10086" \
+assert_equal "模式 4 回环 CDN 入站 10086" "127.0.0.1 10086" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | "\(.listen) \(.listen_port)"' <<<"${reality_cf_json}")"
-assert_equal "模式 7 blocked 只保留 Reality 直连" "vless-reality-in" \
+assert_equal "模式 4 blocked 只保留 Reality 直连" "vless-reality-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render reality-cloudflare 1)")"
 
 # 公共结构：log/dns/outbounds/route 按 design §7。
-for proto in anytls reality-self reality-cloudflare cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+for proto in reality-cloudfront reality-cloudflare cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     body=$(render "${proto}" 0)
     assert_equal "${proto}: log 级别 warning" "warning" "$(jq -r '.log.level' <<<"${body}")"
     assert_equal "${proto}: DNS 显式 IPv4-only" "ipv4_only" "$(jq -r '.dns.strategy' <<<"${body}")"
@@ -218,18 +212,18 @@ done
 if (PROTOCOL=unknown-mode; render_singbox_config "${TMP_DIR}/x.json" 0) >/dev/null 2>&1; then
     fail "未知 PROTOCOL 必须失败"
 fi
-if (PROTOCOL=anytls; render_singbox_config "${TMP_DIR}/x.json" 2) >/dev/null 2>&1; then
+if (PROTOCOL=combined-cloudfront; render_singbox_config "${TMP_DIR}/x.json" 2) >/dev/null 2>&1; then
     fail "非法 blocked 取值必须失败"
 fi
-if (PROTOCOL=anytls; DIRECT_DOMAIN=""; render_singbox_config "${TMP_DIR}/x.json" 0) >/dev/null 2>&1; then
+if (PROTOCOL=combined-cloudfront; DIRECT_DOMAIN=""; render_singbox_config "${TMP_DIR}/x.json" 0) >/dev/null 2>&1; then
     fail "缺少 DIRECT_DOMAIN 必须失败"
 fi
 if (PROTOCOL=cloudfront; VLESS_PATH=""; render_singbox_config "${TMP_DIR}/x.json" 0) >/dev/null 2>&1; then
     fail "缺少 VLESS_PATH 必须失败"
 fi
-# 模式 7 不生成 AnyTLS 入站，因此不得依赖 ANYTLS_PASSWORD。
+# 模式 4 不生成 AnyTLS 入站，因此不得依赖 ANYTLS_PASSWORD。
 if ! ( PROTOCOL=reality-cloudflare; unset ANYTLS_PASSWORD; render_singbox_config "${TMP_DIR}/reality-cf.json" 0 ) >/dev/null 2>&1; then
-    fail "模式 7 渲染不得依赖 ANYTLS_PASSWORD"
+    fail "模式 4 渲染不得依赖 ANYTLS_PASSWORD"
 fi
 
 # --- 客户端节点（design §12） -----------------------------------------------
@@ -310,11 +304,11 @@ assert_equal "空优选地址不改变 Mihomo 节点" "$(build_mihomo_ws_node)" 
 assert_equal "空优选地址不改变 sing-box 节点" "$(build_singbox_ws_outbound)" \
     "$(CF_EDGE_ADDRESS="" build_singbox_ws_outbound)"
 
-# --- 模式 6：Reality 直连 + CloudFront（design §2.2）-------------------------
-reality_json=$(render reality-self 0)
-assert_equal "模式 6 双入站：Reality 443 + 回环 CDN" "vless-reality-in,vless-cdn-in" \
+# --- 模式 3：Reality 直连 + CloudFront（design §2.2）-------------------------
+reality_json=$(render reality-cloudfront 0)
+assert_equal "模式 3 双入站：Reality 443 + 回环 CDN" "vless-reality-in,vless-cdn-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${reality_json}")"
-assert_equal "模式 6 CDN 入站监听回环 10086" "vless-cdn-in 127.0.0.1 10086 ws" \
+assert_equal "模式 3 CDN 入站监听回环 10086" "vless-cdn-in 127.0.0.1 10086 ws" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | "\(.tag) \(.listen) \(.listen_port) \(.transport.type)"' <<<"${reality_json}")"
 assert_equal "Reality 入站监听 0.0.0.0:443" "0.0.0.0 443" \
     "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"${reality_json}")"
@@ -328,11 +322,11 @@ assert_equal "Reality short_id 列表" "[\"${REALITY_SHORT_ID}\"]" \
     "$(jq -c '.inbounds[0].tls.reality.short_id' <<<"${reality_json}")"
 assert_equal "Reality 入站不内联证书" "no-cert" \
     "$(jq -r 'if .inbounds[0].tls.certificate_path then "cert" else "no-cert" end' <<<"${reality_json}")"
-assert_equal "模式 6 blocked 只保留 Reality 直连入站" "vless-reality-in" \
-    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render reality-self 1)")"
-assert_equal "模式 6 blocked 保留 443 Reality 内容" "0.0.0.0 443" \
-    "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"$(render reality-self 1)")"
-if (PROTOCOL=reality-self; REALITY_PRIVATE_KEY=""; render_singbox_config "${TMP_DIR}/x.json" 0) >/dev/null 2>&1; then
+assert_equal "模式 3 blocked 只保留 Reality 直连入站" "vless-reality-in" \
+    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render reality-cloudfront 1)")"
+assert_equal "模式 3 blocked 保留 443 Reality 内容" "0.0.0.0 443" \
+    "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"$(render reality-cloudfront 1)")"
+if (PROTOCOL=reality-cloudfront; REALITY_PRIVATE_KEY=""; render_singbox_config "${TMP_DIR}/x.json" 0) >/dev/null 2>&1; then
     fail "缺少 REALITY_PRIVATE_KEY 必须失败"
 fi
 
@@ -384,7 +378,7 @@ assert_equal "写入目录权限 0700" "drwx------" \
 [[ -z "$(find "${SINGBOX_CONFIG%/*}" -name 'config.json.*' -print -quit)" ]] \
     || fail "写入不得留下暂存文件"
 
-PROTOCOL=anytls
+PROTOCOL=combined-cloudfront
 write_singbox_config 0
 validate_singbox_config "${SINGBOX_CONFIG}" \
     || fail "结构校验应接受生成的配置"
@@ -443,7 +437,7 @@ fi
 published_bytes() {
     openssl dgst -sha256 "$1" | awk '{print $NF}'
 }
-PROTOCOL=anytls
+PROTOCOL=combined-cloudfront
 printf '{"published":"previous"}
 ' >"${SINGBOX_CONFIG}"
 previous_sha=$(published_bytes "${SINGBOX_CONFIG}")

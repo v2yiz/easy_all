@@ -567,13 +567,6 @@ net.ipv4.tcp_keepalive_probes = 5
 # Outbound TCP/UDP source ports stay below the registered ingress ports (443/8443).
 net.ipv4.ip_local_port_range = 13000 60999
 EOF
-    if [[ "${PROTOCOL:-}" == "anytls" ]]; then
-        cat >>"${RUNTIME_TMP}/tcp-tuning.conf" <<'EOF'
-
-# Direct-link routing changes should not reuse stale destination metrics.
-net.ipv4.tcp_no_metrics_save = 1
-EOF
-    fi
     install -m 0644 "${RUNTIME_TMP}/tcp-tuning.conf" "${TCP_SYSCTL_CONF}"
     sysctl -p "${TCP_SYSCTL_CONF}" >/dev/null || die "应用 TCP sysctl 配置失败"
     [[ -f "${TCP_SYSCTL_CONF}" ]] || die "TCP 开机配置写入失败"

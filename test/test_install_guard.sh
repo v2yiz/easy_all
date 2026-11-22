@@ -276,26 +276,24 @@ assert_equal "marker keeps profile on stage update" "combined" \
     "$(install_progress_field PROFILE)"
 [[ -n "$(install_progress_field STARTED_AT)" ]] || fail "marker keeps started time"
 # 覆盖 begin：上一次中断留下的标记不应保留旧阶段
-install_progress_begin anytls
+install_progress_begin combined-cloudflare
 assert_equal "rebegin resets stage" "start" "$(install_progress_field STAGE)"
-assert_equal "rebegin replaces profile" "anytls" "$(install_progress_field PROFILE)"
+assert_equal "rebegin replaces profile" "combined-cloudflare" "$(install_progress_field PROFILE)"
 install_progress_clear
 [[ ! -f "${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE}" ]] \
     || fail "clearing the marker removes the file"
 [[ ! -d "$(dirname "${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE}")" ]] \
     || fail "clearing the marker removes the empty directory"
 
-# 6b. 标记链路身份：七种模式各自接受同链路标记，其他链路一律拒绝
-# （回归：模式 1 的 anytls 链被漏掉，中断后续装总被要求清理重装）。
-# 模式 6 与模式 4/5 共用 cloudfront 链（计量/启动门禁与持久阻断都按链判定）；
-# 模式 7 与模式 3 共用 cloudflare 链（橙云回源与 Origin Rule）。
+# 6b. 标记链路身份：六种模式各自接受同链路标记，其他链路一律拒绝。
+# 模式 3 与模式 2/5 共用 cloudfront 链（计量/启动门禁与持久阻断都按链判定）；
+# 模式 4 与模式 6 共用 cloudflare 链（橙云回源与 Origin Rule）。
 while read -r marker_profile marker_chain; do
     install_progress_begin "${marker_profile}" "${marker_chain}"
     install_marker_chain_matches "${marker_profile}" \
         || fail "标记链路 ${marker_chain} 必须匹配模式 ${marker_profile}"
 done <<'MARKER_CASES'
-anytls anytls
-reality-self cloudfront
+reality-cloudfront cloudfront
 reality-cloudflare cloudflare
 cloudfront cloudfront
 combined-cloudfront cloudfront
@@ -303,7 +301,7 @@ cloudflare cloudflare
 combined-cloudflare cloudflare
 MARKER_CASES
 install_progress_begin combined-cloudfront cloudfront
-for wrong_profile in anytls cloudflare; do
+for wrong_profile in cloudflare; do
     if install_marker_chain_matches "${wrong_profile}"; then
         fail "标记链路 cloudfront 不得匹配模式 ${wrong_profile}"
     fi
@@ -312,8 +310,8 @@ install_progress_clear
 
 # 6c. 安装身份带 Origin Rule ID：中断后能定位已创建的云端规则
 install -d -m 0700 "$(install_state_dir_path)"
-PROTOCOL=anytls
-CDN_PROFILE_KEY=anytls
+PROTOCOL=combined-cloudflare
+CDN_PROFILE_KEY=combined-cloudflare
 CLOUDFLARE_ORIGIN_RULESET_ID=rs-identity
 CLOUDFLARE_ORIGIN_RULE_ID=rule-identity
 persist_install_identity || fail "安装身份写入失败"
@@ -332,8 +330,8 @@ unset PROTOCOL CDN_PROFILE_KEY
 # 6d. 订阅模式是安装身份的一部分：link 安装续装时必须恢复 link，
 #     否则会拿默认 deploy 覆盖已下发的订阅契约。
 install -d -m 0700 "$(install_state_dir_path)"
-PROTOCOL=anytls
-CDN_PROFILE_KEY=anytls
+PROTOCOL=combined-cloudflare
+CDN_PROFILE_KEY=combined-cloudflare
 SUBSCRIPTION_MODE=link
 persist_install_identity || fail "安装身份写入失败"
 assert_equal "安装身份保存订阅模式" "link" \
@@ -454,7 +452,7 @@ assert_equal "filter failure keeps crontab on configure_daily_reboot" "${before_
 # 直接报 "command too long" 拒装（见 crontab MAX_COMMAND）。用真实 source 链
 # （runtime-core → cloudfront-mode）生成受管行并断言字节长度（cron 按字节计，
 # 不用 awk length/${#var}，它们在 UTF-8 locale 下按字符计会低估中文 logger 消息的占用），
-# 防止模式 4/5 的预命令与 jq 复核再被拼回行内。
+# 防止模式 2/5 的预命令与 jq 复核再被拼回行内。
 printf '0 3 * * * /usr/local/bin/user-backup\n' >"${FAKE_CRONTAB_FILE}"
 reboot_line=$(
     (
@@ -478,7 +476,7 @@ assert_contains "cloudfront reboot line calls the internal entry" "${reboot_line
     "internal-scheduled-reboot"
 assert_contains "cloudfront reboot line keeps the managed marker" "${reboot_line}" \
     "# easy_all-managed-reboot"
-# 锁定复核（以及模式 1/2 的“空复核”）已由内部入口承担，行内不再出现 jq 内容
+# 锁定复核（以及模式 1 的“空复核”）已由内部入口承担，行内不再出现 jq 内容
 assert_not_contains "cloudfront reboot line no longer inlines the jq check" "${reboot_line}" \
     "protection_offline"
 
@@ -541,7 +539,7 @@ internal_reboot_run() {
     ) >/dev/null 2>"${TMP_DIR}/${case_name}.stderr"
 }
 
-# a. 无钩子（模式 1/2 没有预命令与复核钩子）+ 取锁成功 → 执行重启，不记 logger，锁走 override
+# a. 无钩子（模式 1 没有预命令与复核钩子）+ 取锁成功 → 执行重启，不记 logger，锁走 override
 export FAKE_HOOK_SCENARIO=none
 internal_reboot_run no-hook 0 \
     || fail "internal_scheduled_reboot should succeed when the write lock is free"
@@ -654,8 +652,9 @@ assert_contains "complete snapshot restores" "${output}" "RESTORED"
 rm -rf -- "${EASY_ALL_GUARD_STATE_DIR}"
 
 # 13. 跨模式清理：profile 映射齐全，未知模式拒绝猜测
-assert_equal "anytls maps to its profile" "anytls.sh" "$(profile_script_for anytls)"
-assert_equal "reality-self maps to its profile" "reality-self.sh" "$(profile_script_for reality-self)"
+assert_equal "removed anytls mode is rejected" "1" \
+    "$(profile_script_for anytls >/dev/null 2>&1 && echo 0 || echo 1)"
+assert_equal "reality-cloudfront maps to its profile" "reality-cloudfront.sh" "$(profile_script_for reality-cloudfront)"
 assert_equal "reality-cloudflare maps to its profile" "reality-cloudflare.sh" \
     "$(profile_script_for reality-cloudflare)"
 assert_equal "cloudfront maps to its profile" "cloudfront.sh" "$(profile_script_for cloudfront)"
@@ -666,8 +665,8 @@ assert_equal "combined-cloudflare maps to its profile" "combined-cloudflare.sh" 
     "$(profile_script_for combined-cloudflare)"
 assert_equal "unknown mode is rejected" "1" \
     "$(profile_script_for nope >/dev/null 2>&1 && echo 0 || echo 1)"
-assert_equal "reality-self 清理脚本存在" "1" \
-    "$([[ -f "${ROOT_DIR}/profiles/$(profile_script_for reality-self)" ]] && echo 1 || echo 0)"
+assert_equal "reality-cloudfront 清理脚本存在" "1" \
+    "$([[ -f "${ROOT_DIR}/profiles/$(profile_script_for reality-cloudfront)" ]] && echo 1 || echo 0)"
 assert_equal "reality-cloudflare 清理脚本存在" "1" \
     "$([[ -f "${ROOT_DIR}/profiles/$(profile_script_for reality-cloudflare)" ]] && echo 1 || echo 0)"
 output=$(capture run_recorded_profile_cleanup nope || true)
@@ -702,7 +701,7 @@ cleanup_common_body=$(awk '/^cdn_local_uninstall_common\(\) \{/,/^\}/' "${ROOT_D
     || fail "anytls local uninstall must restore pre-install IPv6 before deleting the state dir"
 
 # 16. 残留提示文案：有标记时给 cleanup-partial，无标记时只能人工核对
-install_progress_begin anytls
+install_progress_begin combined-cloudflare
 hint=$(residue_recovery_hint)
 assert_contains "hint with marker offers cleanup-partial" "${hint}" "sudo easy_all cleanup-partial"
 install_progress_clear
@@ -723,7 +722,7 @@ mk_marker "${marker_file}" combined-cloudfront "T1"
 present=$(bash -c 'source "$1"; launcher_marker_snapshot "$2"' _ "${ROOT_DIR}/easy_all" "${marker_file}")
 assert_equal "snapshot encodes mode, chain, stage, start time and schema" \
     "present|combined-cloudfront|packages|T1|cloudfront|1" "${present}"
-mk_marker "${marker_file}" anytls "T2"
+mk_marker "${marker_file}" cloudfront "T2"
 replaced=$(bash -c 'source "$1"; launcher_marker_snapshot "$2"' _ "${ROOT_DIR}/easy_all" "${marker_file}")
 [[ "${replaced}" != "${present}" ]] || fail "replaced marker must change identity"
 [[ "${absent}" != "${present}" ]] || fail "appearing marker must change identity"
@@ -782,77 +781,11 @@ assert_contains "unknown owner keeps the dedicated-vps verdict" "${output}" "仅
 reset_artifacts
 idle
 
-# 26b. 模式 1 订阅域名必须是 Zone 的一级子域名：默认橙云边缘证书只覆盖一级子域，
-# 多级名字会装到最后（公网 TLS 验收）才失败且无法修复，因此必须在输入处拒绝。
-run_anytls_inputs_case() { # $1=SUBSCRIPTION_DOMAIN
-    local case_dir="${TMP_DIR}/anytls-inputs-$(printf '%s' "$1" | tr '.' '_')"
-    rm -rf -- "${case_dir}"
-    mkdir -p "${case_dir}/state"
-    EASY_ALL_INPUTS_SUB_DOMAIN="$1" \
-    RUNTIME_TMP="${case_dir}/runtime" \
-    EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
-    EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/state/certs" \
-    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/state/subscriptions" \
-    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${case_dir}/progress/install-progress.env" \
-        bash -c '
-            source "$1/profiles/anytls.sh"
-            CF_ZONE=example.com
-            SUBSCRIPTION_MODE=deploy
-            SUBSCRIPTION_DOMAIN=${EASY_ALL_INPUTS_SUB_DOMAIN}
-            # 交互面：一律接受默认值（直连域名/节点名/下载名都取默认）。
-            prompt_value() { printf "%s" "${2:-}"; }
-            cloudflare_collect_api_token() { :; }
-            choose_subscription_config() {
-                printf "%s" "{\"allowedTokens\":{\"owner\":\"token-abcdefgh\"},\"nodes\":[]}"
-            }
-            cdn_apply_subscription_config() { :; }
-            cdn_validate_install_owner_token() { :; }
-            detect_public_ipv4() { printf "203.0.113.10"; }
-            collect_anytls_install_inputs
-        ' _ "${ROOT_DIR}" 2>&1
-}
-multi_level_output=$(run_anytls_inputs_case "deep.sub.example.com") \
-    && fail "模式 1 多级订阅域名必须拒绝"
-assert_contains "模式 1 多级订阅域名点明一级子域要求" "${multi_level_output}" \
-    "订阅域名必须是 example.com 的一级子域名"
-assert_contains "模式 1 多级订阅域名给出正确示例" "${multi_level_output}" "如 sub.example.com"
-one_level_output=$(run_anytls_inputs_case "sub.example.com") \
-    || fail "模式 1 一级订阅域名必须通过：${one_level_output}"
-
-# 26c. 模式 1 端口预检拆两段：link 不启 Caddy、不放 8443，首轮只查 443；deploy 的
-# 8443 在订阅模式确定后才补检（仍在任何云端资源创建之前）。
-run_anytls_preflight_case() { # $1=SUBSCRIPTION_MODE
-    SUBSCRIPTION_MODE="$1" bash -c '
-        source "$1/profiles/anytls.sh"
-        cdn_prepare_install_ports
-        printf "PREFLIGHT-OK\n"
-        anytls_assert_subscription_port_free
-        printf "SUBSCRIPTION-PORT-OK\n"
-    ' _ "${ROOT_DIR}" 2>&1
-}
-reset_artifacts
-idle
-busy 8443
-link_preflight_status=0
-link_preflight_output=$(run_anytls_preflight_case link) || link_preflight_status=$?
-assert_equal "模式 1 link 安装不再因宿主占用 8443 失败" "0" "${link_preflight_status}"
-assert_contains "link 首轮预检通过" "${link_preflight_output}" "PREFLIGHT-OK"
-assert_contains "link 不做订阅端口补检" "${link_preflight_output}" "SUBSCRIPTION-PORT-OK"
-deploy_preflight_status=0
-deploy_preflight_output=$(run_anytls_preflight_case deploy) || deploy_preflight_status=$?
-assert_equal "模式 1 deploy 安装仍因 8443 被占失败" "1" "${deploy_preflight_status}"
-assert_contains "deploy 首轮预检只查 443 因此通过" "${deploy_preflight_output}" "PREFLIGHT-OK"
-assert_contains "deploy 订阅端口补检点名 8443" "${deploy_preflight_output}" "TCP 8443 已被占用"
-assert_not_contains "deploy 补检失败后不再输出成功标记" "${deploy_preflight_output}" \
-    "SUBSCRIPTION-PORT-OK"
-reset_artifacts
-idle
-
-# 26d. 模式 1 安装入口必须真正调用端口预检与进度初始化。
+# 26d. 安装入口必须真正调用端口预检与进度初始化。
 # 写成 `cdn_prepare_install_ports()`（带括号）在 bash 里是「嵌套函数定义」：不调用，
-# 还会把真函数重定义成紧随其后的 if 块，而顶层单测（26c 直接调函数）仍会绿。
-run_anytls_install_all_case() {
-    local case_dir="${TMP_DIR}/anytls-install-all"
+# 还会把真函数重定义成紧随其后的 if 块，而顶层单测仍会绿。
+run_install_all_case() {
+    local case_dir="${TMP_DIR}/install-all"
     rm -rf -- "${case_dir}"
     mkdir -p "${case_dir}"
     EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
@@ -863,7 +796,7 @@ run_anytls_install_all_case() {
         bash -c '
             set -Eeuo pipefail
             # shellcheck source=/dev/null
-            source "$1/profiles/anytls.sh"
+            source "$1/profiles/combined-cloudflare.sh"
             # 宿主与云端一律替身：本用例只校验 install_all 的调用与控制流。
             require_root() { :; }
             acquire_runtime_write_lock() { :; }
@@ -897,13 +830,14 @@ run_anytls_install_all_case() {
             install_all
         ' _ "${ROOT_DIR}" 2>&1
 }
-assert_contains "模式 1 安装保留交互终端门禁" "$(<"${ROOT_DIR}/lib/anytls-mode.sh")" \
+assert_contains "安装保留交互终端门禁" "$(<"${ROOT_DIR}/lib/anytls-mode.sh")" \
     '[[ -t 0 ]] || die "安装必须在交互终端中执行"'
-install_all_output=$(run_anytls_install_all_case)
-assert_contains "模式 1 安装真正执行首轮端口预检" "${install_all_output}" "PREPARE-PORTS: 443"
-assert_contains "模式 1 安装真正写安装进度标记" "${install_all_output}" \
-    "PROGRESS-BEGIN: anytls anytls"
-assert_contains "模式 1 安装进入输入阶段（用例确实驱动了 install_all 函数体）" \
+install_all_output=$(run_install_all_case)
+assert_contains "安装真正执行首轮端口预检" "${install_all_output}" "PREPARE-PORTS: 443 8443"
+assert_contains "端口预检包含回环 CDN 入站端口" "${install_all_output}" "10086"
+assert_contains "安装真正写安装进度标记" "${install_all_output}" \
+    "PROGRESS-BEGIN: combined-cloudflare cloudflare"
+assert_contains "安装进入输入阶段（用例确实驱动了 install_all 函数体）" \
     "${install_all_output}" "INPUTS-STAGE"
 assert_contains "cdn_prepare_install_ports 保持原定义未被 install_all 覆盖" \
     "${install_all_output}" "CDN-PREPARE-OVERWRITTEN: no"
@@ -975,7 +909,7 @@ for field in VPS_PUBLIC_IPV4 CF_NODE_PREFIX OWNER_TOKEN DIRECT_DOMAIN DIRECT_NOD
     ANYTLS_PASSWORD; do
     assert_contains "combined 模式必需字段包含 ${field}" "${launcher_fields_combined}" "${field}"
 done
-assert_not_contains "模式 4 必需字段不含直连字段" "${launcher_fields_plain}" "DIRECT_DOMAIN"
+assert_not_contains "模式 2 必需字段不含直连字段" "${launcher_fields_plain}" "DIRECT_DOMAIN"
 assert_contains "两模式共同必需字段含 VPS_PUBLIC_IPV4" "${launcher_fields_plain}" "VPS_PUBLIC_IPV4"
 assert_not_contains "字段清单不再保留 Reality 字段" "${launcher_fields_combined}" "REALITY_"
 launcher_body=$(<"${ROOT_DIR}/easy_all")
@@ -1016,7 +950,7 @@ launcher_state_complete() {
 }
 fixture_dir="${TMP_DIR}/field-fixtures"
 install -d -m 0700 "${fixture_dir}"
-for protocol in anytls cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+for protocol in cloudflare cloudfront reality-cloudfront reality-cloudflare combined-cloudfront combined-cloudflare; do
     fixture="${fixture_dir}/${protocol}.env"
     write_state_fixture "${fixture}" "${protocol}"
     launcher_state_complete "${fixture}" || fail "完整 ${protocol} 状态必须判为完整"
@@ -1045,13 +979,6 @@ sed 's/^SCHEDULED_REBOOT_ENABLED=.*/SCHEDULED_REBOOT_ENABLED="1"/' \
 launcher_state_complete "${fixture_dir}/enabled-empty-hour.env" \
     && fail "启用定时重启时空 HOUR 必须判为不完整"
 
-link_fixture="${fixture_dir}/anytls-link.env"
-write_state_fixture "${link_fixture}" anytls link
-printf 'MIHOMO_TEMPLATE_SNAPSHOT=""\n' >>"${link_fixture}"
-launcher_state_complete "${link_fixture}" \
-    || fail "模式 1 link 不发布模板快照，空值仍应判为完整"
-assert_equal "模式 1 link 不要求订阅域名" "0" \
-    "$(grep -c '^SUBSCRIPTION_DOMAIN=' "${link_fixture}" || true)"
 deploy_without_snapshot="${fixture_dir}/cloudfront-empty-snapshot.env"
 sed 's/^MIHOMO_TEMPLATE_SNAPSHOT=.*/MIHOMO_TEMPLATE_SNAPSHOT=""/' \
     "${fixture_dir}/cloudfront.env" >"${deploy_without_snapshot}"
@@ -1237,7 +1164,7 @@ preserve_output=$(
     RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${preserve_dir}/runtime-write.lock" \
         bash -c '
             set -Eeuo pipefail
-            source "$1/profiles/anytls.sh"
+            source "$1/profiles/combined-cloudflare.sh"
             printf "%s\n" "${RUNTIME_TMP}" >"$2"
             mkdir -p "${STATE_DIR}" "${CERT_DIR}" "${SUBSCRIPTION_DIR}"
             UPDATE_SUB_BACKUP_DIR=$(make_temp_dir)
@@ -1281,15 +1208,15 @@ preserve_runtime=$(<"${preserve_dir}/runtime-path")
     -o -name 'origin-header' \) -print -quit)" ]] \
     || fail "保留的 RUNTIME_TMP 不得残留 API 凭据与源站头密钥文件"
 
-# 29c. AnyTLS 凭据钩子：模式 1 安装尾部不再 command not found，保留目录不残留 Bearer Token
-anytls_hook_body=$(bash -c 'source "$1/profiles/anytls.sh"; declare -F clear_profile_credentials' \
-    _ "${ROOT_DIR}" 2>&1) || fail "AnyTLS 必须定义 clear_profile_credentials（127 退出的根因）"
+# 29c. AnyTLS 凭据钩子：模式 6 安装尾部不再 command not found，保留目录不残留 Bearer Token
+anytls_hook_body=$(bash -c 'source "$1/profiles/combined-cloudflare.sh"; declare -F clear_profile_credentials' \
+    _ "${ROOT_DIR}" 2>&1) || fail "combined-cloudflare 必须定义 clear_profile_credentials（127 退出的根因）"
 assert_contains "AnyTLS 凭据钩子已定义" "${anytls_hook_body}" "clear_profile_credentials"
 anytls_hook_output=$(
     RUNTIME_TMP="${TMP_DIR}/anytls-hook-runtime" \
         bash -c '
             set -Eeuo pipefail
-            source "$1/profiles/anytls.sh"
+            source "$1/profiles/combined-cloudflare.sh"
             mkdir -p "${RUNTIME_TMP}"
             printf "Bearer secret-token\n" >"${RUNTIME_TMP}/cloudflare-api-headers"
             printf "payload\n" >"${RUNTIME_TMP}/cloudflare-api-payload"
@@ -1300,7 +1227,7 @@ anytls_hook_output=$(
             [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]] || exit 6
             printf "HOOK-OK\n"
         ' _ "${ROOT_DIR}" 2>&1
-) || fail "AnyTLS 凭据钩子调用失败（模式 1 安装尾部会以 127 退出）"
+) || fail "AnyTLS 凭据钩子调用失败（模式 6 安装尾部会以 127 退出）"
 assert_contains "AnyTLS 钩子删除请求头/请求体并清空 Token" "${anytls_hook_output}" "HOOK-OK"
 
 # 29d. 确认阶段收到 INT/TERM：凭据在确认入口之前已清除，130/143 退出且跳过回滚与后续清理。
@@ -1563,11 +1490,11 @@ for legacy in cdn combined reality; do
     assert_contains "旧模式 ${legacy} 不加载 Profile" "${legacy_route}" "${legacy}=rejected"
 done
 assert_contains "模式 5 路由到 combined.sh" "${legacy_route}" "combined-cloudfront=combined.sh"
-assert_contains "模式 3 路由到 combined-cloudflare.sh" "${legacy_route}" \
+assert_contains "模式 6 路由到 combined-cloudflare.sh" "${legacy_route}" \
     "combined-cloudflare=combined-cloudflare.sh"
-assert_contains "模式 7 路由到 reality-cloudflare.sh" "${legacy_route}" \
+assert_contains "模式 4 路由到 reality-cloudflare.sh" "${legacy_route}" \
     "reality-cloudflare=reality-cloudflare.sh"
-assert_contains "模式 7 不完整状态路由到 reality-cloudflare.sh" "${legacy_route}" \
+assert_contains "模式 4 不完整状态路由到 reality-cloudflare.sh" "${legacy_route}" \
     "incomplete-reality-cloudflare=reality-cloudflare.sh"
 [[ ! -e "${ROOT_DIR}/profiles/cdn.sh" ]] || fail "旧 profiles/cdn.sh 必须已删除"
 
@@ -1776,15 +1703,6 @@ write_uninstall_entry_state() { # $1=状态文件 $2=协议
             'SCHEDULED_REBOOT_ENABLED=0' \
             'SCHEDULED_REBOOT_HOUR=4'
         case "${protocol}" in
-        anytls)
-            printf '%s\n' \
-                'DIRECT_DOMAIN=direct.example.com' \
-                'DIRECT_NODE_NAME=direct' \
-                'ANYTLS_PASSWORD=password-abcdefgh' \
-                'SUBSCRIPTION_DOMAIN=sub.example.com' \
-                'CLOUDFLARE_ORIGIN_RULESET_ID=rs1' \
-                'CLOUDFLARE_ORIGIN_RULE_ID=rule1'
-            ;;
         cloudflare)
             printf '%s\n' \
                 'CF_NODE_DOMAIN=cf.example.com' \
@@ -1845,8 +1763,6 @@ run_uninstall_entry() { # $1=label $2=profile $3=protocol $4=归注释 $5=cloud_
     local label=$1 profile=$2 protocol=$3 comment=$4 cloud_fail=$5 aws_fail=$6
     local case_dir="${TMP_DIR}/uninstall-entry/${label}"
     local output status=0 proxied_host="cf.example.com"
-    # 橙云 A 记录（模式 2/3 的节点域名）proxied=true；模式 1 的订阅域名也是橙云。
-    [[ "${protocol}" == "anytls" ]] && proxied_host="sub.example.com"
     rm -rf -- "${case_dir}"
     mkdir -p "${case_dir}/state" "${case_dir}/websub/subscriptions" \
         "${case_dir}/singbox" "${case_dir}/caddy" "${case_dir}/units" \
@@ -1955,79 +1871,54 @@ assert_refusals_within() {
     done <"${log}"
 }
 
-entry_anytls_dir="${TMP_DIR}/uninstall-entry/anytls"
-entry_anytls_output=$(run_uninstall_entry anytls anytls anytls "easy_all anytls" 0 0)
-assert_equal "模式 1 无参数卸载退出 0" "0" \
-    "$(uninstall_entry_value "${entry_anytls_output}" UNINSTALL-STATUS)"
-assert_equal "模式 1 无参数入口拒绝 --purge-cloud" "1" \
-    "$(uninstall_entry_value "${entry_anytls_output}" GATE-STATUS)"
-assert_contains "模式 1 参数门禁拒绝旧参数" "${entry_anytls_output}" \
-    "uninstall 不支持参数"
-assert_contains "模式 1 默认删除直连 A 记录" "$(<"${entry_anytls_dir}/curl.log")" \
-    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-direct.example.com-A"
-assert_contains "模式 1 默认删除订阅 A 记录" "$(<"${entry_anytls_dir}/curl.log")" \
-    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-sub.example.com-A"
-assert_contains "模式 1 默认删除 Origin Rule" "$(<"${entry_anytls_dir}/curl.log")" \
-    "DELETE https://api.cloudflare.com/client/v4/zones/zone123/rulesets/rs1/rules/rule1"
-assert_contains "模式 1 资源清单使用中性标题" "${entry_anytls_output}" "云端资源清单："
-assert_contains "模式 1 收尾说明云端结果见上方输出" "${entry_anytls_output}" \
-    "easy_all 本机内容已卸载；云端清理结果见上方输出"
-assert_uninstall_entry_cleanup "模式 1" "${entry_anytls_dir}"
-assert_contains "模式 1 拒绝删除宿主命令路径" "$(<"${entry_anytls_dir}/refusals.log")" \
-    "/usr/local/bin/easy_all"
-assert_contains "模式 1 拒绝删除宿主安装目录" "$(<"${entry_anytls_dir}/refusals.log")" \
-    "/usr/local/lib/easy_all"
-assert_refusals_within "模式 1" "${entry_anytls_dir}/refusals.log" \
-    "/usr/local/bin/easy_all" "/usr/local/lib/easy_all"
-
 entry_combined_cf_dir="${TMP_DIR}/uninstall-entry/combined-cloudflare"
 entry_combined_cf_output=$(run_uninstall_entry combined-cloudflare combined-cloudflare \
     combined-cloudflare "easy_all combined-cloudflare" 0 0)
-assert_equal "模式 3 无参数卸载退出 0" "0" \
+assert_equal "模式 6 无参数卸载退出 0" "0" \
     "$(uninstall_entry_value "${entry_combined_cf_output}" UNINSTALL-STATUS)"
-assert_contains "模式 3 默认删除直连 A 记录" "$(<"${entry_combined_cf_dir}/curl.log")" \
+assert_contains "模式 6 默认删除直连 A 记录" "$(<"${entry_combined_cf_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-direct.example.com-A"
-assert_contains "模式 3 默认删除节点/订阅 A 记录" "$(<"${entry_combined_cf_dir}/curl.log")" \
+assert_contains "模式 6 默认删除节点/订阅 A 记录" "$(<"${entry_combined_cf_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-cf.example.com-A"
-assert_contains "模式 3 默认删除 Origin Rule" "$(<"${entry_combined_cf_dir}/curl.log")" \
+assert_contains "模式 6 默认删除 Origin Rule" "$(<"${entry_combined_cf_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/rulesets/rs1/rules/rule1"
-assert_contains "模式 3 清单点名节点/订阅 A 记录" "${entry_combined_cf_output}" \
+assert_contains "模式 6 清单点名节点/订阅 A 记录" "${entry_combined_cf_output}" \
     "节点/订阅 A 记录（橙云）: cf.example.com -> 203.0.113.10"
-assert_uninstall_entry_cleanup "模式 3" "${entry_combined_cf_dir}"
-assert_contains "模式 3 拒绝删除宿主命令路径" \
+assert_uninstall_entry_cleanup "模式 6" "${entry_combined_cf_dir}"
+assert_contains "模式 6 拒绝删除宿主命令路径" \
     "$(<"${entry_combined_cf_dir}/refusals.log")" "/usr/local/bin/easy_all"
-assert_refusals_within "模式 3" "${entry_combined_cf_dir}/refusals.log" \
+assert_refusals_within "模式 6" "${entry_combined_cf_dir}/refusals.log" \
     "/usr/local/bin/easy_all" "/usr/local/lib/easy_all"
 
 entry_cloudflare_dir="${TMP_DIR}/uninstall-entry/cloudflare"
 entry_cloudflare_output=$(run_uninstall_entry cloudflare cloudflare cloudflare "easy_all cloudflare" 0 0)
-assert_equal "模式 2 无参数卸载退出 0" "0" \
+assert_equal "模式 1 无参数卸载退出 0" "0" \
     "$(uninstall_entry_value "${entry_cloudflare_output}" UNINSTALL-STATUS)"
-assert_contains "模式 2 默认删除橙云 A 记录" "$(<"${entry_cloudflare_dir}/curl.log")" \
+assert_contains "模式 1 默认删除橙云 A 记录" "$(<"${entry_cloudflare_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-cf.example.com-A"
-assert_contains "模式 2 默认吊销 Origin CA" "$(<"${entry_cloudflare_dir}/curl.log")" \
+assert_contains "模式 1 默认吊销 Origin CA" "$(<"${entry_cloudflare_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/certificates/cert1"
-assert_uninstall_entry_cleanup "模式 2" "${entry_cloudflare_dir}"
-assert_contains "模式 2 拒绝删除宿主命令路径" "$(<"${entry_cloudflare_dir}/refusals.log")" \
+assert_uninstall_entry_cleanup "模式 1" "${entry_cloudflare_dir}"
+assert_contains "模式 1 拒绝删除宿主命令路径" "$(<"${entry_cloudflare_dir}/refusals.log")" \
     "/usr/local/bin/easy_all"
-assert_contains "模式 2 拒绝删除宿主安装目录" "$(<"${entry_cloudflare_dir}/refusals.log")" \
+assert_contains "模式 1 拒绝删除宿主安装目录" "$(<"${entry_cloudflare_dir}/refusals.log")" \
     "/usr/local/lib/easy_all"
-assert_refusals_within "模式 2" "${entry_cloudflare_dir}/refusals.log" \
+assert_refusals_within "模式 1" "${entry_cloudflare_dir}/refusals.log" \
     "/usr/local/bin/easy_all" "/usr/local/lib/easy_all"
 
 entry_mode2_dir="${TMP_DIR}/uninstall-entry/cloudfront"
 entry_mode2_output=$(run_uninstall_entry cloudfront cloudfront cloudfront "easy_all cloudfront" 0 0)
-assert_equal "模式 4 无参数卸载退出 0" "0" \
+assert_equal "模式 2 无参数卸载退出 0" "0" \
     "$(uninstall_entry_value "${entry_mode2_output}" UNINSTALL-STATUS)"
-assert_contains "模式 4 默认删除 CloudFront 分发" "$(<"${entry_mode2_dir}/aws.log")" \
+assert_contains "模式 2 默认删除 CloudFront 分发" "$(<"${entry_mode2_dir}/aws.log")" \
     "delete-distribution"
-assert_contains "模式 4 删除前完成部署等待" "$(<"${entry_mode2_dir}/aws.log")" \
+assert_contains "模式 2 删除前完成部署等待" "$(<"${entry_mode2_dir}/aws.log")" \
     "cloudfront get-distribution --id EDFDVBD6EXAMPLE"
-assert_contains "模式 4 默认删除源站 A 记录" "$(<"${entry_mode2_dir}/curl.log")" \
+assert_contains "模式 2 默认删除源站 A 记录" "$(<"${entry_mode2_dir}/curl.log")" \
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-origin.example.com-A"
-assert_not_contains "模式 4 不出现直连 A 记录" "${entry_mode2_output}" "直连 A 记录:"
-assert_uninstall_entry_cleanup "模式 4" "${entry_mode2_dir}"
-assert_refusals_within "模式 4" "${entry_mode2_dir}/refusals.log" \
+assert_not_contains "模式 2 不出现直连 A 记录" "${entry_mode2_output}" "直连 A 记录:"
+assert_uninstall_entry_cleanup "模式 2" "${entry_mode2_dir}"
+assert_refusals_within "模式 2" "${entry_mode2_dir}/refusals.log" \
     "/usr/local/bin/easy_all" "/usr/local/lib/easy_all" \
     "/etc/systemd/system/easy_all-cdn-traffic-guard.timer" \
     "/etc/systemd/system/easy_all-cdn-traffic-guard.service"
@@ -2073,7 +1964,7 @@ assert_refusals_within "模式 5" "${entry_cf_dir}/refusals.log" \
     "/etc/systemd/system/easy_all-cdn-traffic-guard.service"
 
 entry_fail_dir="${TMP_DIR}/uninstall-entry/cloud-fail"
-entry_fail_output=$(run_uninstall_entry cloud-fail anytls anytls "easy_all anytls" 1 0)
+entry_fail_output=$(run_uninstall_entry cloud-fail combined-cloudflare combined-cloudflare "easy_all combined-cloudflare" 1 0)
 assert_equal "云端失败时本机卸载照常完成但退出非零" "1" \
     "$(uninstall_entry_value "${entry_fail_output}" UNINSTALL-STATUS)"
 assert_contains "云端失败时输出总体告警" "${entry_fail_output}" \
@@ -2689,7 +2580,7 @@ for mode_file in anytls-mode cloudflare-mode cloudfront-mode; do
             "${ROOT_DIR}/lib/${mode_file}.sh")"
 done
 
-# 40. 模式 6：Reality + CloudFront 运行时契约（真实 Profile + 核心库，独立进程隔离）
+# 40. 模式 3：Reality + CloudFront 运行时契约（真实 Profile + 核心库，独立进程隔离）
 reality_work="${TMP_DIR}/reality-runtime"
 mkdir -p "${reality_work}/certs"
 cat >"${reality_work}/run.sh" <<'REALITY_RUNTIME'
@@ -2725,12 +2616,12 @@ FAKE_SINGBOX
 chmod +x "${SINGBOX_BIN}"
 : >"${FAKE_KEYPAIR_LOG}"
 # shellcheck source=/dev/null
-source "${ROOT_DIR}/profiles/reality-self.sh"
+source "${ROOT_DIR}/profiles/reality-cloudfront.sh"
 
 DIRECT_DOMAIN=direct.example.com
 DIRECT_NODE_NAME=Reality
 VLESS_UUID=11111111-2222-4111-8111-111111111111
-# 模式 6 与模式 5 同构：源站域名复用直连域名，订阅域名复用节点域名。
+# 模式 3 与模式 5 同构：源站域名复用直连域名，订阅域名复用节点域名。
 CF_ORIGIN_DOMAIN=direct.example.com
 CF_NODE_DOMAIN=cf.example.com
 CF_NODE_PREFIX="CF"
@@ -2747,41 +2638,41 @@ VPS_PUBLIC_IPV4=203.0.113.10
 SUBSCRIPTION_MODE=deploy
 
 # 端口与链路派生与模式 5 完全一致。
-[[ "$(runtime_public_tcp_ports)" == "443 8443" ]] || fail "模式 6 公网端口应为 443 8443"
-[[ -z "$(runtime_cloudflare_only_port)" ]] || fail "模式 6 的 8443 由源站头守卫，不按源段限制"
-[[ "$(runtime_cdn_loopback_port)" == "10086" ]] || fail "模式 6 回环入站端口错误"
-[[ "$(caddy_reality_camouflage_port)" == "9443" ]] || fail "模式 6 伪装站端口错误"
-[[ "$(caddy_site_port)" == "8443" ]] || fail "模式 6 Caddy 站点端口应为 8443"
-[[ "$(caddy_site_host)" == "direct.example.com" ]] || fail "模式 6 Caddy 站点应为 CF_ORIGIN_DOMAIN"
-[[ "$(subscription_link_domain)" == "cf.example.com" ]] || fail "模式 6 订阅链接应使用订阅域名"
+[[ "$(runtime_public_tcp_ports)" == "443 8443" ]] || fail "模式 3 公网端口应为 443 8443"
+[[ -z "$(runtime_cloudflare_only_port)" ]] || fail "模式 3 的 8443 由源站头守卫，不按源段限制"
+[[ "$(runtime_cdn_loopback_port)" == "10086" ]] || fail "模式 3 回环入站端口错误"
+[[ "$(caddy_reality_camouflage_port)" == "9443" ]] || fail "模式 3 伪装站端口错误"
+[[ "$(caddy_site_port)" == "8443" ]] || fail "模式 3 Caddy 站点端口应为 8443"
+[[ "$(caddy_site_host)" == "direct.example.com" ]] || fail "模式 3 Caddy 站点应为 CF_ORIGIN_DOMAIN"
+[[ "$(subscription_link_domain)" == "cf.example.com" ]] || fail "模式 3 订阅链接应使用订阅域名"
 [[ "$(runtime_protocol_label)" == "Reality（direct TCP 443）+ VLESS WebSocket over AWS CloudFront" ]] \
-    || fail "模式 6 协议标签未对齐模式 5：$(runtime_protocol_label)"
+    || fail "模式 3 协议标签未对齐模式 5：$(runtime_protocol_label)"
 
 # 证书只需覆盖 {DIRECT_DOMAIN, CF_ORIGIN_DOMAIN}：同域去重后不含 ACM 侧的订阅域名。
 [[ "$(certificate_required_hosts | paste -sd, -)" == "direct.example.com" ]] \
-    || fail "模式 6 证书域名错误：$(certificate_required_hosts | paste -sd, -)"
+    || fail "模式 3 证书域名错误：$(certificate_required_hosts | paste -sd, -)"
 SUBSCRIPTION_DOMAIN=cf.example.com
 CF_ORIGIN_DOMAIN=origin2.example.com
 [[ "$(certificate_required_hosts | paste -sd, -)" == "direct.example.com,origin2.example.com" ]] \
-    || fail "模式 6 证书域名错误：$(certificate_required_hosts | paste -sd, -)"
+    || fail "模式 3 证书域名错误：$(certificate_required_hosts | paste -sd, -)"
 CF_ORIGIN_DOMAIN=direct.example.com
 
 # 无 link 模式：Caddy 站点与订阅站点恒启用。
-runtime_caddy_site_enabled || fail "模式 6 的 Caddy 必须恒启用"
-runtime_subscription_site_enabled || fail "模式 6 的订阅站点必须恒启用"
+runtime_caddy_site_enabled || fail "模式 3 的 Caddy 必须恒启用"
+runtime_subscription_site_enabled || fail "模式 3 的订阅站点必须恒启用"
 SUBSCRIPTION_MODE=link
-runtime_subscription_site_enabled || fail "模式 6 没有 link 模式：订阅站点仍须启用"
+runtime_subscription_site_enabled || fail "模式 3 没有 link 模式：订阅站点仍须启用"
 SUBSCRIPTION_MODE=deploy
 
 # 订阅标记：Reality + VLESS ws 两个本地节点。
 [[ "$(runtime_base64_markers | paste -sd, -)" == "security=reality,type=ws" ]] \
-    || fail "模式 6 base64 标记错误：$(runtime_base64_markers | paste -sd, -)"
+    || fail "模式 3 base64 标记错误：$(runtime_base64_markers | paste -sd, -)"
 [[ "$(runtime_mihomo_markers | paste -sd, -)" == "reality-opts:,network: ws" ]] \
-    || fail "模式 6 Mihomo 标记错误：$(runtime_mihomo_markers | paste -sd, -)"
+    || fail "模式 3 Mihomo 标记错误：$(runtime_mihomo_markers | paste -sd, -)"
 
-# 985GB 熔断：sing-box 的 ExecStartPre 必须挂内部计量入口（与模式 4/5 同一条链）。
+# 985GB 熔断：sing-box 的 ExecStartPre 必须挂内部计量入口（与模式 2/5 同一条链）。
 [[ "$(runtime_singbox_exec_start_pre)" == "${COMMAND_PATH} internal-traffic-prepare" ]] \
-    || fail "模式 6 必须挂 internal-traffic-prepare：$(runtime_singbox_exec_start_pre)"
+    || fail "模式 3 必须挂 internal-traffic-prepare：$(runtime_singbox_exec_start_pre)"
 
 # keypair：生成 → 落盘身份 → 第二次不重复生成；失败不覆盖已有身份。
 REALITY_PRIVATE_KEY=""
@@ -2837,18 +2728,18 @@ rm -f -- "${CERT_FILE}"
 status_output=$(show_status 2>&1)
 [[ "${status_output}" == *"VLESS Reality"* ]] || fail "状态未标明 Reality 直连"
 [[ "${status_output}" == *"伪装站"* ]] || fail "状态未说明伪装站回落目标"
-[[ "${status_output}" != *"Caddy: 未部署"* ]] || fail "模式 6 无 link 模式，不得显示 Caddy 未部署"
-[[ "${status_output}" == *"Caddy: inactive"* ]] || fail "模式 6 应报告 Caddy 真实状态"
+[[ "${status_output}" != *"Caddy: 未部署"* ]] || fail "模式 3 无 link 模式，不得显示 Caddy 未部署"
+[[ "${status_output}" == *"Caddy: inactive"* ]] || fail "模式 3 应报告 Caddy 真实状态"
 REALITY_RUNTIME
 bash "${reality_work}/run.sh" "${ROOT_DIR}" "${reality_work}" >"${reality_work}/out.log" 2>&1 || {
     cat "${reality_work}/out.log" >&2
-    fail "模式 6 运行时契约未通过"
+    fail "模式 3 运行时契约未通过"
 }
 
 # 41. runtime.manifest ↔ profiles/ 双向一致（缺失项会让 verify-release 或自更新失效）
 manifest_file="${ROOT_DIR}/runtime.manifest"
-grep -Fxq 'profiles/reality-self.sh' "${manifest_file}" || fail "manifest 缺少模式 6 Profile"
-grep -Fxq 'profiles/reality-cloudflare.sh' "${manifest_file}" || fail "manifest 缺少模式 7 Profile"
+grep -Fxq 'profiles/reality-cloudfront.sh' "${manifest_file}" || fail "manifest 缺少模式 3 Profile"
+grep -Fxq 'profiles/reality-cloudflare.sh' "${manifest_file}" || fail "manifest 缺少模式 4 Profile"
 grep -Fxq 'templates/camouflage-login.html' "${manifest_file}" \
     || fail "manifest 缺少伪装站页面模板"
 while IFS= read -r relative_path; do
@@ -2861,7 +2752,7 @@ for profile_path in "${ROOT_DIR}"/profiles/*.sh; do
         || fail "Profile 未纳入 manifest：${relative_path}"
 done
 
-# 42. 模式 6 从 install_all 入口走到 inputs 阶段：对齐模式 5 的输入与身份字段。
+# 42. 模式 3 从 install_all 入口走到 inputs 阶段：对齐模式 5 的输入与身份字段。
 run_reality_install_all_case() {
     local case_dir="${TMP_DIR}/reality-install-all"
     rm -rf -- "${case_dir}"
@@ -2876,7 +2767,7 @@ run_reality_install_all_case() {
         bash -c '
             set -Eeuo pipefail
             # shellcheck source=/dev/null
-            source "$1/profiles/reality-self.sh"
+            source "$1/profiles/reality-cloudfront.sh"
             # 宿主与云端一律替身：本用例只校验 install_all 的输入阶段与身份字段。
             require_root() { :; }
             acquire_runtime_write_lock() { :; }
@@ -2931,29 +2822,29 @@ run_reality_install_all_case() {
         ' _ "${ROOT_DIR}" 2>&1
 }
 reality_install_all_output=$(run_reality_install_all_case)
-assert_contains "模式 6 安装写 CloudFront 链路标记" "${reality_install_all_output}" \
-    "PROGRESS-BEGIN: reality-self cloudfront"
-assert_equal "模式 6 首轮端口预检覆盖 443/8443/10086/9443" \
+assert_contains "模式 3 安装写 CloudFront 链路标记" "${reality_install_all_output}" \
+    "PROGRESS-BEGIN: reality-cloudfront cloudfront"
+assert_equal "模式 3 首轮端口预检覆盖 443/8443/10086/9443" \
     "PRECHECK:443 8443||10086|9443" \
     "$(grep -F 'PRECHECK:' <<<"${reality_install_all_output}" || true)"
 reality_install_uuid=$(uninstall_entry_value "${reality_install_all_output}" UUID)
 [[ "${reality_install_uuid}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]] \
-    || fail "模式 6 输入阶段必须生成 v4 VLESS_UUID：${reality_install_uuid:-空}"
+    || fail "模式 3 输入阶段必须生成 v4 VLESS_UUID：${reality_install_uuid:-空}"
 reality_install_sid=$(uninstall_entry_value "${reality_install_all_output}" SHORT_ID)
 [[ "${reality_install_sid}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
-    || fail "模式 6 输入阶段必须生成 Reality short_id：${reality_install_sid:-空}"
-assert_equal "模式 6 输入阶段不生成 keypair（依赖已安装核心）" "" \
+    || fail "模式 3 输入阶段必须生成 Reality short_id：${reality_install_sid:-空}"
+assert_equal "模式 3 输入阶段不生成 keypair（依赖已安装核心）" "" \
     "$(uninstall_entry_value "${reality_install_all_output}" PRIVATE_KEY)"
-assert_equal "模式 6 订阅恒为 deploy" "deploy" \
+assert_equal "模式 3 订阅恒为 deploy" "deploy" \
     "$(uninstall_entry_value "${reality_install_all_output}" SUBSCRIPTION_MODE)"
-assert_equal "模式 6 源站域名复用直连域名" "yes" \
+assert_equal "模式 3 源站域名复用直连域名" "yes" \
     "$(uninstall_entry_value "${reality_install_all_output}" ORIGIN_EQ_DIRECT)"
-assert_equal "模式 6 订阅域名复用节点域名" "yes" \
+assert_equal "模式 3 订阅域名复用节点域名" "yes" \
     "$(uninstall_entry_value "${reality_install_all_output}" SUBDOMAIN_EQ_NODE)"
 grep -Fxq 'ANYTLS_PASSWORD_SET=' <<<"${reality_install_all_output}" \
-    || fail "模式 6 的输入阶段不得生成 AnyTLS 密码"
+    || fail "模式 3 的输入阶段不得生成 AnyTLS 密码"
 
-# 42b. 模式 7 从 install_all 入口走到 services 阶段：身份先于核心下载、
+# 42b. 模式 4 从 install_all 入口走到 services 阶段：身份先于核心下载、
 # 橙云链路标记、Reality 不生成 AnyTLS 密码（design v2 §2.9）。
 run_reality_cf_install_all_case() {
     local case_dir="${TMP_DIR}/reality-cloudflare-install-all"
@@ -3026,32 +2917,32 @@ run_reality_cf_install_all_case() {
         ' _ "${ROOT_DIR}" 2>&1
 }
 reality_cf_install_all_output=$(run_reality_cf_install_all_case)
-assert_contains "模式 7 安装写橙云链路标记" "${reality_cf_install_all_output}" \
+assert_contains "模式 4 安装写橙云链路标记" "${reality_cf_install_all_output}" \
     "PROGRESS-BEGIN: reality-cloudflare cloudflare"
-assert_equal "模式 7 首轮端口预检覆盖 443/8443/10086/9443" \
+assert_equal "模式 4 首轮端口预检覆盖 443/8443/10086/9443" \
     "PRECHECK:443|8443|10086|9443" \
     "$(grep -F 'PRECHECK:' <<<"${reality_cf_install_all_output}" || true)"
 reality_cf_uuid=$(uninstall_entry_value "${reality_cf_install_all_output}" UUID)
 [[ "${reality_cf_uuid}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]] \
-    || fail "模式 7 输入阶段必须生成 v4 VLESS_UUID：${reality_cf_uuid:-空}"
+    || fail "模式 4 输入阶段必须生成 v4 VLESS_UUID：${reality_cf_uuid:-空}"
 reality_cf_sid=$(uninstall_entry_value "${reality_cf_install_all_output}" SHORT_ID)
 [[ "${reality_cf_sid}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
-    || fail "模式 7 输入阶段必须生成 Reality short_id：${reality_cf_sid:-空}"
-assert_equal "模式 7 输入阶段不生成 keypair（依赖已下载核心）" "" \
+    || fail "模式 4 输入阶段必须生成 Reality short_id：${reality_cf_sid:-空}"
+assert_equal "模式 4 输入阶段不生成 keypair（依赖已下载核心）" "" \
     "$(uninstall_entry_value "${reality_cf_install_all_output}" PRIVATE_KEY)"
-assert_equal "模式 7 订阅恒为 deploy" "deploy" \
+assert_equal "模式 4 订阅恒为 deploy" "deploy" \
     "$(uninstall_entry_value "${reality_cf_install_all_output}" SUBSCRIPTION_MODE)"
-assert_equal "模式 7 订阅域名复用节点域名" "yes" \
+assert_equal "模式 4 订阅域名复用节点域名" "yes" \
     "$(uninstall_entry_value "${reality_cf_install_all_output}" SUBDOMAIN_EQ_NODE)"
 grep -Fxq 'ANYTLS_PASSWORD_SET=' <<<"${reality_cf_install_all_output}" \
-    || fail "模式 7 的输入阶段与身份落盘都不得生成 AnyTLS 密码"
+    || fail "模式 4 的输入阶段与身份落盘都不得生成 AnyTLS 密码"
 # 身份落盘必须先于核心下载；keypair 在核心下载后的 cdn_prepare_direct_runtime 才生成。
 reality_cf_sequence=$(grep -E '^(STAGE:|IDENTITY-PERSIST|DOWNLOAD-|PREPARE-DIRECT)' \
     <<<"${reality_cf_install_all_output}")
-assert_contains "模式 7 身份先于核心下载落盘" "${reality_cf_sequence}" \
+assert_contains "模式 4 身份先于核心下载落盘" "${reality_cf_sequence}" \
     $'STAGE:inputs\nIDENTITY-PERSIST:keypair= anytls=\nSTAGE:core\nDOWNLOAD-SINGBOX\nDOWNLOAD-CADDY\nPREPARE-DIRECT:identity=ok\nSTAGE:services'
 
-# 43. 模式 6 的 985GB 熔断启动链：只接受 cloudfront 链，且持久阻断必须拒绝启动。
+# 43. 模式 3 的 985GB 熔断启动链：只接受 cloudfront 链，且持久阻断必须拒绝启动。
 boot_work="${TMP_DIR}/reality-boot"
 rm -rf -- "${boot_work}"
 mkdir -p "${boot_work}/runtime"
@@ -3071,7 +2962,7 @@ export EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${WORK}/progress/install-progres
 export CAMOUFLAGE_DIR="${WORK}/camouflage"
 export SINGBOX_CONFIG="${WORK}/singbox.json"
 # shellcheck source=/dev/null
-source "${ROOT_DIR}/profiles/reality-self.sh"
+source "${ROOT_DIR}/profiles/reality-cloudfront.sh"
 require_root() { :; }
 success() { printf 'SUCCESS:%s\n' "$*"; }
 # 计量实现与本用例无关：只校验链路身份与阻断门禁的分支。
@@ -3082,7 +2973,7 @@ if [[ "${BLOCK_ALLOWED}" == "1" ]]; then
 else
     cdn_traffic_start_config_allowed() { :; }
 fi
-install_progress_begin reality-self "${MARKER_CHAIN}"
+install_progress_begin reality-cloudfront "${MARKER_CHAIN}"
 CDN_TRAFFIC_PROTECTION_GB=985
 VLESS_UUID=11111111-2222-4111-8111-111111111111
 REALITY_PRIVATE_KEY=$(printf 'A%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')
@@ -3098,12 +2989,12 @@ run_reality_boot() { # $1=marker chain $2=block allowed
     bash "${boot_work}/boot.sh" "${ROOT_DIR}" "${case_dir}" "$1" "$2" 2>&1 || true
 }
 boot_ok=$(run_reality_boot cloudfront 0)
-assert_contains "模式 6 按 cloudfront 链通过启动准备" "${boot_ok}" "SUCCESS:计量规则与保护状态校验通过"
+assert_contains "模式 3 按 cloudfront 链通过启动准备" "${boot_ok}" "SUCCESS:计量规则与保护状态校验通过"
 boot_wrong=$(run_reality_boot cloudflare 0)
-assert_contains "模式 6 拒绝非 cloudfront 链" "${boot_wrong}" \
+assert_contains "模式 3 拒绝非 cloudfront 链" "${boot_wrong}" \
     "安装进度标记缺少本模式要求的 CHAIN；拒绝启动 sing-box"
 boot_blocked=$(run_reality_boot cloudfront 1)
-assert_contains "模式 6 持久阻断必须拒绝启动" "${boot_blocked}" \
+assert_contains "模式 3 持久阻断必须拒绝启动" "${boot_blocked}" \
     "持久阻断/保护性停机状态与开放 CDN 入站的候选配置冲突；拒绝启动 sing-box"
 assert_not_contains "拒绝启动时不得报告校验通过" "${boot_blocked}" \
     "SUCCESS:计量规则与保护状态校验通过"
@@ -3138,18 +3029,18 @@ mkdir -p "${reuse_root}/runtime"
 reuse_phase1=$(env "${reuse_env[@]}" bash -c '
     set -Eeuo pipefail
     # shellcheck source=/dev/null
-    source "$1/profiles/reality-self.sh"
+    source "$1/profiles/reality-cloudfront.sh"
     install -d -m 0700 "$(install_state_dir_path)"
     REALITY_PRIVATE_KEY=$(printf "A%.0s" {1..32} | base64 | tr "+/" "-_" | tr -d "=\\n")
     REALITY_PUBLIC_KEY=$(printf "B%.0s" {1..32} | base64 | tr "+/" "-_" | tr -d "=\\n")
     REALITY_SHORT_ID=0123456789abcdef
     persist_install_identity || exit 1
     printf "KEY=%s\n" "${REALITY_PRIVATE_KEY}"
-' _ "${ROOT_DIR}" 2>&1) || fail "模式 6 身份落盘失败：${reuse_phase1}"
+' _ "${ROOT_DIR}" 2>&1) || fail "模式 3 身份落盘失败：${reuse_phase1}"
 reuse_phase2=$(env "${reuse_env[@]}" bash -c '
     set -Eeuo pipefail
     # shellcheck source=/dev/null
-    source "$1/profiles/reality-self.sh"
+    source "$1/profiles/reality-cloudfront.sh"
     REALITY_PRIVATE_KEY=""
     REALITY_PUBLIC_KEY=""
     load_install_identity || exit 1
@@ -3158,7 +3049,7 @@ reuse_phase2=$(env "${reuse_env[@]}" bash -c '
     printf "KEY=%s\n" "${REALITY_PRIVATE_KEY}"
     printf "SHORT_ID=%s\n" "${REALITY_SHORT_ID:-}"
     printf "GENERATE_CALLS=%s\n" "$(grep -c . "${FAKE_KEYPAIR_LOG}" || true)"
-' _ "${ROOT_DIR}" 2>&1) || fail "模式 6 续装身份恢复失败：${reuse_phase2}"
+' _ "${ROOT_DIR}" 2>&1) || fail "模式 3 续装身份恢复失败：${reuse_phase2}"
 assert_equal "续装确实从磁盘恢复了 Reality 私钥" "LOADED=yes" \
     "$(grep -Fx 'LOADED=yes' <<<"${reuse_phase2}" || true)"
 assert_equal "跨进程续装复用同一 Reality 私钥" \

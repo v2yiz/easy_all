@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Mode 7: Reality self-steal direct entry (TCP 443) plus the Cloudflare orange-cloud CDN
+# Mode 4: Reality self-steal direct entry (TCP 443) plus the Cloudflare orange-cloud CDN
 # entry (Caddy origin 8443 → sing-box loopback VLESS WebSocket on 10086), same shape as
-# mode 3. 443 is a vless/xtls-rprx-vision/reality inbound: any non-Reality handshake
+# mode 6. 443 is a vless/xtls-rprx-vision/reality inbound: any non-Reality handshake
 # (including active probing) is handed to Caddy on 127.0.0.1:9443 and gets a real TLS 1.3
 # handshake with the workspace login page. 9443 is loopback only and never exposes the
 # subscription routes, /easy_all-health or an origin guard; 8443 只对 Cloudflare IPv4

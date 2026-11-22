@@ -63,7 +63,7 @@ TOKEN="abcdefghijklmnopqrstuvwxyz0123456789"
 
 # --- 1. Cloudflare Token：共享的 0600 原子保存与读取 ---------------------------
 # 修复前模式 1 的加载链没有 persist_cloudflare_token，安装必然 command not found。
-for profile in anytls cloudfront cloudflare combined; do
+for profile in cloudfront cloudflare combined reality-cloudfront reality-cloudflare combined-cloudflare; do
     token_path=$(EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/token-${profile}" \
         bash -c '
             source "$1/profiles/$2.sh"
@@ -98,7 +98,7 @@ assert_equal "Token 内容" "${TOKEN}" "$(<"${token_dir}/cloudflare.token")"
 
 read_back=$(
     EASY_ALL_STATE_DIR_OVERRIDE="${token_dir}" bash -c '
-        source "$1/profiles/anytls.sh"
+        source "$1/profiles/combined-cloudflare.sh"
         unset CLOUDFLARE_API_TOKEN
         cloudflare_collect_api_token
         printf "%s\n" "${CLOUDFLARE_API_TOKEN}"
@@ -170,85 +170,70 @@ STRICT
 
 for ssl in strict full flexible off 403; do
     log=$(run_strict_case "${ssl}" cloudflare)
-    assert_contains "模式 2 ${ssl}：先只读查询 Zone ID" "${log}" \
+    assert_contains "模式 1 ${ssl}：先只读查询 Zone ID" "${log}" \
         "GET /zones?name=example.com&status=active&per_page=50"
     zone_line=$(grep -n 'GET /zones?name=' <<<"${log}" | head -n 1 | cut -d: -f1)
     ssl_line=$(grep -n 'settings/ssl' <<<"${log}" | head -n 1 | cut -d: -f1)
     [[ -n "${zone_line}" && -n "${ssl_line}" ]] \
-        || fail "模式 2 ${ssl}：必须同时查询 Zone ID 与 SSL 设置"
-    ((zone_line < ssl_line)) || fail "模式 2 ${ssl}：Zone ID 查询必须早于 SSL 设置查询"
+        || fail "模式 1 ${ssl}：必须同时查询 Zone ID 与 SSL 设置"
+    ((zone_line < ssl_line)) || fail "模式 1 ${ssl}：Zone ID 查询必须早于 SSL 设置查询"
     if [[ "${ssl}" == "strict" ]]; then
-        assert_contains "模式 2 strict：继续创建 DNS" "${log}" "DNS cf.example.com"
-        assert_contains "模式 2 strict：执行到证书签发" "${log}" "CERT"
-        assert_contains "模式 2 strict：成功结束" "${log}" "STATUS=0"
+        assert_contains "模式 1 strict：继续创建 DNS" "${log}" "DNS cf.example.com"
+        assert_contains "模式 1 strict：执行到证书签发" "${log}" "CERT"
+        assert_contains "模式 1 strict：成功结束" "${log}" "STATUS=0"
     else
-        assert_not_contains "模式 2 ${ssl}：不创建 DNS" "${log}" "DNS "
-        assert_not_contains "模式 2 ${ssl}：不签发证书" "${log}" "CERT"
-        assert_not_contains "模式 2 ${ssl}：非零退出" "${log}" "STATUS=0"
+        assert_not_contains "模式 1 ${ssl}：不创建 DNS" "${log}" "DNS "
+        assert_not_contains "模式 1 ${ssl}：不签发证书" "${log}" "CERT"
+        assert_not_contains "模式 1 ${ssl}：非零退出" "${log}" "STATUS=0"
     fi
-    assert_not_contains "模式 2 ${ssl}：没有写请求" "${log}" "POST "
-    assert_not_contains "模式 2 ${ssl}：没有删除请求" "${log}" "DELETE "
+    assert_not_contains "模式 1 ${ssl}：没有写请求" "${log}" "POST "
+    assert_not_contains "模式 1 ${ssl}：没有删除请求" "${log}" "DELETE "
 done
 
 # WebSockets 开关：橙云节点走 WebSocket，关闭时链路必失败，
 # 因此必须在任何 DNS/证书写入前阻断。
 for ws in off 403; do
     log=$(run_strict_case strict cloudflare deploy "${ws}")
-    assert_contains "模式 2 websockets ${ws}：查询了 WebSockets 设置" "${log}" \
+    assert_contains "模式 1 websockets ${ws}：查询了 WebSockets 设置" "${log}" \
         "GET /zones/zoneid/settings/websockets"
-    assert_not_contains "模式 2 websockets ${ws}：不创建 DNS" "${log}" "DNS "
-    assert_not_contains "模式 2 websockets ${ws}：不签发证书" "${log}" "CERT"
-    assert_not_contains "模式 2 websockets ${ws}：非零退出" "${log}" "STATUS=0"
-    assert_not_contains "模式 2 websockets ${ws}：没有写请求" "${log}" "POST "
-    assert_not_contains "模式 2 websockets ${ws}：没有删除请求" "${log}" "DELETE "
+    assert_not_contains "模式 1 websockets ${ws}：不创建 DNS" "${log}" "DNS "
+    assert_not_contains "模式 1 websockets ${ws}：不签发证书" "${log}" "CERT"
+    assert_not_contains "模式 1 websockets ${ws}：非零退出" "${log}" "STATUS=0"
+    assert_not_contains "模式 1 websockets ${ws}：没有写请求" "${log}" "POST "
+    assert_not_contains "模式 1 websockets ${ws}：没有删除请求" "${log}" "DELETE "
 done
 
 # websockets=on 必须继续，且 SSL 校验先于 WebSockets 校验。
 ws_on_log=$(run_strict_case strict cloudflare deploy on)
-assert_contains "模式 2 websockets on：继续创建 DNS" "${ws_on_log}" "DNS cf.example.com"
-assert_contains "模式 2 websockets on：执行到证书签发" "${ws_on_log}" "CERT"
-assert_contains "模式 2 websockets on：成功结束" "${ws_on_log}" "STATUS=0"
+assert_contains "模式 1 websockets on：继续创建 DNS" "${ws_on_log}" "DNS cf.example.com"
+assert_contains "模式 1 websockets on：执行到证书签发" "${ws_on_log}" "CERT"
+assert_contains "模式 1 websockets on：成功结束" "${ws_on_log}" "STATUS=0"
 ssl_line=$(grep -n 'settings/ssl' <<<"${ws_on_log}" | head -n 1 | cut -d: -f1)
 ws_line=$(grep -n 'settings/websockets' <<<"${ws_on_log}" | head -n 1 | cut -d: -f1)
 [[ -n "${ssl_line}" && -n "${ws_line}" ]] \
-    || fail "模式 2 websockets on：必须同时查询 SSL 与 WebSockets 设置"
-((ssl_line < ws_line)) || fail "模式 2 websockets on：SSL 校验必须早于 WebSockets 校验"
+    || fail "模式 1 websockets on：必须同时查询 SSL 与 WebSockets 设置"
+((ssl_line < ws_line)) || fail "模式 1 websockets on：SSL 校验必须早于 WebSockets 校验"
 
-for ssl in strict full; do
-    log=$(run_strict_case "${ssl}" anytls deploy)
-    assert_contains "模式 1 ${ssl}：先只读查询 Zone ID" "${log}" \
-        "GET /zones?name=example.com&status=active&per_page=50"
-    # 模式 1 不走 CDN 代理：无论 strict 是否通过，都不得查 WebSockets 开关。
-    assert_not_contains "模式 1 ${ssl}：不查询 WebSockets 开关" "${log}" "settings/websockets"
-    if [[ "${ssl}" == "strict" ]]; then
-        assert_contains "模式 1 strict：继续创建直连 DNS" "${log}" "DNS node.example.com"
-        assert_contains "模式 1 strict：继续创建订阅 DNS" "${log}" "DNS sub.example.com"
-        assert_contains "模式 1 strict：执行到 Origin Rule" "${log}" "RULE"
-        assert_contains "模式 1 strict：成功结束" "${log}" "STATUS=0"
-    else
-        assert_not_contains "模式 1 ${ssl}：不创建 DNS" "${log}" "DNS "
-        assert_not_contains "模式 1 ${ssl}：非零退出" "${log}" "STATUS=0"
-    fi
-done
 
-# 模式 3：橙云节点恒走 WebSocket，WebSockets 非 on 时阻断且不创建任何云资源。
+
+# 模式 6：橙云节点恒走 WebSocket，WebSockets 非 on 时阻断且不创建任何云资源。
 for ws in off 403; do
     log=$(run_strict_case strict combined-cloudflare deploy "${ws}")
-    assert_contains "模式 3 websockets ${ws}：查询了 WebSockets 设置" "${log}" \
+    assert_contains "模式 6 websockets ${ws}：查询了 WebSockets 设置" "${log}" \
         "GET /zones/zoneid/settings/websockets"
-    assert_not_contains "模式 3 websockets ${ws}：不创建 DNS" "${log}" "DNS "
-    assert_not_contains "模式 3 websockets ${ws}：不签发证书" "${log}" "CERT"
-    assert_not_contains "模式 3 websockets ${ws}：不配置 Origin Rule" "${log}" "RULE"
-    assert_not_contains "模式 3 websockets ${ws}：非零退出" "${log}" "STATUS=0"
-    assert_not_contains "模式 3 websockets ${ws}：没有写请求" "${log}" "POST "
-    assert_not_contains "模式 3 websockets ${ws}：没有删除请求" "${log}" "DELETE "
+    assert_not_contains "模式 6 websockets ${ws}：不创建 DNS" "${log}" "DNS "
+    assert_not_contains "模式 6 websockets ${ws}：不签发证书" "${log}" "CERT"
+    assert_not_contains "模式 6 websockets ${ws}：不配置 Origin Rule" "${log}" "RULE"
+    assert_not_contains "模式 6 websockets ${ws}：非零退出" "${log}" "STATUS=0"
+    assert_not_contains "模式 6 websockets ${ws}：没有写请求" "${log}" "POST "
+    assert_not_contains "模式 6 websockets ${ws}：没有删除请求" "${log}" "DELETE "
 done
 
 ws_on_log=$(run_strict_case strict combined-cloudflare deploy on)
-assert_contains "模式 3 websockets on：继续创建直连 DNS" "${ws_on_log}" "DNS node.example.com"
-assert_contains "模式 3 websockets on：执行到证书签发" "${ws_on_log}" "CERT"
-assert_contains "模式 3 websockets on：执行到 Origin Rule" "${ws_on_log}" "RULE"
-assert_contains "模式 3 websockets on：成功结束" "${ws_on_log}" "STATUS=0"
+assert_contains "模式 6 websockets on：继续创建直连 DNS" "${ws_on_log}" "DNS node.example.com"
+assert_contains "模式 6 websockets on：执行到证书签发" "${ws_on_log}" "CERT"
+assert_contains "模式 6 websockets on：执行到 Origin Rule" "${ws_on_log}" "RULE"
+assert_contains "模式 6 websockets on：成功结束" "${ws_on_log}" "STATUS=0"
 
 # 交互终端下预检失败时给 1 次重试机会：首次 off → 提示后回车 → 变为 on 则通过，仍 off 则阻断。
 run_interactive_ws_retry_case() {
@@ -337,43 +322,7 @@ assert_not_contains "交互重试后仍 off：不创建 DNS" "${retry_fail_log}"
 assert_equal "交互重试后仍 off：恰查询 2 次 WebSockets（仅 1 次重试机会）" "2" \
     "$(grep -c 'settings/websockets' <<<"${retry_fail_log}")"
 
-# 模式 1 link：不调用 Zone Settings 接口（design §9）。
-link_runtime="${TMP_DIR}/link-runtime"
-link_state="${TMP_DIR}/link-state"
-mkdir -p "${link_runtime}" "${link_state}"
-link_log=$(
-    RUNTIME_TMP="${link_runtime}" EASY_ALL_STATE_DIR_OVERRIDE="${link_state}" \
-        EASY_ALL_CERT_DIR_OVERRIDE="${link_state}/certs" \
-        EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${link_state}/subscriptions" \
-        bash -c '
-            source "$1/profiles/anytls.sh"
-            mkdir -p "${RUNTIME_TMP}"
-            CF_ZONE=example.com
-            VPS_PUBLIC_IPV4=203.0.113.10
-            DIRECT_DOMAIN=node.example.com
-            SUBSCRIPTION_MODE=link
-            CLOUDFLARE_API_TOKEN=$2
-            cloudflare_api_request() {
-                # 日志必须走 stderr：stdout 是 API 的 JSON 响应。
-                printf "%s %s\n" "$1" "$2" >&2
-                case "$1 $2" in
-                "GET /zones?name=example.com&status=active&per_page=50")
-                    printf "[{\"name\":\"example.com\",\"id\":\"zoneid\"}]\n" ;;
-                *) return 1 ;;
-                esac
-            }
-            persist_cloudflare_token() { :; }
-            dns_ensure_record() { printf "DNS %s\n" "$1"; }
-            certbot_write_cloudflare_credentials() { :; }
-            cdn_issue_certificate() { printf "CERT\n"; }
-            apply_cloud_phase
-        ' _ "${ROOT_DIR}" "${TOKEN}" 2>&1
-) || fail "模式 1 link 的云同步失败：${link_log}"
-assert_not_contains "模式 1 link 不查询 Zone SSL 设置" "${link_log}" "settings/ssl"
-assert_contains "模式 1 link 仍配置直连 DNS" "${link_log}" "DNS node.example.com"
-assert_not_contains "模式 1 link 不创建订阅 DNS" "${link_log}" "DNS sub.example.com"
-
-# --- 3. 模式 2 的 DNS 归属常量：创建、复用与 purge 使用同一契约 -----------------
+# --- 3. 模式 1 的 DNS 归属常量：创建、复用与 purge 使用同一契约 -----------------
 run_dns_case() { # $1=create|reuse|purge|purge-takeover|foreign
     local case_name=$1 case_status=0
     local log="${TMP_DIR}/dns-${case_name}.log"
@@ -429,26 +378,26 @@ run_dns_case() { # $1=create|reuse|purge|purge-takeover|foreign
 # 用例退出码：$( ) 里的赋值传不回来，所以用「调用失败时赋值」的形态留在调用方。
 RUN_DNS_CASE_STATUS=0
 create_log=$(run_dns_case create) || RUN_DNS_CASE_STATUS=$?
-assert_equal "模式 2 创建用例退出 0" "0" "${RUN_DNS_CASE_STATUS}"
-assert_contains "模式 2 创建记录使用模式专属注释" "${create_log}" "easy_all cloudflare"
-assert_contains "模式 2 创建记录是 POST" "${create_log}" "POST /zones/zoneid/dns_records"
+assert_equal "模式 1 创建用例退出 0" "0" "${RUN_DNS_CASE_STATUS}"
+assert_contains "模式 1 创建记录使用模式专属注释" "${create_log}" "easy_all cloudflare"
+assert_contains "模式 1 创建记录是 POST" "${create_log}" "POST /zones/zoneid/dns_records"
 
 RUN_DNS_CASE_STATUS=0
 reuse_log=$(run_dns_case reuse) || RUN_DNS_CASE_STATUS=$?
-assert_equal "模式 2 复用用例退出 0" "0" "${RUN_DNS_CASE_STATUS}"
-assert_not_contains "模式 2 复用受管记录不写入" "${reuse_log}" "POST "
-assert_not_contains "模式 2 复用受管记录不改写" "${reuse_log}" "PATCH "
+assert_equal "模式 1 复用用例退出 0" "0" "${RUN_DNS_CASE_STATUS}"
+assert_not_contains "模式 1 复用受管记录不写入" "${reuse_log}" "POST "
+assert_not_contains "模式 1 复用受管记录不改写" "${reuse_log}" "PATCH "
 # 正向锚点：复用路径必须先读到现有记录；否则「没有 POST/PATCH」会被「什么都没做」伪通过。
-assert_contains "模式 2 复用路径确实读取了记录" "${reuse_log}" "GET /zones/zoneid/dns_records"
+assert_contains "模式 1 复用路径确实读取了记录" "${reuse_log}" "GET /zones/zoneid/dns_records"
 [[ ! -s "${TMP_DIR}/dns-reuse.log.err" ]] \
-    || fail "模式 2 复用路径不得向 stderr 输出：$(<"${TMP_DIR}/dns-reuse.log.err")"
+    || fail "模式 1 复用路径不得向 stderr 输出：$(<"${TMP_DIR}/dns-reuse.log.err")"
 
 RUN_DNS_CASE_STATUS=0
 purge_log=$(run_dns_case purge) || RUN_DNS_CASE_STATUS=$?
-assert_equal "模式 2 purge 用例退出 0" "0" "${RUN_DNS_CASE_STATUS}"
-assert_contains "模式 2 purge 删除受管记录" "${purge_log}" \
+assert_equal "模式 1 purge 用例退出 0" "0" "${RUN_DNS_CASE_STATUS}"
+assert_contains "模式 1 purge 删除受管记录" "${purge_log}" \
     "DELETE /zones/zoneid/dns_records/rec1"
-assert_not_contains "模式 2 purge 不修改记录" "${purge_log}" "PATCH "
+assert_not_contains "模式 1 purge 不修改记录" "${purge_log}" "PATCH "
 
 purge_takeover_log=$(run_dns_case purge-takeover) || true
 assert_not_contains "强制接管的记录在 purge 时不得删除" "${purge_takeover_log}" "DELETE "
@@ -1402,8 +1351,8 @@ run_state_domain_case "direct.example.com" >/dev/null \
 run_state_domain_case "origin.example.com" >/dev/null \
     || fail "状态中直连域名等于源站域名时必须通过（文档允许与源站域名复用）"
 
-# --- 3b-2. 模式 4/5 安装输入提示面：域名输入收敛为每条链路两个名字 -----------------
-# 模式 5 不再询问源站域名（固定复用直连域名）、模式 4/5 不再询问订阅域名（固定复用节点域名）。
+# --- 3b-2. 模式 2/5 安装输入提示面：域名输入收敛为每条链路两个名字 -----------------
+# 模式 5 不再询问源站域名（固定复用直连域名）、模式 2/5 不再询问订阅域名（固定复用节点域名）。
 # 输入由共享核心派生，这里直接观察用户可见的提示文案与派生结果。
 run_inputs_case() { # $1=profile（combined|cloudfront） $2=resume（可选：模拟跨版本续装并预设旧身份域名）
     local prompts="${TMP_DIR}/inputs-prompts-$1${2:+-$2}.log"
@@ -1451,19 +1400,19 @@ assert_contains "模式 5 订阅域名复用节点域名" "${combined_inputs}" "
 assert_contains "模式 5 CDN 域名派生为节点域名" "${combined_inputs}" "VLESS_CDN=cf.example.com"
 assert_contains "模式 5 证书只需一个域名" "${combined_inputs}" "HOSTS=1"
 
-cloudfront_inputs=$(run_inputs_case cloudfront) || fail "模式 4 安装输入收集失败：${cloudfront_inputs}"
+cloudfront_inputs=$(run_inputs_case cloudfront) || fail "模式 2 安装输入收集失败：${cloudfront_inputs}"
 cloudfront_prompts=$(cat "${TMP_DIR}/inputs-prompts-cloudfront.log")
-assert_contains "模式 4 仍询问源站域名" "${cloudfront_prompts}" "源站域名"
-assert_contains "模式 4 仍询问 CloudFront 节点域名" "${cloudfront_prompts}" "CloudFront 节点域名"
-assert_not_contains "模式 4 不再询问订阅域名" "${cloudfront_prompts}" "订阅域名"
-assert_equal "模式 4 域名提示恰为两条" "2" "$(printf '%s\n' "${cloudfront_prompts}" | grep -c '域名')"
-assert_contains "模式 4 源站域名用默认值" "${cloudfront_inputs}" "ORIGIN=origin.example.com"
-assert_contains "模式 4 节点域名用默认值" "${cloudfront_inputs}" "NODE=cf.example.com"
-assert_contains "模式 4 订阅域名复用节点域名" "${cloudfront_inputs}" "SUB=cf.example.com"
-assert_equal "模式 4 没有直连域名" "DIRECT=" \
+assert_contains "模式 2 仍询问源站域名" "${cloudfront_prompts}" "源站域名"
+assert_contains "模式 2 仍询问 CloudFront 节点域名" "${cloudfront_prompts}" "CloudFront 节点域名"
+assert_not_contains "模式 2 不再询问订阅域名" "${cloudfront_prompts}" "订阅域名"
+assert_equal "模式 2 域名提示恰为两条" "2" "$(printf '%s\n' "${cloudfront_prompts}" | grep -c '域名')"
+assert_contains "模式 2 源站域名用默认值" "${cloudfront_inputs}" "ORIGIN=origin.example.com"
+assert_contains "模式 2 节点域名用默认值" "${cloudfront_inputs}" "NODE=cf.example.com"
+assert_contains "模式 2 订阅域名复用节点域名" "${cloudfront_inputs}" "SUB=cf.example.com"
+assert_equal "模式 2 没有直连域名" "DIRECT=" \
     "$(printf '%s\n' "${cloudfront_inputs}" | grep '^DIRECT=')"
 
-# 3b-3. 安装输入顺序：先把域名问完，再把两个节点名排在一起（模式 3/5 同规）。
+# 3b-3. 安装输入顺序：先把域名问完，再把两个节点名排在一起（模式 6/5 同规）。
 run_prompt_order() { # $1=profile -> 逐行输出 prompt_value 的提示文案
     local prompts="${TMP_DIR}/order-$1.log"
     : >"${prompts}"
@@ -1509,25 +1458,25 @@ assert_equal "模式 5 第 11 条是订阅配置" "订阅配置" \
     "$(printf '%s\n' "${combined_order}" | sed -n 11p)"
 assert_equal "模式 5 提示总数固定" "11" "$(printf '%s\n' "${combined_order}" | grep -c .)"
 combined_cf_order=$(run_prompt_order combined-cloudflare)
-assert_equal "模式 3 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \
+assert_equal "模式 6 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \
     "$(printf '%s\n' "${combined_cf_order}" | sed -n 2p)"
-assert_equal "模式 3 域名先问完，第 3 条才是 CDN 节点域名" \
+assert_equal "模式 6 域名先问完，第 3 条才是 CDN 节点域名" \
     "CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）" \
     "$(printf '%s\n' "${combined_cf_order}" | sed -n 3p)"
-assert_equal "模式 3 两个节点名相邻（直连后紧接 CDN）" \
+assert_equal "模式 6 两个节点名相邻（直连后紧接 CDN）" \
     "CDN 节点名（完整单节点名）" \
     "$(printf '%s\n' "${combined_cf_order}" | sed -n 5p)"
 reality_cf_order=$(run_prompt_order reality-cloudflare)
-assert_equal "模式 7 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \
+assert_equal "模式 4 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \
     "$(printf '%s\n' "${reality_cf_order}" | sed -n 2p)"
-assert_equal "模式 7 域名先问完，第 3 条才是 CDN 节点域名" \
+assert_equal "模式 4 域名先问完，第 3 条才是 CDN 节点域名" \
     "CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）" \
     "$(printf '%s\n' "${reality_cf_order}" | sed -n 3p)"
-assert_equal "模式 7 两个节点名相邻（直连后紧接 CDN）" "CDN 节点名（完整单节点名）" \
+assert_equal "模式 4 两个节点名相邻（直连后紧接 CDN）" "CDN 节点名（完整单节点名）" \
     "$(printf '%s\n' "${reality_cf_order}" | sed -n 5p)"
-assert_equal "模式 7 提示总数与模式 3 一致" "9" \
+assert_equal "模式 4 提示总数与模式 6 一致" "9" \
     "$(printf '%s\n' "${reality_cf_order}" | grep -c .)"
-assert_not_contains "模式 7 不询问订阅域名（由节点域名派生）" "${reality_cf_order}" "订阅域名"
+assert_not_contains "模式 4 不询问订阅域名（由节点域名派生）" "${reality_cf_order}" "订阅域名"
 # 3b-4. 优选前缀与订阅配置的新顺序：前缀先问并暂存，配置落定后再写进 cdnEdgeAddress。
 apply_prefix_case() { # $1=初始订阅配置 $2=暂存前缀 $3=PROTOCOL -> 最终订阅配置
     bash -c '
@@ -1543,8 +1492,8 @@ apply_prefix_case() { # $1=初始订阅配置 $2=暂存前缀 $3=PROTOCOL -> 最
 assert_contains "前缀写入不含 cdnEdgeAddress 的配置" \
     "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[]}' k7m2qp4x9d combined-cloudfront)" \
     '"cdnEdgeAddress":"k7m2qp4x9d.cloudfront.182682.xyz"'
-assert_contains "前缀写入 reality-self 配置" \
-    "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[]}' k7m2qp4x9d reality-self)" \
+assert_contains "前缀写入 reality-cloudfront 配置" \
+    "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[]}' k7m2qp4x9d reality-cloudfront)" \
     '"cdnEdgeAddress":"k7m2qp4x9d.cloudfront.182682.xyz"'
 assert_contains "前缀写入 reality-cloudflare 配置（橙云后缀）" \
     "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[]}' k7m2qp4x9d reality-cloudflare)" \
@@ -1608,13 +1557,6 @@ assert_equal "不支持的 PROTOCOL 下订阅配置逐字节不变" "${bogus_con
     "$(sed -n 's/^CONFIG=//p' <<<"${bogus_apply}")"
 assert_not_contains "不支持的 PROTOCOL 下不继续执行" "${bogus_apply}" "SHOULD-NOT-REACH"
 
-# 模式 1 只有一个节点名：域名与节点名仍是连续两条。
-anytls_order=$(run_prompt_order anytls)
-assert_equal "模式 1 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \
-    "$(printf '%s\n' "${anytls_order}" | sed -n 2p)"
-assert_equal "模式 1 第 3 条是直连节点名" "直连节点名" \
-    "$(printf '%s\n' "${anytls_order}" | sed -n 3p)"
-
 # 跨版本续装：旧版身份里源站/订阅域名可能是独立填写的，续装不得改写已建资源用的域名。
 resume_inputs=$(run_inputs_case combined resume) || fail "模式 5 续装输入收集失败：${resume_inputs}"
 resume_prompts=$(cat "${TMP_DIR}/inputs-prompts-combined-resume.log")
@@ -1626,15 +1568,15 @@ assert_equal "续装域名提示恰为两条" "2" "$(printf '%s\n' "${resume_pro
 assert_contains "续装沿用旧身份的源站域名" "${resume_inputs}" "ORIGIN=origin.example.com"
 assert_contains "续装沿用旧身份的订阅域名" "${resume_inputs}" "SUB=sub.example.com"
 
-# 模式 4 续装同理：源站域名照旧提问，订阅域名沿用旧身份里的独立值。
-resume_cf_inputs=$(run_inputs_case cloudfront resume) || fail "模式 4 续装输入收集失败：${resume_cf_inputs}"
+# 模式 2 续装同理：源站域名照旧提问，订阅域名沿用旧身份里的独立值。
+resume_cf_inputs=$(run_inputs_case cloudfront resume) || fail "模式 2 续装输入收集失败：${resume_cf_inputs}"
 resume_cf_prompts=$(cat "${TMP_DIR}/inputs-prompts-cloudfront-resume.log")
-assert_contains "模式 4 续装仍询问源站域名" "${resume_cf_prompts}" "源站域名"
-assert_not_contains "模式 4 续装不再询问订阅域名" "${resume_cf_prompts}" "订阅域名"
-assert_equal "模式 4 续装域名提示恰为两条" "2" "$(printf '%s\n' "${resume_cf_prompts}" | grep -c '域名')"
-assert_contains "模式 4 续装沿用旧身份的订阅域名" "${resume_cf_inputs}" "SUB=sub.example.com"
+assert_contains "模式 2 续装仍询问源站域名" "${resume_cf_prompts}" "源站域名"
+assert_not_contains "模式 2 续装不再询问订阅域名" "${resume_cf_prompts}" "订阅域名"
+assert_equal "模式 2 续装域名提示恰为两条" "2" "$(printf '%s\n' "${resume_cf_prompts}" | grep -c '域名')"
+assert_contains "模式 2 续装沿用旧身份的订阅域名" "${resume_cf_inputs}" "SUB=sub.example.com"
 
-# --- 3c. 模式 3：直连 + 橙云节点/订阅（回源 8443）------------------------------
+# --- 3c. 模式 6：直连 + 橙云节点/订阅（回源 8443）------------------------------
 write_combined_cf_state() { # $1=DIRECT_DOMAIN $2=CF_NODE_DOMAIN $3=SUBSCRIPTION_MODE $4=输出
     cat >"$4" <<STATE
 STATE_VERSION=1
@@ -1679,20 +1621,20 @@ run_combined_cf_state_case() { # $1=DIRECT_DOMAIN $2=CF_NODE_DOMAIN $3=SUBSCRIPT
 }
 
 combined_cf_state=$(run_combined_cf_state_case direct.example.com cf.example.com deploy) \
-    || fail "模式 3 完整状态必须能加载"
-assert_contains "模式 3 仅公网 443" "${combined_cf_state}" "PUBLIC=443"
-assert_contains "模式 3 回源 8443 只对 Cloudflare" "${combined_cf_state}" "CFONLY=8443"
-assert_contains "模式 3 始终部署 Caddy 站点" "${combined_cf_state}" "SITE=1"
+    || fail "模式 6 完整状态必须能加载"
+assert_contains "模式 6 仅公网 443" "${combined_cf_state}" "PUBLIC=443"
+assert_contains "模式 6 回源 8443 只对 Cloudflare" "${combined_cf_state}" "CFONLY=8443"
+assert_contains "模式 6 始终部署 Caddy 站点" "${combined_cf_state}" "SITE=1"
 combined_cf_same_domain=$(run_combined_cf_state_case cf.example.com cf.example.com deploy) \
-    && fail "模式 3 节点域名等于直连域名时必须拒绝"
-assert_contains "模式 3 节点域名不得等于直连域名" "${combined_cf_same_domain}" \
+    && fail "模式 6 节点域名等于直连域名时必须拒绝"
+assert_contains "模式 6 节点域名不得等于直连域名" "${combined_cf_same_domain}" \
     "节点域名不得等于直连域名"
 run_combined_cf_state_case direct.example.com other.example.net deploy >/dev/null \
-    && fail "模式 3 节点域名不属于 Zone 时必须拒绝"
+    && fail "模式 6 节点域名不属于 Zone 时必须拒绝"
 run_combined_cf_state_case direct.example.com cf.example.com link >/dev/null \
-    && fail "模式 3 固定 deploy，link 状态必须拒绝"
+    && fail "模式 6 固定 deploy，link 状态必须拒绝"
 
-# 证书覆盖直连与橙云节点两个名字（模式 3 不使用 Origin CA，回源与直连共用 LE 证书）。
+# 证书覆盖直连与橙云节点两个名字（模式 6 不使用 Origin CA，回源与直连共用 LE 证书）。
 combined_cf_cert_hosts=$(
     RUNTIME_TMP="${TMP_DIR}/combined-cf-cert-runtime" \
     EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/combined-cf-cert-state" \
@@ -1703,8 +1645,8 @@ combined_cf_cert_hosts=$(
             CF_NODE_DOMAIN=cf.example.com
             certificate_required_hosts
         ' _ "${ROOT_DIR}" 2>&1
-) || fail "模式 3 证书域名调用失败"
-assert_equal "模式 3 证书覆盖直连与节点域名" \
+) || fail "模式 6 证书域名调用失败"
+assert_equal "模式 6 证书覆盖直连与节点域名" \
     $'cf.example.com\ndirect.example.com' "${combined_cf_cert_hosts}"
 
 # --- 4. 证书：强制重载，并以本机真实 TLS 握手确认磁盘证书已生效 ----------------
@@ -1726,7 +1668,7 @@ key_match() { # $1=证书 $2=私钥
     RUNTIME_TMP="${TMP_DIR}/keymatch-runtime" \
     EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/keymatch-state" \
     EASY_ALL_CERT_DIR_OVERRIDE="${TMP_DIR}/keymatch-certs" \
-        bash -c 'source "$1/profiles/anytls.sh"; certificate_key_matches "$2" "$3"' \
+        bash -c 'source "$1/profiles/combined-cloudflare.sh"; certificate_key_matches "$2" "$3"' \
         _ "${ROOT_DIR}" "$1" "$2" 2>&1
 }
 
@@ -1759,7 +1701,7 @@ key_match "${ec_dir}/fullchain.pem" "${placeholder_dir}/private.key" >/dev/null 
 
 # 两处实现同一口径：比较公钥 PEM，不得回退到哈希比较。
 for key_fn in certificate_key_matches cloudflare_origin_certificate_is_current; do
-    key_fn_body=$(bash -c 'source "$1/profiles/anytls.sh"; declare -f "$2"' \
+    key_fn_body=$(bash -c 'source "$1/profiles/combined-cloudflare.sh"; declare -f "$2"' \
         _ "${ROOT_DIR}" "${key_fn}")
     assert_contains "${key_fn} 比较证书公钥 PEM" "${key_fn_body}" '-pubkey -noout'
     assert_contains "${key_fn} 比较私钥公钥 PEM" "${key_fn_body}" '-pubout'
@@ -1813,8 +1755,8 @@ certificate_deploy_case() { # $1=1 表示握手校验失败
     EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/deploy-subscriptions" \
         bash -c '
             handshake_target=$4
-            source "$1/profiles/anytls.sh"
-            PROTOCOL=anytls
+            source "$1/profiles/combined-cloudflare.sh"
+            PROTOCOL=combined-cloudflare
             DIRECT_DOMAIN=node.example.com
             SUBSCRIPTION_MODE=link
             install -d -m 0700 "${CERT_DIR}" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}" "${RUNTIME_TMP}"
@@ -1882,7 +1824,7 @@ run_tls_certificate_cases() {
         EASY_ALL_CERT_DIR_OVERRIDE="${first_dir}" \
         EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/cert-subscriptions" \
             bash -c '
-                source "$1/profiles/anytls.sh"
+                source "$1/profiles/combined-cloudflare.sh"
                 DIRECT_DOMAIN=node.example.com
                 runtime_tls_peer_fingerprint 127.0.0.1 "$2" || exit 4
             ' _ "${ROOT_DIR}" "${TLS_PORT}" 2>&1
@@ -1897,7 +1839,7 @@ run_tls_certificate_cases() {
         EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/cert-subscriptions" \
             bash -c '
                 local_port=$2
-                source "$1/profiles/anytls.sh"
+                source "$1/profiles/combined-cloudflare.sh"
                 DIRECT_DOMAIN=node.example.com
                 # 只验证指纹比较逻辑本身：端点由测试直接给出。
                 runtime_served_certificate_endpoints() { printf "127.0.0.1 %s\n" "${local_port}"; }
@@ -1913,7 +1855,7 @@ run_tls_certificate_cases() {
         EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/cert-subscriptions" \
             bash -c '
                 local_port=$2
-                source "$1/profiles/anytls.sh"
+                source "$1/profiles/combined-cloudflare.sh"
                 DIRECT_DOMAIN=node.example.com
                 runtime_served_certificate_endpoints() { printf "127.0.0.1 %s\n" "${local_port}"; }
                 if runtime_served_certificate_matches_disk; then exit 6; fi
@@ -1929,7 +1871,7 @@ run_tls_certificate_cases() {
         EASY_ALL_CERT_DIR_OVERRIDE="${first_dir}" \
             bash -c '
                 mkdir -p "${RUNTIME_TMP}"
-                source "$1/profiles/anytls.sh"
+                source "$1/profiles/combined-cloudflare.sh"
                 CADDY_BIN="${RUNTIME_TMP}/fake-caddy"
                 systemctl() { [[ "$1" == "is-active" ]]; }
                 printf "#!/usr/bin/env bash\nprintf \"%%s\\\\n\" \"\$*\"\n" >"${CADDY_BIN}"
@@ -1968,8 +1910,8 @@ orchestration_case() { # $1=额外参数（空表示只重载配置）
     CADDY_SERVICE_FILE="${TMP_DIR}/orch-systemd/easy_all-caddy.service" \
     CADDY_ADMIN_SOCKET="${TMP_DIR}/orch-run/admin.sock" \
     bash -c '
-        source "$1/profiles/anytls.sh"
-        PROTOCOL=anytls
+        source "$1/profiles/combined-cloudflare.sh"
+        PROTOCOL=combined-cloudflare
         SUBSCRIPTION_MODE=deploy
         SUBSCRIPTION_DOMAIN=sub.example.com
         DIRECT_DOMAIN=node.example.com
@@ -2022,8 +1964,8 @@ caddy_cold_output=$(
     EASY_ALL_STATE_DIR_OVERRIDE="${caddy_cold_dir}/state" \
     EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${caddy_cold_dir}/subs" \
         bash -c '
-            source "$1/profiles/anytls.sh"
-            PROTOCOL=anytls
+            source "$1/profiles/combined-cloudflare.sh"
+            PROTOCOL=combined-cloudflare
             SUBSCRIPTION_MODE=deploy
             SUBSCRIPTION_DOMAIN=sub.example.com
             DIRECT_DOMAIN=node.example.com
@@ -2075,23 +2017,6 @@ distinct_hosts=$(certificate_hosts_case direct.example.com origin.example.com) \
     || fail "证书域名不同场景调用失败"
 assert_equal "模式 5 不同域名仍输出两行" \
     $'direct.example.com\norigin.example.com' "${distinct_hosts}"
-anytls_link_hosts=$(
-    RUNTIME_TMP="${TMP_DIR}/cert-hosts-runtime" \
-    EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/cert-hosts-state" \
-    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/cert-hosts-subs" \
-        bash -c '
-            source "$1/profiles/anytls.sh"
-            PROTOCOL=anytls
-            SUBSCRIPTION_MODE=link
-            DIRECT_DOMAIN=node.example.com
-            status=0
-            certificate_required_hosts || status=$?
-            printf "STATUS=%s\n" "${status}"
-        ' _ "${ROOT_DIR}" 2>&1
-) || fail "模式 1 link 的证书域名调用失败"
-assert_contains "模式 1 link 仍输出直连域名" "${anytls_link_hosts}" "node.example.com"
-assert_contains "模式 1 link 无订阅时返回值仍为 0" "${anytls_link_hosts}" "STATUS=0"
-
 # --- 6. 源站守卫公网探测：必须打 Caddy 站点端口（模式 5 是 8443，不是 sing-box 的 443） ---
 # curl 是外部边界，用替身记录被请求的 URL；连接被丢弃的情况统一返回 000。
 origin_guard_case() { # $1=profile 名
@@ -2126,8 +2051,8 @@ assert_not_contains "模式 5 不把探测发到 443" "${mode4_urls}" "https://o
 assert_contains "模式 5 守卫探测钉本机公网 IP 与 Caddy 8443" "${mode4_urls}" \
     "--resolve origin.example.com:8443:203.0.113.10"
 mode2_urls=$(<"$(origin_guard_case cloudfront)")
-assert_contains "模式 4 探测 Caddy 443" "${mode2_urls}" "https://origin.example.com:443/vless-0123456789ab"
-assert_contains "模式 4 守卫探测钉本机公网 IP 与 Caddy 443" "${mode2_urls}" \
+assert_contains "模式 2 探测 Caddy 443" "${mode2_urls}" "https://origin.example.com:443/vless-0123456789ab"
+assert_contains "模式 2 守卫探测钉本机公网 IP 与 Caddy 443" "${mode2_urls}" \
     "--resolve origin.example.com:443:203.0.113.10"
 
 # --- 7. update-core：核心缺失时按“重装修复”处理，并在替换二进制后重启 Caddy ---
@@ -2226,7 +2151,7 @@ assert_contains "缺失的核心没有旧版本可回滚时明说" "${rollback_o
 assert_not_contains "不再虚报已恢复旧版本" "${rollback_output}" "已恢复旧版本"
 
 # --- 8. 不完整状态卸载：CloudFront 模式的计量残留也必须回收 -------------------
-# 终审 P1：状态 schema 1 但协议不可识别时只 source profiles/anytls.sh，计量库
+# 终审 P1：状态 schema 1 但协议不可识别时只 source profiles/combined-cloudflare.sh，计量库
 # （lib/cdn-traffic-guard.sh，仅 cloudfront-mode.sh 加载）根本没加载；旧实现用
 # declare -F 守卫，于是 timer 与 mangle 计数链残留，timer 每 15 秒调用即将被删除的命令。
 # systemctl/iptables/flock 是外部边界，用 PATH 替身记录；计量锁目录要求的 0:0 属主
@@ -2291,7 +2216,7 @@ INSTALL
     SINGBOX_SERVICE_FILE="${case_dir}/units/easy_all-singbox.service" \
     CADDY_SERVICE_FILE="${case_dir}/units/easy_all-caddy.service" \
         bash -c '
-            source "$1/profiles/anytls.sh"
+            source "$1/profiles/combined-cloudflare.sh"
             require_root() { :; }
             # SSH/UFW/crontab/certbot 是宿主边界：本用例只验证本机清理顺序，不触碰它们。
             remove_certbot_deploy_hook() { :; }
@@ -2332,7 +2257,7 @@ rollback_signal_case() { # $1=install|update $2=INT|TERM
     mkdir -p "${dir}/state" "${dir}/subs" "${dir}/runtime"
     cat >"${dir}/signal.sh" <<'SCRIPT'
 set -Eeuo pipefail
-source "${EASY_ALL_TEST_ROOT}/profiles/anytls.sh"
+source "${EASY_ALL_TEST_ROOT}/profiles/combined-cloudflare.sh"
 write_done() { : >"${SIGNAL_DONE}"; }
 clear_profile_credentials() { : >"${SIGNAL_AFTER}"; }
 send_signal() {
@@ -2418,14 +2343,11 @@ while read -r edge_profile edge_suffix; do
 done <<'EDGE_PROFILES'
 cloudfront cloudfront.182682.xyz
 combined cloudfront.182682.xyz
-reality-self cloudfront.182682.xyz
+reality-cloudfront cloudfront.182682.xyz
 cloudflare cloudflare.182682.xyz
 combined-cloudflare cloudflare.182682.xyz
 reality-cloudflare cloudflare.182682.xyz
 EDGE_PROFILES
-edge_anytls_calls=$(run_edge_collector_case anytls) || fail "模式 1 安装输入收集失败"
-assert_equal "模式 1 不调用 CDN 优选收集器" "" "${edge_anytls_calls}"
-
 # 9b. 真实非终端 stdin：收集器整体 no-op（不提示也不改配置；验收条件 6）。
 edge_cfg_none='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}'
 edge_cfg_upper='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"E6G7GS3V1G.Cloudflare.182682.XYZ"}'
@@ -2597,7 +2519,7 @@ assert_equal "off 后的重新输入被记住" "k2v8nq4zt6" "$(prefix_of "${edge
 edge_loop_enter=$(edge_case "${edge_cfg_none}" 0 cdn_edge_prompt_loop k7m2qp4x9d "" "")
 assert_equal "空输入采用默认值" "k7m2qp4x9d" "$(prefix_of "${edge_loop_enter}")"
 
-# 9d-2. 串联：模式 6 的收集器按 cloudfront 后缀落盘，并经形状校验原样通过。
+# 9d-2. 串联：模式 3 的收集器按 cloudfront 后缀落盘，并经形状校验原样通过。
 edge_chain_case() { # $1=订阅配置 -> stdout: CONFIG=<写后配置> / EDGE=<校验后 cdnEdgeAddress>
     local dir
     dir=$(mktemp -d "${TMP_DIR}/edge-chain.XXXXXX")
@@ -2607,7 +2529,7 @@ edge_chain_case() { # $1=订阅配置 -> stdout: CONFIG=<写后配置> / EDGE=<�
     EASY_ALL_CERT_DIR_OVERRIDE="${dir}/state/certs" \
     EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${dir}/subs" \
         bash -c '
-            source "$1/profiles/reality-self.sh"
+            source "$1/profiles/reality-cloudfront.sh"
             SUBSCRIPTION_CONFIG=$2
             # 模拟交互终端：回车采用默认前缀（同 9c 的 stub 手法）。
             cdn_edge_interactive() { return 0; }
@@ -2621,15 +2543,15 @@ edge_chain_case() { # $1=订阅配置 -> stdout: CONFIG=<写后配置> / EDGE=<�
 }
 edge_chain_cfg='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}'
 edge_chain=$(edge_chain_case "${edge_chain_cfg}") \
-    || fail "reality-self 串联收集/写入/校验失败：${edge_chain}"
+    || fail "reality-cloudfront 串联收集/写入/校验失败：${edge_chain}"
 edge_chain_addr=$(sed -n 's/^EDGE=//p' <<<"${edge_chain}")
 edge_chain_shape=no
 [[ "${edge_chain_addr}" =~ ^[a-z][a-z0-9]{9}\.cloudfront\.182682\.xyz$ ]] && edge_chain_shape=yes
-assert_equal "reality-self 串联后的优选地址形状：<${edge_chain_addr}>" "yes" "${edge_chain_shape}"
-assert_contains "reality-self 串联把地址写进订阅配置" \
+assert_equal "reality-cloudfront 串联后的优选地址形状：<${edge_chain_addr}>" "yes" "${edge_chain_shape}"
+assert_contains "reality-cloudfront 串联把地址写进订阅配置" \
     "$(sed -n 's/^CONFIG=//p' <<<"${edge_chain}")" "\"cdnEdgeAddress\":\"${edge_chain_addr}\""
 
-# 9d-3. 串联：模式 7 按 cloudflare 后缀落盘（与模式 3 同形）。
+# 9d-3. 串联：模式 4 按 cloudflare 后缀落盘（与模式 6 同形）。
 edge_cf_chain_case() { # $1=订阅配置 -> stdout: CONFIG=<写后配置> / EDGE=<校验后 cdnEdgeAddress>
     local dir
     dir=$(mktemp -d "${TMP_DIR}/edge-cf-chain.XXXXXX")
@@ -2766,7 +2688,7 @@ assert_equal "无内核需求且无参数时直接返回" "" "${prompt_noop_out}
 run_certificate_deploy_cases
 run_tls_certificate_cases
 
-# --- 8. 五模式 DNS 等待：清本机缓存 + 180 轮 × 2 秒轮询 + 拒绝 dig 超时文本误判 ---------
+# --- 8. 六模式 DNS 等待：清本机缓存 + 180 轮 × 2 秒轮询 + 拒绝 dig 超时文本误判 ---------
 dns_wait_log="${TMP_DIR}/dns-wait.log"
 dns_wait_bin="${TMP_DIR}/dns-wait-bin"
 mkdir -p "${dns_wait_bin}"
@@ -2780,7 +2702,7 @@ chmod +x "${dns_wait_bin}/resolvectl"
 dns_defaults=$(bash -c 'source "$1/lib/runtime-core.sh"; printf "%s:%s\n" "${DNS_WAIT_ATTEMPTS}" "${DNS_WAIT_SECONDS}"' _ "${ROOT_DIR}")
 assert_contains "默认 DNS 轮询上限为 180 轮 × 2 秒" "${dns_defaults}" "180:2"
 
-# 8.2 模式 4/5 安装阶段：先清缓存再 dig（只用系统解析），第 2 次返回目标 IP 时通过
+# 8.2 模式 2/5 安装阶段：先清缓存再 dig（只用系统解析），第 2 次返回目标 IP 时通过
 : >"${dns_wait_log}"
 dns_wait_count_file="${TMP_DIR}/dns-wait-count"
 printf '0\n' >"${dns_wait_count_file}"
@@ -2806,14 +2728,14 @@ dns_cf_ok=$(
             cdn_wait_for_origin_dns
             printf "OK\n"
         ' _ "${ROOT_DIR}" 2>&1
-) || fail "模式 4/5 DNS 重试应成功：${dns_cf_ok}"
-assert_contains "模式 4/5 等待前先清本机缓存" "$(<"${dns_wait_log}")" "FLUSH flush-caches"
-assert_contains "模式 4/5 第 2 轮命中目标 IP 后成功" "${dns_cf_ok}" "OK"
+) || fail "模式 2/5 DNS 重试应成功：${dns_cf_ok}"
+assert_contains "模式 2/5 等待前先清本机缓存" "$(<"${dns_wait_log}")" "FLUSH flush-caches"
+assert_contains "模式 2/5 第 2 轮命中目标 IP 后成功" "${dns_cf_ok}" "OK"
 flush_line=$(grep -n '^FLUSH ' "${dns_wait_log}" | head -n 1 | cut -d: -f1)
 dig_line=$(grep -n '^DIG#' "${dns_wait_log}" | head -n 1 | cut -d: -f1)
 ((flush_line < dig_line)) || fail "清缓存必须早于第一次 dig"
 
-# 8.3 模式 2：dig 返回超时错误文本时不得误判为成功；返回合法 IPv4 才通过
+# 8.3 模式 1：dig 返回超时错误文本时不得误判为成功；返回合法 IPv4 才通过
 : >"${dns_wait_log}"
 dns_cf2_fail=0
 dns_cf2_out=$(
@@ -2829,11 +2751,11 @@ dns_cf2_out=$(
             cdn_wait_for_node_dns
         ' _ "${ROOT_DIR}" 2>&1
 ) || dns_cf2_fail=$?
-((dns_cf2_fail != 0)) || fail "模式 2 dig 超时文本不能被当成解析成功"
-assert_contains "模式 2 失败提示清晰" "${dns_cf2_out}" "Cloudflare 节点域名尚未解析"
-assert_contains "模式 2 等待前先清本机缓存" "$(<"${dns_wait_log}")" "FLUSH flush-caches"
+((dns_cf2_fail != 0)) || fail "模式 1 dig 超时文本不能被当成解析成功"
+assert_contains "模式 1 失败提示清晰" "${dns_cf2_out}" "Cloudflare 节点域名尚未解析"
+assert_contains "模式 1 等待前先清本机缓存" "$(<"${dns_wait_log}")" "FLUSH flush-caches"
 
-# 8.4 模式 1/3：公网订阅验收前先清缓存并等待订阅域名解析
+# 8.4 模式 4/6：公网订阅验收前先清缓存并等待订阅域名解析
 : >"${dns_wait_log}"
 dns_anytls_fail=0
 dns_anytls_out=$(
@@ -2850,11 +2772,11 @@ dns_anytls_out=$(
             anytls_validate_public_runtime
         ' _ "${ROOT_DIR}" 2>&1
 ) || dns_anytls_fail=$?
-((dns_anytls_fail != 0)) || fail "模式 1/3 订阅域名未解析时应阻断"
-assert_contains "模式 1/3 失败提示清晰" "${dns_anytls_out}" "订阅域名尚未解析"
-assert_contains "模式 1/3 等待前先清本机缓存" "$(<"${dns_wait_log}")" "FLUSH flush-caches"
+((dns_anytls_fail != 0)) || fail "模式 4/6 订阅域名未解析时应阻断"
+assert_contains "模式 4/6 失败提示清晰" "${dns_anytls_out}" "订阅域名尚未解析"
+assert_contains "模式 4/6 等待前先清本机缓存" "$(<"${dns_wait_log}")" "FLUSH flush-caches"
 
-# 8.5 公网验收入口（模式 2）两个都查：仅一方命中即通过，但必须留下判定不一致的告警
+# 8.5 公网验收入口（模式 1）两个都查：仅一方命中即通过，但必须留下判定不一致的告警
 : >"${dns_wait_log}"
 dns_partial_hit=$(
     PATH="${dns_wait_bin}:${PATH}" DNS_WAIT_ATTEMPTS_OVERRIDE=1 DNS_WAIT_SECONDS_OVERRIDE=0 \

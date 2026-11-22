@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 阶段 1 基础库：Caddy 固定版本/清单校验、五模式 Caddyfile 结构、订阅路由与服务单元。
+# 阶段 1 基础库：Caddy 固定版本/清单校验、六模式 Caddyfile 结构、订阅路由与服务单元。
 # 用户视角：断言生成产物与公开接口；外部边界（下载、caddy 二进制、systemctl）用替身。
 set -Eeuo pipefail
 
@@ -103,7 +103,7 @@ if (caddy_arch mips) >/dev/null 2>&1; then
     fail "未知架构必须失败"
 fi
 
-# --- 五模式站点 -------------------------------------------------------------
+# --- 六模式站点（Reality 两模式在下方单独覆盖） ------------------------------
 render_caddy() { # $1=protocol $2=blocked $3=subscription_ok -> stdout
     local out="${TMP_DIR}/Caddyfile-$1-$2-$3"
     rm -f -- "${out}"
@@ -112,15 +112,13 @@ render_caddy() { # $1=protocol $2=blocked $3=subscription_ok -> stdout
     cat "${out}"
 }
 
-anytls_body=$(render_caddy anytls 0 1)
 cloudfront_body=$(render_caddy cloudfront 0 1)
 cloudflare_body=$(render_caddy cloudflare 0 1)
 combined_body=$(render_caddy combined-cloudfront 0 1)
 combined_cf_body=$(render_caddy combined-cloudflare 0 1)
 
-for body_proto in anytls cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+for body_proto in cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     case "${body_proto}" in
-    anytls) body=${anytls_body} ;;
     cloudfront) body=${cloudfront_body} ;;
     cloudflare) body=${cloudflare_body} ;;
     combined-cloudfront) body=${combined_body} ;;
@@ -139,27 +137,24 @@ for body_proto in anytls cloudfront cloudflare combined-cloudfront combined-clou
     assert_contains "${body_proto}: 其他路径 404" "${body}" "respond 404"
 done
 
-assert_contains "模式 1 站点：订阅域名 8443" "${anytls_body}" "https://sub.example.com:8443 {"
-assert_not_contains "模式 1 无源站守卫" "${anytls_body}" "@easy_all_bad_origin"
-assert_not_contains "模式 1 无 CDN 代理路径" "${anytls_body}" "reverse_proxy"
-assert_contains "模式 4 站点：源站 443" "${cloudfront_body}" "https://origin.example.com:443 {"
-assert_contains "模式 4 有源站守卫" "${cloudfront_body}" \
+assert_contains "模式 2 站点：源站 443" "${cloudfront_body}" "https://origin.example.com:443 {"
+assert_contains "模式 2 有源站守卫" "${cloudfront_body}" \
     "@easy_all_bad_origin expression {http.request.header.X-Easy-All-Origin-Key} != '${ORIGIN_HEADER_SECRET}'"
-assert_contains "模式 4 守卫终止连接" "${cloudfront_body}" "abort @easy_all_bad_origin"
-assert_contains "模式 4 精确代理路径" "${cloudfront_body}" "handle ${VLESS_PATH} {"
-assert_not_contains "模式 4 代理路径不是前缀匹配" "${cloudfront_body}" "handle ${VLESS_PATH}*"
-assert_contains "模式 4 转发到回环" "${cloudfront_body}" "reverse_proxy 127.0.0.1:10086"
-assert_contains "模式 2 站点：节点域 443" "${cloudflare_body}" "https://cf.example.com:443 {"
-assert_not_contains "模式 2 无源站守卫" "${cloudflare_body}" "@easy_all_bad_origin"
-assert_contains "模式 2 代理路径" "${cloudflare_body}" "handle ${VLESS_PATH} {"
+assert_contains "模式 2 守卫终止连接" "${cloudfront_body}" "abort @easy_all_bad_origin"
+assert_contains "模式 2 精确代理路径" "${cloudfront_body}" "handle ${VLESS_PATH} {"
+assert_not_contains "模式 2 代理路径不是前缀匹配" "${cloudfront_body}" "handle ${VLESS_PATH}*"
+assert_contains "模式 2 转发到回环" "${cloudfront_body}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "模式 1 站点：节点域 443" "${cloudflare_body}" "https://cf.example.com:443 {"
+assert_not_contains "模式 1 无源站守卫" "${cloudflare_body}" "@easy_all_bad_origin"
+assert_contains "模式 1 代理路径" "${cloudflare_body}" "handle ${VLESS_PATH} {"
 assert_contains "模式 5 站点：源站 8443" "${combined_body}" "https://origin.example.com:8443 {"
 assert_contains "模式 5 有源站守卫" "${combined_body}" "abort @easy_all_bad_origin"
 assert_contains "模式 5 代理路径" "${combined_body}" "handle ${VLESS_PATH} {"
 assert_contains "模式 5 转发到回环" "${combined_body}" "reverse_proxy 127.0.0.1:10086"
-assert_contains "模式 3 站点：节点域 8443" "${combined_cf_body}" "https://cf.example.com:8443 {"
-assert_not_contains "模式 3 无源站守卫" "${combined_cf_body}" "@easy_all_bad_origin"
-assert_contains "模式 3 代理路径" "${combined_cf_body}" "handle ${VLESS_PATH} {"
-assert_contains "模式 3 转发到回环" "${combined_cf_body}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "模式 6 站点：节点域 8443" "${combined_cf_body}" "https://cf.example.com:8443 {"
+assert_not_contains "模式 6 无源站守卫" "${combined_cf_body}" "@easy_all_bad_origin"
+assert_contains "模式 6 代理路径" "${combined_cf_body}" "handle ${VLESS_PATH} {"
+assert_contains "模式 6 转发到回环" "${combined_cf_body}" "reverse_proxy 127.0.0.1:10086"
 
 # 守卫必须是外层 route 的首个指令，且早于代理路径与订阅入口。
 guard_line=$(grep -nF "@easy_all_bad_origin expression" "${TMP_DIR}/Caddyfile-cloudfront-0-1" \
@@ -272,7 +267,7 @@ assert_contains "阻断不影响订阅" "${blocked_body}" "respond @easy_all_sub
 
 # CloudFront 模式（4/5）下发 Subscription-Userinfo，位于 403 之后、未就绪 503 之前；其他模式不下发
 cf_ready_body=$(render_caddy cloudfront 0 1)
-assert_contains "模式 4 下发 Subscription-Userinfo" "${cf_ready_body}" \
+assert_contains "模式 2 下发 Subscription-Userinfo" "${cf_ready_body}" \
     "header Subscription-Userinfo \"{file.$(dirname "${CADDY_CONFIG}")/subscription-userinfo}\""
 assert_contains "模式 5 下发 Subscription-Userinfo" "${ready_body}" \
     "header Subscription-Userinfo \"{file.$(dirname "${CADDY_CONFIG}")/subscription-userinfo}\""
@@ -283,32 +278,32 @@ userinfo_line=$(grep -n 'header Subscription-Userinfo ' <<<"${unready_body}" | h
 sub_503_line=$(grep -n 'respond 503' <<<"${unready_body}" | tail -n 1 | cut -d: -f1)
 ((userinfo_line > denied_line && userinfo_line < sub_503_line)) \
     || fail "Subscription-Userinfo 必须位于 403 之后且在未就绪 503 之前"
-for non_cf_mode in anytls cloudflare combined-cloudflare; do
+for non_cf_mode in cloudflare combined-cloudflare; do
     non_cf_body=$(render_caddy "${non_cf_mode}" 0 1)
     assert_not_contains "${non_cf_mode} 不下发 Subscription-Userinfo" "${non_cf_body}" \
         "Subscription-Userinfo"
 done
 
-# --- 模式 6：Reality 伪装站 + CloudFront 源站（design §2.3） ------------------
+# --- 模式 3：Reality 伪装站 + CloudFront 源站（design §2.3） ------------------
 # 与模式 5 同构：9443 回环伪装站 + 8443 CloudFront 源站/订阅站，没有 link 变体。
 render_reality_caddy() { # $1=文件 [$2=blocked] [$3=subscription_ok]
-    ( PROTOCOL=reality-self render_caddy_config "$1" "${2:-0}" "${3:-1}" ) \
+    ( PROTOCOL=reality-cloudfront render_caddy_config "$1" "${2:-0}" "${3:-1}" ) \
         || fail "Reality 渲染失败：${1##*/}"
 }
-reality_ready_file="${TMP_DIR}/Caddyfile-reality-self-ready"
-reality_blocked_file="${TMP_DIR}/Caddyfile-reality-self-blocked"
-reality_unready_file="${TMP_DIR}/Caddyfile-reality-self-unready"
+reality_ready_file="${TMP_DIR}/Caddyfile-reality-cloudfront-ready"
+reality_blocked_file="${TMP_DIR}/Caddyfile-reality-cloudfront-blocked"
+reality_unready_file="${TMP_DIR}/Caddyfile-reality-cloudfront-unready"
 render_reality_caddy "${reality_ready_file}" 0 1
 render_reality_caddy "${reality_blocked_file}" 1 1
 render_reality_caddy "${reality_unready_file}" 0 0
 reality_ready=$(<"${reality_ready_file}")
 
-# 站点主机/端口与模式 5 完全一致：模式 6 没有 link 变体，SUBSCRIPTION_MODE 不影响派生。
+# 站点主机/端口与模式 5 完全一致：模式 3 没有 link 变体，SUBSCRIPTION_MODE 不影响派生。
 assert_equal "Reality 源站主机/端口对齐模式 5" "origin.example.com 8443" \
-    "$( PROTOCOL=reality-self SUBSCRIPTION_MODE=deploy
+    "$( PROTOCOL=reality-cloudfront SUBSCRIPTION_MODE=deploy
         printf '%s %s' "$(caddy_site_host)" "$(caddy_site_port)" )"
 assert_equal "Reality 不受 link 订阅模式影响" "origin.example.com 8443" \
-    "$( PROTOCOL=reality-self SUBSCRIPTION_MODE=link
+    "$( PROTOCOL=reality-cloudfront SUBSCRIPTION_MODE=link
         printf '%s %s' "$(caddy_site_host)" "$(caddy_site_port)" )"
 assert_equal "Reality 回环端口固定 9443" "9443" "$(caddy_reality_camouflage_port)"
 assert_equal "Reality 只渲染两个顶层站点块" "2" \
@@ -394,7 +389,7 @@ assert_contains "订阅未就绪不影响伪装站" "$(<"${reality_unready_file}
 
 (
     CADDY_BIN=${TMP_DIR}/absent/caddy
-    PROTOCOL=reality-self
+    PROTOCOL=reality-cloudfront
     validate_caddy_config "${reality_ready_file}" || exit 1
     validate_caddy_config "${reality_blocked_file}" || exit 1
     validate_caddy_config "${reality_unready_file}" || exit 1
@@ -457,11 +452,11 @@ EXTRA
     exit 0
 ) || fail "Reality 结构校验行为不符合预期"
 
-# --- 模式 7：Reality 伪装站 + 橙云回源站点（design §2.3、§5） ------------------
-# 与模式 6 同构的 9443 伪装站；8443 站点主机是橙云节点域名，且没有源站头守卫。
+# --- 模式 4：Reality 伪装站 + 橙云回源站点（design §2.3、§5） ------------------
+# 与模式 3 同构的 9443 伪装站；8443 站点主机是橙云节点域名，且没有源站头守卫。
 render_reality_cf_caddy() { # $1=文件 [$2=blocked] [$3=subscription_ok]
     ( PROTOCOL=reality-cloudflare render_caddy_config "$1" "${2:-0}" "${3:-1}" ) \
-        || fail "模式 7 渲染失败：${1##*/}"
+        || fail "模式 4 渲染失败：${1##*/}"
 }
 reality_cf_ready_file="${TMP_DIR}/Caddyfile-reality-cloudflare-ready"
 reality_cf_blocked_file="${TMP_DIR}/Caddyfile-reality-cloudflare-blocked"
@@ -473,34 +468,34 @@ reality_cf_ready=$(<"${reality_cf_ready_file}")
 reality_cf_camo=$(caddy_site_block_lines "${reality_cf_ready_file}" 9443)
 reality_cf_origin=$(caddy_site_block_lines "${reality_cf_ready_file}" 8443)
 
-assert_equal "模式 7 站点主机/端口是橙云节点域名 8443" "cf.example.com 8443" \
+assert_equal "模式 4 站点主机/端口是橙云节点域名 8443" "cf.example.com 8443" \
     "$( PROTOCOL=reality-cloudflare SUBSCRIPTION_MODE=link
         printf '%s %s' "$(caddy_site_host)" "$(caddy_site_port)" )"
-assert_equal "模式 7 只渲染两个顶层站点块" "2" \
+assert_equal "模式 4 只渲染两个顶层站点块" "2" \
     "$(grep -Ec '^https://[^[:space:]]+:[0-9]+ \{$' <<<"${reality_cf_ready}")"
-assert_contains "模式 7 伪装站 9443" "${reality_cf_ready}" "https://direct.example.com:9443 {"
-assert_contains "模式 7 伪装站只绑回环" "${reality_cf_camo}" "bind 127.0.0.1"
-assert_not_contains "模式 7 伪装站无订阅入口" "${reality_cf_camo}" "@easy_all_sub"
-assert_not_contains "模式 7 伪装站无 health" "${reality_cf_camo}" "/easy_all-health"
-assert_not_contains "模式 7 伪装站无源站守卫" "${reality_cf_camo}" "@easy_all_bad_origin"
-assert_contains "模式 7 回源站点 8443" "${reality_cf_ready}" "https://cf.example.com:8443 {"
-assert_contains "模式 7 回源站点只绑公网" "${reality_cf_origin}" "bind 0.0.0.0"
-assert_not_contains "模式 7 回源站点没有源站头守卫" "${reality_cf_origin}" "@easy_all_bad_origin"
-assert_not_contains "模式 7 回源站点不引用源站头" "${reality_cf_origin}" "X-Easy-All-Origin-Key"
-assert_contains "模式 7 精确代理路径" "${reality_cf_origin}" "handle /vless-abcdef123456 {"
-assert_contains "模式 7 反代回环 10086" "${reality_cf_origin}" "reverse_proxy 127.0.0.1:10086"
-assert_contains "模式 7 订阅入口" "${reality_cf_origin}" "@easy_all_sub path /subscribe /sub"
-assert_contains "模式 7 health" "${reality_cf_origin}" \
+assert_contains "模式 4 伪装站 9443" "${reality_cf_ready}" "https://direct.example.com:9443 {"
+assert_contains "模式 4 伪装站只绑回环" "${reality_cf_camo}" "bind 127.0.0.1"
+assert_not_contains "模式 4 伪装站无订阅入口" "${reality_cf_camo}" "@easy_all_sub"
+assert_not_contains "模式 4 伪装站无 health" "${reality_cf_camo}" "/easy_all-health"
+assert_not_contains "模式 4 伪装站无源站守卫" "${reality_cf_camo}" "@easy_all_bad_origin"
+assert_contains "模式 4 回源站点 8443" "${reality_cf_ready}" "https://cf.example.com:8443 {"
+assert_contains "模式 4 回源站点只绑公网" "${reality_cf_origin}" "bind 0.0.0.0"
+assert_not_contains "模式 4 回源站点没有源站头守卫" "${reality_cf_origin}" "@easy_all_bad_origin"
+assert_not_contains "模式 4 回源站点不引用源站头" "${reality_cf_origin}" "X-Easy-All-Origin-Key"
+assert_contains "模式 4 精确代理路径" "${reality_cf_origin}" "handle /vless-abcdef123456 {"
+assert_contains "模式 4 反代回环 10086" "${reality_cf_origin}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "模式 4 订阅入口" "${reality_cf_origin}" "@easy_all_sub path /subscribe /sub"
+assert_contains "模式 4 health" "${reality_cf_origin}" \
     'respond @easy_all_health "easy_all ok" 200'
-assert_count "模式 7 两站点各一处 file_server" "${reality_cf_ready}" "file_server" 2
+assert_count "模式 4 两站点各一处 file_server" "${reality_cf_ready}" "file_server" 2
 blocked_cf_origin=$(caddy_site_block_lines "${reality_cf_blocked_file}" 8443)
-assert_contains "模式 7 blocked 代理路径 503" "${blocked_cf_origin}" "respond 503"
-assert_not_contains "模式 7 blocked 不反代回环" "${blocked_cf_origin}" "reverse_proxy 127.0.0.1:10086"
-assert_contains "模式 7 blocked 保留 9443 伪装站" "$(<"${reality_cf_blocked_file}")" \
+assert_contains "模式 4 blocked 代理路径 503" "${blocked_cf_origin}" "respond 503"
+assert_not_contains "模式 4 blocked 不反代回环" "${blocked_cf_origin}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "模式 4 blocked 保留 9443 伪装站" "$(<"${reality_cf_blocked_file}")" \
     "https://direct.example.com:9443 {"
 unready_cf_origin=$(caddy_site_block_lines "${reality_cf_unready_file}" 8443)
-assert_contains "模式 7 订阅未就绪时 503" "${unready_cf_origin}" "respond 503"
-assert_not_contains "模式 7 订阅未就绪时订阅站不挂 file_server" "${unready_cf_origin}" "file_server"
+assert_contains "模式 4 订阅未就绪时 503" "${unready_cf_origin}" "respond 503"
+assert_not_contains "模式 4 订阅未就绪时订阅站不挂 file_server" "${unready_cf_origin}" "file_server"
 
 (
     CADDY_BIN=${TMP_DIR}/absent/caddy
@@ -518,14 +513,11 @@ assert_not_contains "模式 7 订阅未就绪时订阅站不挂 file_server" "${
         "${reality_cf_ready_file}" >"${TMP_DIR}/reality-cf-camo-sub"
     validate_caddy_config "${TMP_DIR}/reality-cf-camo-sub" >/dev/null 2>&1 && exit 1
     exit 0
-) || fail "模式 7 结构校验行为不符合预期"
+) || fail "模式 4 结构校验行为不符合预期"
 
 # --- 输入校验 ---------------------------------------------------------------
-if (PROTOCOL=anytls; SUBSCRIPTION_MODE=link; render_caddy_config "${TMP_DIR}/x" 0 1) >/dev/null 2>&1; then
-    fail "模式 1 link 不得生成 Caddy 站点"
-fi
 if (PROTOCOL=cloudfront; CF_ORIGIN_DOMAIN=""; render_caddy_config "${TMP_DIR}/x" 0 1) >/dev/null 2>&1; then
-    fail "模式 4 缺少源站域名必须失败"
+    fail "模式 2 缺少源站域名必须失败"
 fi
 if (PROTOCOL=cloudfront; ORIGIN_HEADER_SECRET=""; render_caddy_config "${TMP_DIR}/x" 0 1) >/dev/null 2>&1; then
     fail "缺少源站头密钥必须失败"
@@ -648,9 +640,9 @@ assert_contains "候选校验失败文案" "$(<"${wrapper_stderr}")" \
     "候选 Caddy 配置校验失败（候选文件随本次运行结束删除）"
 assert_not_contains "候选校验失败不点名临时路径" "$(<"${wrapper_stderr}")" "Caddyfile.next"
 
-# 有真实 caddy 时用官方二进制复核五种模式的语法。
+# 有真实 caddy 时用官方二进制复核四种模式的语法。
 if command -v caddy >/dev/null 2>&1; then
-    for body_file in "${TMP_DIR}"/Caddyfile-{anytls,cloudfront,cloudflare,combined-cloudfront,combined-cloudflare}-0-1; do
+    for body_file in "${TMP_DIR}"/Caddyfile-{cloudfront,cloudflare,combined-cloudfront,combined-cloudflare}-0-1; do
         caddy validate --adapter caddyfile --config "${body_file}" >/dev/null 2>&1 \
             || fail "真实 caddy validate 失败：${body_file}"
     done

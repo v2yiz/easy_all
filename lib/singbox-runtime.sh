@@ -20,28 +20,28 @@ source "${SINGBOX_RUNTIME_LIB_DIR}/singbox-core.sh"
 
 singbox_require_protocol() {
     case "${PROTOCOL:-}" in
-    anytls | reality-self | reality-cloudflare | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
 
 singbox_protocol_has_anytls() {
     case "${PROTOCOL:-}" in
-    anytls | combined-cloudfront | combined-cloudflare) return 0 ;;
+    combined-cloudfront | combined-cloudflare) return 0 ;;
     esac
     return 1
 }
 
 singbox_protocol_has_reality() {
     case "${PROTOCOL:-}" in
-    reality-self | reality-cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare) return 0 ;;
     esac
     return 1
 }
 
 singbox_protocol_has_cdn() {
     case "${PROTOCOL:-}" in
-    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare | reality-self | reality-cloudflare) return 0 ;;
+    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare | reality-cloudfront | reality-cloudflare) return 0 ;;
     esac
     return 1
 }

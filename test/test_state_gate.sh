@@ -23,91 +23,83 @@ assert_not_contains() {
 source "${ROOT_DIR}/lib/state.sh"
 
 [[ "${EASY_ALL_STATE_SCHEMA_VERSION}" == "1" ]] || fail "schema 必须为 1"
-for protocol in anytls reality-self reality-cloudflare cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+for protocol in reality-cloudfront reality-cloudflare cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     state_protocol_valid "${protocol}" || fail "协议应受支持：${protocol}"
 done
-for legacy in reality cdn combined ""; do
+for legacy in reality cdn combined anytls reality-self ""; do
     state_protocol_valid "${legacy}" && fail "旧/空协议不得通过：${legacy}"
 done
 
-fields=$(state_required_fields anytls deploy)
-grep -Fxq DIRECT_DOMAIN <<<"${fields}" || fail "模式 1 deploy 需要 DIRECT_DOMAIN"
-grep -Fxq ANYTLS_PASSWORD <<<"${fields}" || fail "模式 1 deploy 需要 ANYTLS_PASSWORD"
-grep -Fxq SUBSCRIPTION_DOMAIN <<<"${fields}" || fail "模式 1 deploy 需要 SUBSCRIPTION_DOMAIN"
 assert_absent() {
     local list=$1 name=$2
     if grep -Fxq "${name}" <<<"${list}"; then
         fail "$3"
     fi
 }
-assert_absent "${fields}" CF_NODE_DOMAIN "模式 1 不得要求 CDN 节点域名"
-assert_absent "$(state_required_fields anytls link)" SUBSCRIPTION_DOMAIN \
-    "模式 1 link 不得要求订阅域名"
-assert_absent "$(state_required_fields anytls link)" CLOUDFLARE_ORIGIN_RULE_ID \
-    "模式 1 link 不得要求 Origin Rule"
-# ANYTLS_DEPLOY_FIELDS 的追加条件必须保留完整合取：mode 1 link 不部署订阅站点。
-assert_absent "$(state_required_fields anytls link)" CLOUDFLARE_ORIGIN_RULESET_ID \
-    "模式 1 link 不得要求 Origin Rule ruleset"
-assert_absent "$(state_required_fields anytls link)" SUBSCRIPTION_DOMAIN \
-    "模式 1 link 不得要求订阅域名（ANYTLS_DEPLOY_FIELDS）"
+
+fields=$(state_required_fields combined-cloudflare deploy)
+grep -Fxq DIRECT_DOMAIN <<<"${fields}" || fail "模式 6 需要 DIRECT_DOMAIN"
+grep -Fxq ANYTLS_PASSWORD <<<"${fields}" || fail "模式 6 需要 ANYTLS_PASSWORD"
+grep -Fxq CF_NODE_DOMAIN <<<"${fields}" || fail "模式 6 需要 CDN 节点域名"
+assert_absent "${fields}" SUBSCRIPTION_DOMAIN "模式 6 的订阅域名由节点域名派生，不落盘"
 
 fields=$(state_required_fields cloudfront deploy)
-grep -Fxq AWS_ACM_CERTIFICATE_ARN <<<"${fields}" || fail "模式 4 需要 ACM ARN"
-grep -Fxq CDN_TRAFFIC_PROTECTION_GB <<<"${fields}" || fail "模式 4 需要 985GB 字段"
-assert_absent "${fields}" DIRECT_DOMAIN "模式 4 不得要求直连域名"
-assert_absent "${fields}" REALITY_TARGET "模式 4 不得保留 Reality 字段"
+grep -Fxq AWS_ACM_CERTIFICATE_ARN <<<"${fields}" || fail "模式 2 需要 ACM ARN"
+grep -Fxq CDN_TRAFFIC_PROTECTION_GB <<<"${fields}" || fail "模式 2 需要 985GB 字段"
+assert_absent "${fields}" DIRECT_DOMAIN "模式 2 不得要求直连域名"
+assert_absent "${fields}" REALITY_TARGET "模式 2 不得保留 Reality 字段"
 grep -Fxq CLOUDFLARE_ORIGIN_CERT_ID <<<"$(state_required_fields cloudflare deploy)" \
-    || fail "模式 2 需要 Origin CA 字段"
+    || fail "模式 1 需要 Origin CA 字段"
 assert_absent "$(state_required_fields cloudflare deploy)" ORIGIN_HEADER_SECRET \
-    "模式 2 不得要求源站头密钥"
+    "模式 1 不得要求源站头密钥"
 fields=$(state_required_fields combined-cloudfront deploy)
 grep -Fxq DIRECT_DOMAIN <<<"${fields}" || fail "模式 5 需要直连域名"
 grep -Fxq VLESS_PATH <<<"${fields}" || fail "模式 5 需要 VLESS 路径"
 
 fields=$(state_required_fields combined-cloudflare deploy)
-grep -Fxq DIRECT_DOMAIN <<<"${fields}" || fail "模式 3 需要直连域名"
-grep -Fxq ANYTLS_PASSWORD <<<"${fields}" || fail "模式 3 需要 AnyTLS 密码"
-grep -Fxq CF_NODE_DOMAIN <<<"${fields}" || fail "模式 3 需要 CDN 节点域名"
-grep -Fxq VLESS_PATH <<<"${fields}" || fail "模式 3 需要 VLESS 路径"
-grep -Fxq CLOUDFLARE_ORIGIN_RULE_ID <<<"${fields}" || fail "模式 3 需要 Origin Rule"
-assert_absent "${fields}" SUBSCRIPTION_DOMAIN "模式 3 的订阅域名由节点域名派生，不应落盘"
-assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 3 不使用 Origin CA"
-assert_absent "${fields}" ORIGIN_HEADER_SECRET "模式 3 不要求源站头密钥"
+grep -Fxq DIRECT_DOMAIN <<<"${fields}" || fail "模式 6 需要直连域名"
+grep -Fxq ANYTLS_PASSWORD <<<"${fields}" || fail "模式 6 需要 AnyTLS 密码"
+grep -Fxq CF_NODE_DOMAIN <<<"${fields}" || fail "模式 6 需要 CDN 节点域名"
+grep -Fxq VLESS_PATH <<<"${fields}" || fail "模式 6 需要 VLESS 路径"
+grep -Fxq CLOUDFLARE_ORIGIN_RULE_ID <<<"${fields}" || fail "模式 6 需要 Origin Rule"
+assert_absent "${fields}" SUBSCRIPTION_DOMAIN "模式 6 的订阅域名由节点域名派生，不应落盘"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 6 不使用 Origin CA"
+assert_absent "${fields}" ORIGIN_HEADER_SECRET "模式 6 不要求源站头密钥"
 
-# 模式 6：与模式 5 同构的 Reality 直连 + CloudFront（无 link 模式）。
+# 模式 3：与模式 5 同构的 Reality 直连 + CloudFront（无 link 模式）。
 # 直连入口与 Reality 凭据分开，不继承 AnyTLS 密码；订阅走 CloudFront 字段集，不碰 Origin Rule。
-state_protocol_valid reality-self || fail "reality-self 应受支持"
-state_protocol_has_direct_entry reality-self || fail "reality-self 占用直连入口 443"
-state_protocol_has_reality_entry reality-self || fail "reality-self 必须要求 Reality 凭据"
-state_protocol_has_anytls_entry reality-self && fail "reality-self 不得要求 AnyTLS 密码"
-state_protocol_has_cdn_entry reality-self || fail "reality-self 必须有 CDN 入口"
-state_protocol_uses_cloudfront reality-self || fail "reality-self 走 CloudFront 链路"
-state_protocol_has_subscription_site reality-self deploy || fail "reality-self deploy 有订阅站点"
-state_protocol_has_subscription_site reality-self link \
-    || fail "reality-self 没有 link 模式：订阅站点恒存在"
-fields=$(state_required_fields reality-self deploy)
+state_protocol_valid reality-cloudfront || fail "reality-cloudfront 应受支持"
+state_protocol_has_direct_entry reality-cloudfront || fail "reality-cloudfront 占用直连入口 443"
+state_protocol_has_reality_entry reality-cloudfront || fail "reality-cloudfront 必须要求 Reality 凭据"
+state_protocol_has_anytls_entry reality-cloudfront && fail "reality-cloudfront 不得要求 AnyTLS 密码"
+state_protocol_has_cdn_entry reality-cloudfront || fail "reality-cloudfront 必须有 CDN 入口"
+state_protocol_uses_cloudfront reality-cloudfront || fail "reality-cloudfront 走 CloudFront 链路"
+state_protocol_has_subscription_site reality-cloudfront deploy || fail "reality-cloudfront deploy 有订阅站点"
+state_protocol_has_subscription_site reality-cloudfront link \
+    || fail "reality-cloudfront 没有 link 模式：订阅站点恒存在"
+fields=$(state_required_fields reality-cloudfront deploy)
 for required in DIRECT_DOMAIN DIRECT_NODE_NAME VLESS_UUID REALITY_PRIVATE_KEY \
     REALITY_PUBLIC_KEY REALITY_SHORT_ID CF_NODE_DOMAIN CF_NODE_PREFIX VLESS_PATH \
     SUBSCRIPTION_DOMAIN CF_ORIGIN_DOMAIN ORIGIN_HEADER_SECRET \
     AWS_CLOUDFRONT_DISTRIBUTION_ID AWS_ACM_CERTIFICATE_ARN CDN_TRAFFIC_PROTECTION_GB; do
-    grep -Fxq "${required}" <<<"${fields}" || fail "模式 6 deploy 需要 ${required}"
+    grep -Fxq "${required}" <<<"${fields}" || fail "模式 3 deploy 需要 ${required}"
 done
-assert_absent "${fields}" ANYTLS_PASSWORD "模式 6 不得要求 AnyTLS 密码"
-assert_absent "${fields}" CLOUDFLARE_ORIGIN_RULESET_ID "模式 6 不使用 Origin Rule"
-assert_absent "${fields}" CLOUDFLARE_ORIGIN_RULE_ID "模式 6 不使用 Origin Rule"
-assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 6 不使用 Origin CA"
-assert_absent "${fields}" REALITY_TARGET "模式 6 不得保留旧 Reality 字段"
+assert_absent "${fields}" ANYTLS_PASSWORD "模式 3 不得要求 AnyTLS 密码"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_RULESET_ID "模式 3 不使用 Origin Rule"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_RULE_ID "模式 3 不使用 Origin Rule"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 3 不使用 Origin CA"
+assert_absent "${fields}" REALITY_TARGET "模式 3 不得保留旧 Reality 字段"
 # VLESS_UUID 只能由 CDN 字段集提供一次（重复会写出重复键，也让“缺失字段”错位）。
 [[ "$(grep -Fxc VLESS_UUID <<<"${fields}")" == "1" ]] \
-    || fail "模式 6 的 VLESS_UUID 必须恰好出现一次"
+    || fail "模式 3 的 VLESS_UUID 必须恰好出现一次"
 [[ "$(grep -Fxc SUBSCRIPTION_DOMAIN <<<"${fields}")" == "1" ]] \
-    || fail "模式 6 的 SUBSCRIPTION_DOMAIN 必须恰好出现一次"
-state_field_allows_empty reality-self deploy MIHOMO_TEMPLATE_SNAPSHOT 0 \
-    && fail "模式 6 恒发布订阅，模板快照必须落盘"
-state_field_allows_empty reality-self link SCHEDULED_REBOOT_HOUR 0 \
-    || fail "模式 6 关闭定时重启时小时字段可为空"
+    || fail "模式 3 的 SUBSCRIPTION_DOMAIN 必须恰好出现一次"
+state_field_allows_empty reality-cloudfront deploy MIHOMO_TEMPLATE_SNAPSHOT 0 \
+    && fail "模式 3 恒发布订阅，模板快照必须落盘"
+state_field_allows_empty reality-cloudfront link SCHEDULED_REBOOT_HOUR 0 \
+    || fail "模式 3 关闭定时重启时小时字段可为空"
 
-# 模式 7：Reality 直连 + 橙云（无 link 模式、无 AWS 字段）；订阅走 Origin Rule 而不是 CloudFront。
+# 模式 4：Reality 直连 + 橙云（无 link 模式、无 AWS 字段）；订阅走 Origin Rule 而不是 CloudFront。
 state_protocol_valid reality-cloudflare || fail "reality-cloudflare 应受支持"
 state_protocol_has_direct_entry reality-cloudflare || fail "reality-cloudflare 占用直连入口 443"
 state_protocol_has_reality_entry reality-cloudflare || fail "reality-cloudflare 必须要求 Reality 凭据"
@@ -123,23 +115,23 @@ fields=$(state_required_fields reality-cloudflare deploy)
 for required in DIRECT_DOMAIN DIRECT_NODE_NAME VLESS_UUID REALITY_PRIVATE_KEY \
     REALITY_PUBLIC_KEY REALITY_SHORT_ID CF_NODE_DOMAIN CF_NODE_PREFIX VLESS_PATH \
     CLOUDFLARE_ORIGIN_RULESET_ID CLOUDFLARE_ORIGIN_RULE_ID; do
-    grep -Fxq "${required}" <<<"${fields}" || fail "模式 7 deploy 需要 ${required}"
+    grep -Fxq "${required}" <<<"${fields}" || fail "模式 4 deploy 需要 ${required}"
 done
-assert_absent "${fields}" SUBSCRIPTION_DOMAIN "模式 7 的订阅域名由节点域名派生，不落盘"
-assert_absent "${fields}" ANYTLS_PASSWORD "模式 7 不得要求 AnyTLS 密码"
-assert_absent "${fields}" ORIGIN_HEADER_SECRET "模式 7 不使用源站头密钥"
-assert_absent "${fields}" CF_ORIGIN_DOMAIN "模式 7 没有独立源站域名"
-assert_absent "${fields}" CDN_TRAFFIC_PROTECTION_GB "模式 7 没有 985GB 熔断"
-assert_absent "${fields}" AWS_CLOUDFRONT_DISTRIBUTION_ID "模式 7 不用 AWS"
-assert_absent "${fields}" AWS_ACM_CERTIFICATE_ARN "模式 7 不用 AWS"
-assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 7 不使用 Origin CA"
+assert_absent "${fields}" SUBSCRIPTION_DOMAIN "模式 4 的订阅域名由节点域名派生，不落盘"
+assert_absent "${fields}" ANYTLS_PASSWORD "模式 4 不得要求 AnyTLS 密码"
+assert_absent "${fields}" ORIGIN_HEADER_SECRET "模式 4 不使用源站头密钥"
+assert_absent "${fields}" CF_ORIGIN_DOMAIN "模式 4 没有独立源站域名"
+assert_absent "${fields}" CDN_TRAFFIC_PROTECTION_GB "模式 4 没有 985GB 熔断"
+assert_absent "${fields}" AWS_CLOUDFRONT_DISTRIBUTION_ID "模式 4 不用 AWS"
+assert_absent "${fields}" AWS_ACM_CERTIFICATE_ARN "模式 4 不用 AWS"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 4 不使用 Origin CA"
 [[ "$(grep -Fxc VLESS_UUID <<<"${fields}")" == "1" ]] \
-    || fail "模式 7 的 VLESS_UUID 必须恰好出现一次"
+    || fail "模式 4 的 VLESS_UUID 必须恰好出现一次"
 state_field_allows_empty reality-cloudflare deploy MIHOMO_TEMPLATE_SNAPSHOT 0 \
-    && fail "模式 7 恒发布订阅，模板快照必须落盘"
+    && fail "模式 4 恒发布订阅，模板快照必须落盘"
 
 # 字段集不得跨组重复：重复行会让 state_render 写出重复键，也让“缺失字段”判断错位。
-for protocol in anytls reality-self reality-cloudflare cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+for protocol in reality-cloudfront reality-cloudflare cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     for mode in deploy link; do
         duplicates=$(state_required_fields "${protocol}" "${mode}" | sort | uniq -d)
         [[ -z "${duplicates}" ]] || fail "${protocol}/${mode} 字段集有重复：${duplicates}"
@@ -151,7 +143,7 @@ state_required_fields nope >/dev/null && fail "未知协议必须返回非零"
 state_file="${TMP_DIR}/state.env"
 cat >"${state_file}" <<STATE
 STATE_VERSION=1
-PROTOCOL=anytls
+PROTOCOL=combined-cloudfront
 SUBSCRIPTION_MODE=deploy
 DIRECT_DOMAIN=node.example.com
 DIRECT_NODE_NAME=direct
@@ -216,13 +208,13 @@ write_state_without_version() { # $1=file $2=protocol
 }
 write_state_with_version_line() { # $1=file $2=STATE_VERSION 行（可为空值）
     local file=$1 line=$2
-    write_state_without_version "${file}" anytls
+    write_state_without_version "${file}" combined-cloudflare
     { printf '%s\n' "${line}"; cat "${file}"; } >"${file}.tmp"
     mv -- "${file}.tmp" "${file}"
 }
 
 damaged_state="${damaged_dir}/state.env"
-write_state_without_version "${damaged_state}" anytls
+write_state_without_version "${damaged_state}" combined-cloudflare
 damaged_launcher=$(
     EASY_ALL_STATE_FILE_OVERRIDE="${damaged_state}" \
     EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${TMP_DIR}/no-marker" \
@@ -248,7 +240,7 @@ damaged_load=$(
     RUNTIME_TMP="${damaged_dir}/runtime" \
     EASY_ALL_STATE_DIR_OVERRIDE="${damaged_dir}/load-state" \
     EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${damaged_dir}/load-subscriptions" \
-        bash -c 'source "$1/profiles/anytls.sh"; load_state' _ "${ROOT_DIR}" 2>&1
+        bash -c 'source "$1/profiles/combined-cloudflare.sh"; load_state' _ "${ROOT_DIR}" 2>&1
 ) && fail "load_state 必须拒绝缺少 STATE_VERSION 的状态"
 assert_contains "load_state 使用损坏提示" "${damaged_load}" "缺少 STATE_VERSION"
 assert_not_contains "load_state 不再误报旧 schema" "${damaged_load}" "旧版（schema"
@@ -263,7 +255,7 @@ syntax_load=$(
     RUNTIME_TMP="${damaged_dir}/runtime-syntax" \
     EASY_ALL_STATE_DIR_OVERRIDE="${syntax_state_dir}" \
     EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${damaged_dir}/load-syntax-subs" \
-        bash -c 'source "$1/profiles/anytls.sh"; load_state' _ "${ROOT_DIR}" 2>&1
+        bash -c 'source "$1/profiles/combined-cloudflare.sh"; load_state' _ "${ROOT_DIR}" 2>&1
 ) && fail "语法损坏且缺 STATE_VERSION 的状态必须被 load_state 拒绝"
 assert_contains "load_state 先给缺版本恢复指引" "${syntax_load}" "缺少 STATE_VERSION"
 assert_not_contains "load_state 不得先抛 bash 语法错误" "${syntax_load}" "syntax error"
@@ -315,7 +307,7 @@ for empty_line in 'STATE_VERSION=' "STATE_VERSION=''"; do
         RUNTIME_TMP="${damaged_dir}/runtime-empty-${empty_index}" \
         EASY_ALL_STATE_DIR_OVERRIDE="${empty_load_dir}" \
         EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${damaged_dir}/load-empty-subs-${empty_index}" \
-            bash -c 'source "$1/profiles/anytls.sh"; load_state' _ "${ROOT_DIR}" 2>&1
+            bash -c 'source "$1/profiles/combined-cloudflare.sh"; load_state' _ "${ROOT_DIR}" 2>&1
     ) && fail "空版本值必须被拒绝（load_state: ${empty_line}）"
     assert_contains "空版本值走旧 schema 提示（load_state）" "${empty_load}" "旧版（schema 缺失）"
     assert_not_contains "空版本值不误报缺行（load_state）" "${empty_load}" "缺少 STATE_VERSION"
@@ -347,10 +339,30 @@ reality_state=$(
         bash -c 'source "$1"; detect_installed_mode' _ "${ROOT_DIR}/easy_all" 2>&1
 ) && fail "已删除协议必须被拒绝"
 assert_contains "已删除协议提示" "${reality_state}" "已删除的旧协议"
+{
+    printf 'STATE_VERSION=1\nPROTOCOL=anytls\n'
+} >"${damaged_dir}/state-anytls.env"
+anytls_state=$(
+    EASY_ALL_STATE_FILE_OVERRIDE="${damaged_dir}/state-anytls.env" \
+    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${TMP_DIR}/no-marker" \
+        bash -c 'source "$1"; detect_installed_mode' _ "${ROOT_DIR}/easy_all" 2>&1
+) && fail "已删除的 anytls 协议必须被拒绝"
+assert_contains "anytls 走已删除协议提示" "${anytls_state}" "已删除的旧协议"
+{
+    printf 'STATE_VERSION=1\nPROTOCOL=reality-self\n'
+} >"${damaged_dir}/state-reality-self.env"
+reality_self_state=$(
+    EASY_ALL_STATE_FILE_OVERRIDE="${damaged_dir}/state-reality-self.env" \
+    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${TMP_DIR}/no-marker" \
+        bash -c 'source "$1"; detect_installed_mode' _ "${ROOT_DIR}/easy_all" 2>&1
+) && fail "旧协议标识 reality-self 必须被拒绝"
+assert_contains "reality-self 提示已重命名" "${reality_self_state}" "重命名为 reality-cloudfront"
+assert_contains "reality-self 指向迁移而非卸载" "${reality_self_state}" "迁移脚本"
+assert_not_contains "reality-self 不得误导用户卸载" "${reality_self_state}" "请先用安装该版本的旧 easy_all"
 
 printf 'ok - 状态 schema 门禁测试通过\n'
 
-# --- 安装菜单编号：1 AnyTLS / 2 纯 CloudFlare / 3 AnyTLS+CloudFlare / 4 纯 CloudFront / 5 AnyTLS+CloudFront / 6 Reality+CloudFront
+# --- 安装菜单编号：1 纯 CloudFlare / 2 纯 CloudFront / 3 Reality+CloudFront / 4 Reality+CloudFlare / 5 AnyTLS+CloudFront / 6 AnyTLS+CloudFlare
 # 编号只影响交互菜单与文档，落盘状态用 PROTOCOL 字符串；这里锁住菜单文案顺序与选择映射。
 install_menu_body=$(awk '/^choose_install_mode\(\) \{/,/^\}/' "${ROOT_DIR}/easy_all")
 [[ -n "${install_menu_body}" ]] || fail "easy_all 缺少 choose_install_mode"
@@ -358,21 +370,18 @@ while IFS=$'\t' read -r menu_number menu_text menu_profile; do
     assert_contains "菜单 ${menu_number} 文案" "${install_menu_body}" "${menu_number}. ${menu_text}"
     assert_contains "菜单 ${menu_number} 映射" "${install_menu_body}" "${menu_number}) printf '${menu_profile}\\n'"
 done <<'MENU'
-1	AnyTLS 直连	anytls
-2	纯 CloudFlare	cloudflare
-3	AnyTLS + CloudFlare	combined-cloudflare
-4	纯 CloudFront	cloudfront
+1	纯 CloudFlare	cloudflare
+2	纯 CloudFront	cloudfront
+3	Reality + CloudFront	reality-cloudfront
+4	Reality + CloudFlare	reality-cloudflare
 5	AnyTLS + CloudFront	combined-cloudfront
 MENU
 assert_contains "菜单 6 文案" "${install_menu_body}" \
-    "6. Reality + CloudFront（自偷 Reality 直连伪装回落 + AWS CloudFront）"
-assert_contains "菜单 6 映射" "${install_menu_body}" "6) printf 'reality-self\\n'"
-assert_contains "菜单 7 文案" "${install_menu_body}" \
-    "7. Reality + CloudFlare（自偷 Reality 直连伪装回落 + Cloudflare 橙云）"
-assert_contains "菜单 7 映射" "${install_menu_body}" "7) printf 'reality-cloudflare\\n'"
-[[ $(printf '%s\n' "${install_menu_body}" | grep -n "  2\. 纯 CloudFlare" | cut -d: -f1) \
-    -lt $(printf '%s\n' "${install_menu_body}" | grep -n "  4\. 纯 CloudFront" | cut -d: -f1) ]] \
-    || fail "菜单编号顺序错误：2 应为纯 CloudFlare、4 应为纯 CloudFront"
+    "6. AnyTLS + CloudFlare（直连与橙云节点，橙云域名同时提供订阅）"
+assert_contains "菜单 6 映射" "${install_menu_body}" "6) printf 'combined-cloudflare\\n'"
+[[ $(printf '%s\n' "${install_menu_body}" | grep -n "  1\. 纯 CloudFlare" | cut -d: -f1) \
+    -lt $(printf '%s\n' "${install_menu_body}" | grep -n "  2\. 纯 CloudFront" | cut -d: -f1) ]] \
+    || fail "菜单编号顺序错误：1 应为纯 CloudFlare、2 应为纯 CloudFront"
 
 # --- A6/A23：state.env 纯赋值语法门（load_state 会 source 该文件）-----------------
 # 判据＝printf %q 的五形态：① KEY= ② KEY='' ③ KEY="" ⑤ KEY=$'…' ⑥ 裸串+反斜杠转义。
@@ -387,7 +396,7 @@ gate_status() { # $1=文件 → 0（通过）/1（拒绝）
 expect_gate() { # $1=标签 $2=期望(0/1) $3=文件内容
     local label=$1 expected=$2 content=$3 file="${gate_dir}/case.env" actual
     # 白名单要求能从 PROTOCOL 派生字段集：统一补合法头，payload 只验形态。
-    printf 'STATE_VERSION=1\nPROTOCOL=anytls\n%s' "${content}" >"${file}"
+    printf 'STATE_VERSION=1\nPROTOCOL=combined-cloudflare\n%s' "${content}" >"${file}"
     actual=$(gate_status "${file}")
     [[ "${actual}" == "${expected}" ]] || fail "语法门 ${label}：期望 ${expected}，实际 ${actual}"
 }
@@ -475,7 +484,7 @@ gate_run_case() { # $1=state.env 路径；输出 GATE_RC 与 PATH_AFTER
 
 # 1) 合法完整状态：必须通过。
 legal_state="${gate_dir}/whitelist-legal.env"
-build_state_env anytls "${legal_state}"
+build_state_env combined-cloudflare "${legal_state}"
 legal_out=$(gate_run_case "${legal_state}")
 [[ "$(sed -n 's/^GATE_RC=//p' <<<"${legal_out}")" == "0" ]] \
     || fail "白名单不得误杀合法状态：${legal_out}"
@@ -500,7 +509,7 @@ ifs_out=$(gate_run_case "${ifs_state}")
 
 # 4) PROTOCOL 无效：白名单算不出来 → 门**硬拒**（不再退化放行），报错点名文件与原因。
 bad_proto_state="${gate_dir}/whitelist-badproto.env"
-build_state_env anytls "${bad_proto_state}"
+build_state_env combined-cloudflare "${bad_proto_state}"
 sed -i '' 's/^PROTOCOL=.*/PROTOCOL=reality/' "${bad_proto_state}" 2>/dev/null \
     || sed -i 's/^PROTOCOL=.*/PROTOCOL=reality/' "${bad_proto_state}"
 bad_out=$(gate_run_case "${bad_proto_state}")
@@ -510,8 +519,8 @@ bad_msg=$(state_validate_pure_assignments "${bad_proto_state}" 2>&1 || true)
 assert_contains "协议无效时硬拒并说明原因" "${bad_msg}" "无法确定 schema 字段集"
 assert_contains "硬拒消息点名状态文件" "${bad_msg}" "${bad_proto_state}"
 
-# 5) 白名单不得误杀存量：五个协议的完整状态都要通过。
-for whitelist_proto in anytls cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+# 5) 白名单不得误杀存量：六个协议的完整状态都要通过。
+for whitelist_proto in cloudflare cloudfront reality-cloudfront reality-cloudflare combined-cloudfront combined-cloudflare; do
     whitelist_state="${gate_dir}/whitelist-${whitelist_proto}.env"
     build_state_env "${whitelist_proto}" "${whitelist_state}"
     whitelist_out=$(gate_run_case "${whitelist_state}")

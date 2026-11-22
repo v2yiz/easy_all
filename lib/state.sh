@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 单一来源：状态 schema、七模式字段集与持久变量清单。
+# 单一来源：状态 schema、六模式字段集与持久变量清单。
 #
 # launcher 在加载任何 Profile 之前就要分类状态并做 schema 门禁，因此本文件只放纯函数
 # 与常量清单：不得依赖运行时库、日志、Profile 常量或任何已加载的 state 值。
@@ -15,7 +15,7 @@ EASY_ALL_STATE_LIB_LOADED=1
 
 readonly EASY_ALL_STATE_SCHEMA_VERSION="1"
 
-# 七模式全部持久字段（design §5）。
+# 六模式全部持久字段（design §5）。
 EASY_ALL_STATE_COMMON_FIELDS=(
     PROTOCOL
     TCP_ACCELERATION
@@ -31,31 +31,31 @@ EASY_ALL_STATE_COMMON_FIELDS=(
     SCHEDULED_REBOOT_ENABLED
     SCHEDULED_REBOOT_HOUR
 )
-# 直连入口（443）共用的身份：模式 1/3/5 的 AnyTLS 与模式 6/7 的 Reality。
+# 直连入口（443）共用的身份：模式 5/6 的 AnyTLS 与模式 3/4 的 Reality。
 EASY_ALL_STATE_DIRECT_FIELDS=(
     DIRECT_DOMAIN
     DIRECT_NODE_NAME
 )
-# 模式 1/3/5：AnyTLS 专用凭据。
+# 模式 5/6：AnyTLS 专用凭据。
 EASY_ALL_STATE_ANYTLS_FIELDS=(
     ANYTLS_PASSWORD
 )
-# 模式 6/7：Reality 自偷入口的密钥对。私钥在 state.env（0600，只落本机）中持久化，
+# 模式 3/4：Reality 自偷入口的密钥对。私钥在 state.env（0600，只落本机）中持久化，
 # 安装期同时写入 install-identity.json（0600；供中断续装复用同一 keypair）。
-# VLESS_UUID 由 CDN 字段提供（模式 6/7 与模式 4/5 同一份 UUID），此处不得重复。
+# VLESS_UUID 由 CDN 字段提供（模式 3/4 与模式 2/5 同一份 UUID），此处不得重复。
 EASY_ALL_STATE_REALITY_FIELDS=(
     REALITY_PRIVATE_KEY
     REALITY_PUBLIC_KEY
     REALITY_SHORT_ID
 )
-# 模式 2/3/4/5/6/7：CDN 入口（本机回环 10086 + Caddy 站点主机）。
+# 六模式：CDN 入口（本机回环 10086 + Caddy 站点主机）。
 EASY_ALL_STATE_CDN_FIELDS=(
     CF_NODE_DOMAIN
     CF_NODE_PREFIX
     VLESS_UUID
     VLESS_PATH
 )
-# 模式 4/5：CloudFront、ACM、源站与 985GB 保护。
+# 模式 2/3/5：CloudFront、ACM、源站与 985GB 保护。
 EASY_ALL_STATE_CLOUDFRONT_FIELDS=(
     SUBSCRIPTION_DOMAIN
     CF_ORIGIN_DOMAIN
@@ -65,19 +65,12 @@ EASY_ALL_STATE_CLOUDFRONT_FIELDS=(
     AWS_ACM_CERTIFICATE_ARN
     CDN_TRAFFIC_PROTECTION_GB
 )
-# 模式 1 deploy：订阅站点与 Origin Rule；link 模式没有这些字段。
-# 模式 6 的订阅站点走 CloudFront（模式 4/5 字段集），不使用 Origin Rule。
-EASY_ALL_STATE_ANYTLS_DEPLOY_FIELDS=(
-    SUBSCRIPTION_DOMAIN
-    CLOUDFLARE_ORIGIN_RULESET_ID
-    CLOUDFLARE_ORIGIN_RULE_ID
-)
-# 模式 2：Cloudflare Origin CA（订阅域名由节点域名派生，不落盘）。
+# 模式 1：Cloudflare Origin CA（订阅域名由节点域名派生，不落盘）。
 EASY_ALL_STATE_ORIGIN_CA_FIELDS=(
     CLOUDFLARE_ORIGIN_CERT_ID
     CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON
 )
-# 模式 3/7：节点域名橙云回源到 8443 的 Origin Rule（订阅域名由节点域名派生，不落盘）。
+# 模式 4/6：节点域名橙云回源到 8443 的 Origin Rule（订阅域名由节点域名派生，不落盘）。
 EASY_ALL_STATE_CLOUDFLARE_ORIGIN_RULE_FIELDS=(
     CLOUDFLARE_ORIGIN_RULESET_ID
     CLOUDFLARE_ORIGIN_RULE_ID
@@ -85,43 +78,43 @@ EASY_ALL_STATE_CLOUDFLARE_ORIGIN_RULE_FIELDS=(
 
 state_protocol_valid() {
     case "${1:-}" in
-    anytls | reality-self | reality-cloudflare | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
 
-# 直连入口（公网 443）与所用协议是两个维度：模式 6/7 也占用 443，但没有 AnyTLS 身份。
+# 直连入口（公网 443）与所用协议是两个维度：模式 3/4 也占用 443，但没有 AnyTLS 身份。
 state_protocol_has_direct_entry() {
     case "${1:-}" in
-    anytls | reality-self | reality-cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
 
 state_protocol_has_anytls_entry() {
     case "${1:-}" in
-    anytls | combined-cloudfront | combined-cloudflare) return 0 ;;
+    combined-cloudfront | combined-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
 
 state_protocol_has_reality_entry() {
     case "${1:-}" in
-    reality-self | reality-cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
 
 state_protocol_has_cdn_entry() {
     case "${1:-}" in
-    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare | reality-self | reality-cloudflare) return 0 ;;
+    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare | reality-cloudfront | reality-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
 
 state_protocol_uses_cloudfront() {
     case "${1:-}" in
-    cloudfront | combined-cloudfront | reality-self) return 0 ;;
+    cloudfront | combined-cloudfront | reality-cloudfront) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -130,13 +123,12 @@ state_protocol_uses_origin_ca() {
     [[ "${1:-}" == "cloudflare" ]]
 }
 
-# 模式 1 的订阅字段取决于 SUBSCRIPTION_MODE（deploy/link）；其他模式不区分：
-# 模式 2/3/4/5 与模式 6/7 恒有订阅站点（模式 6/7 与模式 5 同构，没有 link 模式）。
+# 六模式恒有订阅站点。SUBSCRIPTION_MODE 与 link 基础设施按 design D3 保留，
+# 但已没有生产方写 link；`subscription_mode` 参数保留给既有调用方与回归断言。
 state_protocol_has_subscription_site() {
     local protocol=${1:-} subscription_mode=${2:-deploy}
     case "${protocol}" in
-    anytls) [[ "${subscription_mode}" != "link" ]] ;;
-    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare | reality-self | reality-cloudflare) return 0 ;;
+    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare | reality-cloudfront | reality-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -180,12 +172,6 @@ state_required_fields() {
     fi
     if [[ "${protocol}" == "combined-cloudflare" || "${protocol}" == "reality-cloudflare" ]]; then
         for field in "${EASY_ALL_STATE_CLOUDFLARE_ORIGIN_RULE_FIELDS[@]}"; do
-            printf '%s\n' "${field}"
-        done
-    fi
-    if [[ "${protocol}" == "anytls" ]] \
-        && state_protocol_has_subscription_site "${protocol}" "${subscription_mode}"; then
-        for field in "${EASY_ALL_STATE_ANYTLS_DEPLOY_FIELDS[@]}"; do
             printf '%s\n' "${field}"
         done
     fi
@@ -368,8 +354,9 @@ state_schema_supported() {
 }
 
 # 允许“键存在但值为空”的字段（design §5）。
-# 关闭定时重启时 SCHEDULED_REBOOT_HOUR 合法地为空；不发布订阅站点的模式（模式 1 link）
-# 不写模板快照。除这两类条件字段外，其余必需字段必须非空。
+# 关闭定时重启时 SCHEDULED_REBOOT_HOUR 合法地为空；不发布订阅站点的模式不写模板快照。
+# 六模式都发布订阅，第二类按 design D3 保留为无生产方的既定分支。除这两类条件字段外，
+# 其余必需字段必须非空。
 # 参数：协议、订阅模式、字段名、SCHEDULED_REBOOT_ENABLED 的当前值。
 state_field_allows_empty() {
     local protocol=${1:-} subscription_mode=${2:-} field=${3:-} reboot_enabled=${4:-0}

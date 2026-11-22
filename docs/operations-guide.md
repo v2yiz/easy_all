@@ -27,8 +27,8 @@ sudo easy_all self-update
 sudo easy_all apply
 ```
 - **仅本机重建**：重新渲染并应用 sing-box 配置、Caddyfile、UFW 端口与订阅产物（六份 Mihomo/Base64 + `singbox.json` / `singbox-all.json`），并平滑重启服务。
-- **不调用云管理 API**：不改写 DNS，不请求证书签发。唯一外部网络访问为拉取公开的 Cloudflare 官方 IPv4 段（模式 1 deploy / 2 / 3）与 Origin CA 根证书（模式 2），无需账号凭据。
-- 模式 1 的 `link` 模式不部署 Caddy 订阅站点，仅重建 AnyTLS 入口；模式 6（Reality + CloudFront）没有 `link` 模式，`8443` 源站/订阅站点与 `127.0.0.1:9443` 伪装站始终一起重建。
+- **不调用云管理 API**：不改写 DNS，不请求证书签发。唯一外部网络访问为拉取公开的 Cloudflare 官方 IPv4 段（模式 1/4/6）与 Origin CA 根证书（模式 1），无需账号凭据。
+- 模式 3/4（Reality）没有 `link` 模式，`8443` 回源/订阅站点与 `127.0.0.1:9443` 伪装站始终一起重建。
 - 处于保护待落实状态（`blocked=true` 且 `enforced=false`）时，自动执行受限安全恢复，防止带着开放配置启动服务。
 
 ### 1.3 `apply-cloud`：同步云端资源
@@ -36,15 +36,15 @@ sudo easy_all apply
 ```bash
 sudo easy_all apply-cloud
 ```
-- **模式 1/3（AnyTLS 直连）**：校验 Zone SSL 为 `Full (strict)`（仅模式 1 deploy 与模式 3）→ 同步直连灰云 A 记录（deploy 另加订阅橙云 A）→ DNS-01 签发/复用 Let's Encrypt 证书 → deploy 时配置 8443 端口 Origin Rule → 本机重建并验收。
-- **模式 2（Cloudflare 橙云）**：校验 `Full (strict)` → 同步橙云节点 A 记录 → 签发/复用 Origin CA 证书 → 本机重建并验收 → 吊销旧证书。
-- **模式 3（AnyTLS + CloudFlare）**：校验 `Full (strict)` → 同步直连 A 与橙云 A 记录 → DNS-01 签发/复用 Let's Encrypt 证书 → 配置 8443 Origin Rule → 本机重建并验收。
-- **模式 4/5/6（CloudFront）**：
+- **模式 4/6（AnyTLS/Reality 直连 + 橙云）**：校验 Zone SSL 为 `Full (strict)` → 同步直连灰云 A 记录与橙云节点 A 记录 → DNS-01 签发/复用 Let's Encrypt 证书 → 配置 8443 端口 Origin Rule → 本机重建并验收。
+- **模式 1（Cloudflare 橙云）**：校验 `Full (strict)` → 同步橙云节点 A 记录 → 签发/复用 Origin CA 证书 → 本机重建并验收 → 吊销旧证书。
+- **模式 6（AnyTLS + CloudFlare）**：校验 `Full (strict)` → 同步直连 A 与橙云 A 记录 → DNS-01 签发/复用 Let's Encrypt 证书 → 配置 8443 Origin Rule → 本机重建并验收。
+- **模式 2/3/5（CloudFront）**：
   1. 读取 Cloudflare Token 与 AWS 凭据（凭据仅暂存内存）；
-  2. 同步源站灰云 A 记录（模式 5/6 的源站域名复用直连域名，另含直连 A 记录）；
+  2. 同步源站灰云 A 记录（模式 3/5 的源站域名复用直连域名，另含直连 A 记录）；
   3. 签发/复用源站 Let's Encrypt 证书；
   4. ACM 申请/复用证书（固定 `us-east-1`，自动写入 DNS 验证 CNAME 并等待颁发）；
-  5. 创建或更新 CloudFront 分发（源站端口模式 4 为 443、模式 5/6 为 8443），等待 `Deployed`；
+  5. 创建或更新 CloudFront 分发（源站端口模式 2 为 443、模式 3/5 为 8443），等待 `Deployed`；
   6. 绑定节点 CNAME 至分发域名，并执行本机与公网连通性验收。
 - 失败时本机配置安全回滚，已创建的云资源保留并打印清单供查验。
 
@@ -60,9 +60,9 @@ sudo easy_all apply-cloud
 | `sudo easy_all apply` | **纯本机重建**：刷新服务配置与订阅产物（不请求云端 API） |
 | `sudo easy_all apply-cloud` | **同步云端资源**：收敛 DNS 解析、证书、CloudFront 分发与 Origin Rule |
 | `sudo easy_all edit-sub` | 交互式管理用户 Token 与外部聚合节点（可修改/删除 `cdnEdgeAddress` 优选地址） |
-| `sudo easy_all renew-cert` | 重新签发或轮换 TLS 证书（模式 2 轮换 Origin CA；其余模式走 Certbot） |
-| `sudo easy_all hellogfw` | （仅模式 1/3/5/6）分析直连 TCP 443 主动探测日志线索；`hellogfw -h` 免 root |
-| `sudo easy_all cdn-traffic-sync` | （仅模式 4/5/6）手动采样 CDN 流量并同步落实熔断状态 |
+| `sudo easy_all renew-cert` | 重新签发或轮换 TLS 证书（模式 1 轮换 Origin CA；其余模式走 Certbot） |
+| `sudo easy_all hellogfw` | （仅模式 3/4/5/6）分析直连 TCP 443 主动探测日志线索；`hellogfw -h` 免 root |
+| `sudo easy_all cdn-traffic-sync` | （仅模式 2/3/5）手动采样 CDN 流量并同步落实熔断状态 |
 | `sudo easy_all update-core` | 重新安装或修复锁定版本的 sing-box 与 Caddy 核心 |
 | `sudo easy_all self-update` | 从 GitHub 更新 `easy_all` 脚本自身（`--dev` 切换开发分支） |
 | `sudo easy_all cleanup-partial` | 清理安装中断留下的本机临时残留（未安装状态使用，不碰云端） |
@@ -89,10 +89,10 @@ sudo easy_all apply-cloud
 ### 4.1 服务单元与日志
 | 服务单元 | 职能说明 |
 | :--- | :--- |
-| `easy_all-singbox.service` | 核心入站：AnyTLS / VLESS Reality `0.0.0.0:443`（模式 6 另转发非 Reality 握手到 `127.0.0.1:9443`）、VLESS WebSocket `127.0.0.1:10086` |
-| `easy_all-caddy.service` | 订阅与 CDN 回源站点（模式 1 deploy / 3 / 5 / 6 监听 `8443`，模式 2 / 4 监听 `443`，模式 6 另在 `127.0.0.1:9443` 提供伪装站） |
-| `easy_all-cdn-traffic-guard.timer` | （仅模式 4/5/6）每 15 秒采样计量规则并落实流量阻断 |
-| `easy_all-probe-log.service` | （仅模式 1/3/5/6）oneshot，重启/`apply` 时重放直连 TCP 443 的限速 `GFW_CHK:` 内核 LOG 规则 |
+| `easy_all-singbox.service` | 核心入站：AnyTLS / VLESS Reality `0.0.0.0:443`（模式 3/4 另转发非 Reality 握手到 `127.0.0.1:9443`）、VLESS WebSocket `127.0.0.1:10086` |
+| `easy_all-caddy.service` | 订阅与 CDN 回源站点（模式 3/4/5/6 监听 `8443`，模式 1/2 监听 `443`，模式 3/4 另在 `127.0.0.1:9443` 提供伪装站） |
+| `easy_all-cdn-traffic-guard.timer` | （仅模式 2/3/5）每 15 秒采样计量规则并落实流量阻断 |
+| `easy_all-probe-log.service` | （仅模式 3/4/5/6）oneshot，重启/`apply` 时重放直连 TCP 443 的限速 `GFW_CHK:` 内核 LOG 规则 |
 
 - **查看日志**：`sudo journalctl -u easy_all-singbox -u easy_all-caddy -u easy_all-cdn-traffic-guard -f`。
 - **重启服务**：核心可用 `sudo systemctl restart easy_all-singbox`；Caddy 请统一通过 `sudo easy_all apply` 重载以保证配置校验完整。
@@ -105,9 +105,9 @@ sudo easy_all apply-cloud
 ```bash
 sudo easy_all renew-cert
 ```
-- **模式 2**：强制轮换 Cloudflare Origin CA 证书。先签发并部署新证书，通过本机严格 TLS 验收后才吊销旧证书。
-- **模式 1/3/4/5/6**：通过 Cloudflare DNS-01 重新签发 Let's Encrypt 证书，通过本机证书指纹验收后平滑替换。
-- **模式 4/5/6 的 ACM viewer 证书**不归 `renew-cert` 管，由 AWS 自动续期；但证书处于 `FAILED`/`VALIDATION_TIMED_OUT`/`REVOKED`/`EXPIRED` 等终态时，安装与 `apply-cloud` 会直接失败并点名 ARN：重申请会被幂等 Token 取回同一张证书，需先到 AWS 控制台（`us-east-1`）删除后重试。
+- **模式 1**：强制轮换 Cloudflare Origin CA 证书。先签发并部署新证书，通过本机严格 TLS 验收后才吊销旧证书。
+- **模式 2/3/4/5/6**：通过 Cloudflare DNS-01 重新签发 Let's Encrypt 证书，通过本机证书指纹验收后平滑替换。
+- **模式 2/3/5 的 ACM viewer 证书**不归 `renew-cert` 管，由 AWS 自动续期；但证书处于 `FAILED`/`VALIDATION_TIMED_OUT`/`REVOKED`/`EXPIRED` 等终态时，安装与 `apply-cloud` 会直接失败并点名 ARN：重申请会被幂等 Token 取回同一张证书，需先到 AWS 控制台（`us-east-1`）删除后重试。
 
 ---
 
@@ -117,21 +117,21 @@ sudo easy_all renew-cert
 sudo easy_all edit-sub
 ```
 - **配置结构**：接收包含 `allowedTokens`（用户 Token 字典）与 `nodes`（外部聚合节点数组）的 JSON 配置，省略项即被移除。
-- **CDN 优选地址配置**（模式 2–6）：顶层添加可选字段 `"cdnEdgeAddress": "优选域名"`（如 `"cdnEdgeAddress": "m3q8a1w7zr.cloudfront.182682.xyz"`），保存后订阅产物即刻更新生效，无需 `apply-cloud`。删除该字段则恢复为默认连接节点域名。
+- **CDN 优选地址配置**（模式 1–6）：顶层添加可选字段 `"cdnEdgeAddress": "优选域名"`（如 `"cdnEdgeAddress": "m3q8a1w7zr.cloudfront.182682.xyz"`），保存后订阅产物即刻更新生效，无需 `apply-cloud`。删除该字段则恢复为默认连接节点域名。
 - **路径与鉴权**：Caddy 仅精准匹配 `/subscribe` 与 `/sub`，其余路径一律 `404`；带非法或重复 Token 的请求均返回 `403`。
 - **熔断时修复**：若在流量熔断期间执行 `edit-sub`，脚本将自动在保持 CDN 阻断的状态下更新订阅，保障服务安全。
 
 ---
 
-## 6. CDN 流量保护（985 GB 熔断，仅模式 4/5/6）
+## 6. CDN 流量保护（985 GB 熔断，仅模式 2/3/5）
 
 ### 6.1 工作机制
-1. **精准计量**：在 iptables `mangle` 表中基于回环 `127.0.0.1:10086` 进行无干扰计数：仅将下行出站流量（sing-box → Caddy）计入 `used_bytes` 以匹配 CloudFront 仅计出站口径（上行仅用于计数回退异常检测）；模式 5/6 的直连入口与订阅流量不经过该端口，不计入 CDN 配额。
+1. **精准计量**：在 iptables `mangle` 表中基于回环 `127.0.0.1:10086` 进行无干扰计数：仅将下行出站流量（sing-box → Caddy）计入 `used_bytes` 以匹配 CloudFront 仅计出站口径（上行仅用于计数回退异常检测）；模式 3/5 的直连入口与订阅流量不经过该端口，不计入 CDN 配额。
 2. **定时监控**：守护进程每 15 秒同步一次用量，原子写入 `/etc/easy_all/cdn-traffic-usage.json`（配额按 UTC 自然月累计），并同步更新 `/etc/easy_all/caddy/subscription-userinfo` 供订阅响应头 `Subscription-Userinfo`（按客户端 `1024^3` 显示口径等比例换算已用字节，`total=1057635696640` 对应 `985 GiB`，使客户端精确显示 `985 GB` 与下月 1 日 UTC 重置时间）实时下发。
 3. **分层阻断**：当月用量达到 **985 GB（985×10⁹ 字节）** 时，自动触发双层阻断：
    - Caddy 代理路径立即拦截并返回 `503`；
    - sing-box 自动省略 CDN 入站配置并重载，终止存量长连接。
-   - 模式 5/6 的直连入口（AnyTLS 443 / Reality 443）不受影响（经历短暂重连后正常可用）；模式 6 的 `127.0.0.1:9443` 伪装站也同样保留；订阅仍可正常下载。
+   - 模式 3/5 的直连入口（Reality 443 / AnyTLS 443）不受影响（经历短暂重连后正常可用）；模式 3/4 的 `127.0.0.1:9443` 伪装站也同样保留；订阅仍可正常下载。
 4. **月度重置**：次月首日 UTC 零点用量自动清零并恢复 CDN 访问。
 
 ### 6.2 状态排查
@@ -183,9 +183,9 @@ sudo easy_all purge-cloud --domain example.com
 
 ---
 
-## 8. 直连主动探测日志分析（仅模式 1/3/5/6）
+## 8. 直连主动探测日志分析（仅模式 3/4/5/6）
 
-模式 1/3/5/6 的直连入口都监听公网 TCP `443`，安装与 `apply` 会在 iptables `filter INPUT` 的**第 1 条**插入一条限速 `LOG` 规则，把新建连接的来源记到内核日志（前缀 `GFW_CHK: `，`30/min`、burst `60`）。它只记 IPv4 的 SYN 包，不记 payload、TLS 内容或连接时长，也不改变 `ACCEPT`/`DROP` 判定。
+模式 3/4/5/6 的直连入口都监听公网 TCP `443`，安装与 `apply` 会在 iptables `filter INPUT` 的**第 1 条**插入一条限速 `LOG` 规则，把新建连接的来源记到内核日志（前缀 `GFW_CHK: `，`30/min`、burst `60`）。它只记 IPv4 的 SYN 包，不记 payload、TLS 内容或连接时长，也不改变 `ACCEPT`/`DROP` 判定。
 
 ```bash
 # 默认时间窗（24 hours ago）
@@ -224,7 +224,7 @@ easy_all hellogfw --help
 | **安装提示回源端口已被全局放行** | 机器上已有 `ufw allow 443/tcp` 或 `ufw allow 8443/tcp`（来源 `Anywhere` / `Any` / `0.0.0.0/0`）时，安装会在写入防火墙与云资源**之前**中止。运行 `sudo ufw status numbered` 找到该规则并 `sudo ufw delete <编号>` 移除后重试；否则回源端口对全网开放，Cloudflare-only 边界失效。 |
 | **提示状态文件无法确定 schema 字段集 / 不是纯赋值** | `state.env` 被改写或损坏（`PROTOCOL` 缺失/无效，或含命令替换、反引号、`;`、`\|` 等非纯赋值内容）。先备份该文件，按提示行号人工核对或删除该行；若 `PROTOCOL` 已不可恢复，`detect_installed_mode` 会将其归为 `incomplete-*`，此时用 `sudo easy_all uninstall` 走**仅本机清理**通道，云端资源（分发 / ACM / DNS / Origin Rule / Origin CA）需人工核对。 |
 | **命令报错 command not found** | 运行 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) help` 自动修复命令软链接。 |
-| **CloudFront 返回 502** | 回源失败。检查云安全组是否放行回源端口（模式 4 为 443，模式 5/6 为 8443）；检查源站证书是否有效（`sudo easy_all renew-cert`）。 |
+| **CloudFront 返回 502** | 回源失败。检查云安全组是否放行回源端口（模式 2 为 443，模式 3/5 为 8443）；检查源站证书是否有效（`sudo easy_all renew-cert`）。 |
 | **CloudFront 返回 503** | 触发了 985 GB 流量熔断保护。运行 `sudo easy_all status` 确认配额，模式 5/6 可手动切到直连节点继续使用。 |
 | **客户端提示证书错误** | 区分证书链路：直连 AnyTLS 与源站为 Let's Encrypt，CloudFront CDN 节点为 AWS ACM，Cloudflare 橙云为 CF 边缘证书。勿在客户端开启“跳过证书验证”。 |
 | **订阅下载返回 403 / 404** | 403 为 Token 错误或 URL 携带重复参数；404 为路径错误（仅支持 `/subscribe` 与 `/sub`）。运行 `sudo easy_all subscription` 获取最新链接。 |

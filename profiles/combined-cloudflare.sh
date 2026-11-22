@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mode 3: AnyTLS direct entry (TCP 443) plus the Cloudflare orange-cloud entry:
+# Mode 6: AnyTLS direct entry (TCP 443) plus the Cloudflare orange-cloud entry:
 # one proxied node domain serves the VLESS WebSocket node and the subscription via
 # Caddy origin 8443 (Origin Rule), with sing-box loopback VLESS WebSocket on 10086.
 set -Eeuo pipefail

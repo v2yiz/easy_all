@@ -41,7 +41,7 @@ VLESS_UUID="11111111-2222-4111-8111-111111111111"
 VLESS_PATH="/vless-abcdef123456"
 REALITY_UUID="22222222-3333-4444-8555-666666666666"
 REALITY_PBK="q1w2e3r4t5y6u7i8o9p0asdfghjklzxcvbnm1234567"
-# 模式 6 服务端私钥：固定 32 字节示例值，只用于断言它绝不进入客户端订阅。
+# 模式 3 服务端私钥：固定 32 字节示例值，只用于断言它绝不进入客户端订阅。
 REALITY_PRIV="$(printf 'A%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')"
 REALITY_SID="ab12cd34"
 ORIGIN_SECRET="origin-secret-do-not-leak"
@@ -142,11 +142,7 @@ render_mode() { # $1=profile $2=输出目录（$3=可选的 cdnEdgeAddress）
             AWS_CLOUDFRONT_DOMAIN=d111111abcdef8.cloudfront.net
             AWS_ACM_CERTIFICATE_ARN=arn:aws:acm:us-east-1:123456789012:certificate/x
         fi
-        if [[ "${PROTOCOL}" == "anytls" ]]; then
-            SUBSCRIPTION_DOMAIN=sub.example.com
-            CLOUDFLARE_ORIGIN_RULESET_ID=rs
-            CLOUDFLARE_ORIGIN_RULE_ID=rule
-        elif [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
             CLOUDFLARE_ORIGIN_RULESET_ID=rs
             CLOUDFLARE_ORIGIN_RULE_ID=rule
         fi
@@ -373,8 +369,8 @@ notsteamcontent.com|no
 PROBES
 fi
 
-# --- 模式 1/2/3/4/5：没有 AUTO 组，PROXY 默认选首个本机节点 ------------------
-# 模式 2/4 没有直连入口，成员里不得出现直连节点；模式 1/3/5 的首成员是直连节点。
+# --- 模式 1–6：没有 AUTO 组，PROXY 默认选首个本机节点 ------------------------
+# 模式 1/2 没有直连入口，成员里不得出现直连节点；模式 3/4/5/6 的首成员是直连节点。
 while IFS='|' read -r profile expected_default has_direct; do
     mode_out="${TMP_DIR}/${profile}"
     render_mode "${profile}" "${mode_out}" >"${mode_out}.log" 2>&1 || {
@@ -397,8 +393,7 @@ while IFS='|' read -r profile expected_default has_direct; do
     assert_not_contains "${profile} 默认订阅不含 optional 节点" "$(tags "${mode_json}")" "R-可用"
     assert_contains "${profile} all 订阅包含 optional 节点" "$(tags "${mode_out}/subs/singbox-all.json")" "R-可用"
 done <<'PROFILES'
-anytls|🇺🇸直连|yes
-reality-self|🇺🇸直连|yes
+reality-cloudfront|🇺🇸直连|yes
 reality-cloudflare|🇺🇸直连|yes
 cloudfront|🇺🇸CF|no
 cloudflare|🇺🇸CF|no
@@ -406,60 +401,60 @@ combined|🇺🇸直连|yes
 combined-cloudflare|🇺🇸直连|yes
 PROFILES
 
-# --- 模式 6：Reality + CloudFront 双本地节点进入 JSON 订阅 -------------------
-reality_out="${TMP_DIR}/reality-self"
-render_mode reality-self "${reality_out}" >"${reality_out}.log" 2>&1 || {
+# --- 模式 3：Reality + CloudFront 双本地节点进入 JSON 订阅 -------------------
+reality_out="${TMP_DIR}/reality-cloudfront"
+render_mode reality-cloudfront "${reality_out}" >"${reality_out}.log" 2>&1 || {
     cat "${reality_out}.log" >&2
-    fail "模式 6 订阅渲染失败"
+    fail "模式 3 订阅渲染失败"
 }
 reality_json="${reality_out}/subs/singbox.json"
-assert_equal "模式 6 本机 Reality 节点字段" \
+assert_equal "模式 3 本机 Reality 节点字段" \
     "vless direct.example.com 443 ${VLESS_UUID} xtls-rprx-vision direct.example.com ${REALITY_PBK} ab12cd34 chrome xudp" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸直连") |
         "\(.type) \(.server) \(.server_port) \(.uuid) \(.flow) \(.tls.server_name) \(.tls.reality.public_key) \(.tls.reality.short_id) \(.tls.utls.fingerprint) \(.packet_encoding)"' "${reality_json}")"
-assert_equal "模式 6 本机 CloudFront 节点字段" \
+assert_equal "模式 3 本机 CloudFront 节点字段" \
     "vless cf.example.com 443 ${VLESS_UUID} ws cf.example.com ${VLESS_PATH} xudp" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
         "\(.type) \(.server) \(.server_port) \(.uuid) \(.transport.type) \(.tls.server_name) \(.transport.path) \(.packet_encoding)"' "${reality_json}")"
-assert_equal "模式 6 两个本机节点按 Reality → CloudFront 顺序" \
+assert_equal "模式 3 两个本机节点按 Reality → CloudFront 顺序" \
     '["🇺🇸直连","🇺🇸CF"]' \
     "$(jq -c '[.outbounds[] | select(.tag == "🇺🇸直连" or .tag == "🇺🇸CF") | .tag]' "${reality_json}")"
-assert_equal "模式 6 不写 PQ 开关" 'null' \
+assert_equal "模式 3 不写 PQ 开关" 'null' \
     "$(jq -c '.outbounds[] | select(.tag == "🇺🇸直连") | .tls.reality.support_x25519mlkem768 // null' "${reality_json}")"
-assert_not_contains "模式 6 订阅不泄私钥" "$(<"${reality_json}")" "${REALITY_PRIV}"
-assert_not_contains "模式 6 订阅不泄源站密钥" "$(<"${reality_json}")" "${ORIGIN_SECRET}"
-assert_equal "模式 6 不生成 AnyTLS 节点" "0" \
+assert_not_contains "模式 3 订阅不泄私钥" "$(<"${reality_json}")" "${REALITY_PRIV}"
+assert_not_contains "模式 3 订阅不泄源站密钥" "$(<"${reality_json}")" "${ORIGIN_SECRET}"
+assert_equal "模式 3 不生成 AnyTLS 节点" "0" \
     "$(jq -r '[.outbounds[] | select(.type == "anytls")] | length' "${reality_json}")"
-assert_equal "模式 6 PROXY 默认选择 Reality 节点" '"🇺🇸直连"' \
+assert_equal "模式 3 PROXY 默认选择 Reality 节点" '"🇺🇸直连"' \
     "$(jq -c '.outbounds[] | select(.tag == "PROXY") | .default' "${reality_json}")"
 
-# --- 模式 7：Reality + CloudFlare 双本地节点进入 JSON 订阅 -------------------
+# --- 模式 4：Reality + CloudFlare 双本地节点进入 JSON 订阅 -------------------
 reality_cf_out="${TMP_DIR}/reality-cloudflare"
 render_mode reality-cloudflare "${reality_cf_out}" >"${reality_cf_out}.log" 2>&1 || {
     cat "${reality_cf_out}.log" >&2
-    fail "模式 7 订阅渲染失败"
+    fail "模式 4 订阅渲染失败"
 }
 reality_cf_json="${reality_cf_out}/subs/singbox.json"
-assert_equal "模式 7 本机 Reality 节点字段" \
+assert_equal "模式 4 本机 Reality 节点字段" \
     "vless direct.example.com 443 ${VLESS_UUID} xtls-rprx-vision direct.example.com ${REALITY_PBK} ${REALITY_SID} chrome xudp" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸直连") |
         "\(.type) \(.server) \(.server_port) \(.uuid) \(.flow) \(.tls.server_name) \(.tls.reality.public_key) \(.tls.reality.short_id) \(.tls.utls.fingerprint) \(.packet_encoding)"' "${reality_cf_json}")"
-assert_equal "模式 7 本机橙云节点字段" \
+assert_equal "模式 4 本机橙云节点字段" \
     "vless cf.example.com 443 ${VLESS_UUID} ws cf.example.com ${VLESS_PATH} xudp" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
         "\(.type) \(.server) \(.server_port) \(.uuid) \(.transport.type) \(.tls.server_name) \(.transport.path) \(.packet_encoding)"' "${reality_cf_json}")"
-assert_equal "模式 7 两个本机节点按 Reality → 橙云 顺序" \
+assert_equal "模式 4 两个本机节点按 Reality → 橙云 顺序" \
     '["🇺🇸直连","🇺🇸CF"]' \
     "$(jq -c '[.outbounds[] | select(.tag == "🇺🇸直连" or .tag == "🇺🇸CF") | .tag]' "${reality_cf_json}")"
-assert_not_contains "模式 7 订阅不泄私钥" "$(<"${reality_cf_json}")" "${REALITY_PRIV}"
-assert_equal "模式 7 不生成 AnyTLS 节点" "0" \
+assert_not_contains "模式 4 订阅不泄私钥" "$(<"${reality_cf_json}")" "${REALITY_PRIV}"
+assert_equal "模式 4 不生成 AnyTLS 节点" "0" \
     "$(jq -r '[.outbounds[] | select(.type == "anytls")] | length' "${reality_cf_json}")"
-assert_equal "模式 7 PROXY 默认选择 Reality 节点" '"🇺🇸直连"' \
+assert_equal "模式 4 PROXY 默认选择 Reality 节点" '"🇺🇸直连"' \
     "$(jq -c '.outbounds[] | select(.tag == "PROXY") | .default' "${reality_cf_json}")"
-assert_not_contains "模式 7 Mihomo 不含 anytls 节点" "$(<"${reality_cf_out}/subs/mihomo.yaml")" "type: anytls"
+assert_not_contains "模式 4 Mihomo 不含 anytls 节点" "$(<"${reality_cf_out}/subs/mihomo.yaml")" "type: anytls"
 reality_cf_b64=$(openssl base64 -d -A <<<"$(<"${reality_cf_out}/subs/base64.txt")")
-assert_contains "模式 7 Base64 同时含 Reality 与 ws" "${reality_cf_b64}" "security=reality"
-assert_contains "模式 7 Base64 含橙云 ws 节点" "${reality_cf_b64}" "type=ws"
+assert_contains "模式 4 Base64 同时含 Reality 与 ws" "${reality_cf_b64}" "security=reality"
+assert_contains "模式 4 Base64 含橙云 ws 节点" "${reality_cf_b64}" "type=ws"
 
 # --- 候选校验拒绝错误配置 -----------------------------------------------------
 validate_with_lib() {
@@ -525,13 +520,17 @@ if (
     export EASY_ALL_CERT_DIR_OVERRIDE="${out_missing}/certs"
     export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${out_missing}/subs"
     # shellcheck source=/dev/null
-    source "${ROOT_DIR}/profiles/anytls.sh"
+    source "${ROOT_DIR}/profiles/combined-cloudflare.sh"
     CF_ZONE=example.com
     SUB_DOWNLOAD_NAME=EASY_ALL
     ALLOWED_TOKENS='{"owner":"token-abcdefgh"}'
     SUBSCRIPTION_MODE=deploy
     DIRECT_DOMAIN=direct.example.com
     DIRECT_NODE_NAME="🇺🇸直连"
+    CF_NODE_DOMAIN=cf.example.com
+    CF_NODE_PREFIX="🇺🇸CF"
+    VLESS_UUID="11111111-2222-4333-8444-555555555555"
+    VLESS_PATH=/vless-0123456789ab
     ANYTLS_PASSWORD=""
     AGGREGATION_NODES='[]'
     mkdir -p "${RUNTIME_TMP}" "${CERT_DIR}"

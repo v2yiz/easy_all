@@ -199,7 +199,7 @@ assert_not_contains "卸载流程不再包含旧 Globalping 兼容分支" \
 echo "=== 4. 新链路 Cloudflare Token 最小权限与 AWS 凭据仅内存 ==="
 core_content=$(<"${ROOT_DIR}/lib/cloudfront-mode.sh")
 shared_dns_content=$(<"${ROOT_DIR}/lib/cf-dns.sh")
-# Token 收集与 0600 落盘是五模式共用的单一实现：模式 4/5 只沿用默认的 Zone 只读 + DNS 编辑。
+# Token 收集与 0600 落盘是六模式共用的单一实现：模式 1/5 只沿用默认的 Zone 只读 + DNS 编辑。
 assert_contains "shared token prompt defaults to zone read + DNS edit" \
     "${shared_dns_content}" 'Cloudflare API Token（Zone 只读 + DNS 编辑）'
 assert_contains "token persistence lives in the shared library" \
@@ -349,8 +349,8 @@ assert_equal "Zabbly kernel package name" "linux-zabbly" "${ZABBLY_KERNEL_PACKAG
 assert_equal "Zabbly key fingerprint" "4EFC590696CB15B87C73A3AD82CC8797C838DCFD" "${ZABBLY_KEY_FINGERPRINT}"
 assert_equal "TCP sysctl 文件不再使用 BBR 命名" "99-easy_all-tcp.conf" "${TCP_SYSCTL_CONF##*/}"
 
-# 6.3b TCP 调优文件按模式派生：直连写 tcp_no_metrics_save，CDN 模式不写
-# （回归：残留的 reality 判断使直连模式漏写该参数）。sysctl/ip/tc/systemctl 是外部边界，用替身。
+# 6.3b TCP 调优文件：直连专属的 tcp_no_metrics_save 随模式 1 一起删除；
+# 所有剩余模式只保留 fq 与缓冲区调优。sysctl/ip/tc/systemctl 是外部边界，用替身。
 TCP_STUB_DIR="${TMP_DIR}/tcp-stub"
 mkdir -p "${TCP_STUB_DIR}"
 printf '#!/usr/bin/env bash\nexit 0\n' >"${TCP_STUB_DIR}/sysctl"
@@ -387,9 +387,6 @@ tcp_tuning_case() { # $1=PROTOCOL $2=CDN_PROVIDER -> 输出生成的 sysctl 文�
             cat "${TCP_SYSCTL_CONF}"
         ' _ "${ROOT_DIR}" "$1" "${2:-}" || fail "TCP 调优失败（$1 ${2:-无 CDN}）"
 }
-direct_tuning=$(tcp_tuning_case anytls)
-assert_contains "模式 1 写入 tcp_no_metrics_save" "${direct_tuning}" \
-    "net.ipv4.tcp_no_metrics_save = 1"
 cdn_tuning=$(tcp_tuning_case combined-cloudfront aws)
 assert_not_contains "模式 5 不写 tcp_no_metrics_save" "${cdn_tuning}" "tcp_no_metrics_save"
 assert_contains "所有模式都保留 fq 与缓冲区调优" "${cdn_tuning}" "net.core.default_qdisc = fq"
@@ -522,7 +519,7 @@ remote_dir=${remote_dir%$'\r'}
 assert_equal "MOTD 与 CR 混入 stdout 后仍取出远端目录" \
     "/tmp/easy_all_init.abc12345" "${remote_dir}"
 
-echo "=== 7. 系统依赖与五模式运行时入口 ==="
+echo "=== 7. 系统依赖与六模式运行时入口 ==="
 # 依赖清单只在共享运行时定义一次：sudo/vim 与 DNS-01 所需包都必须在这里。
 package_list_of() {
     awk '/local pkgs=\(/{flag=1; next} flag && /^[[:space:]]*\)/{exit} flag' "$1"

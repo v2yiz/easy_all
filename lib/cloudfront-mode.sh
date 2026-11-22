@@ -165,7 +165,7 @@ cdn_validate_install_domains() {
 }
 
 # 域名输入按模式收敛：模式 5 的源站域名固定复用直连域名（443 直连与 8443 回源端口隔离、
-# 共用一份 LE 证书与一条灰云 A），模式 4/5 的订阅域名固定复用节点域名（同一条分发别名与
+# 共用一份 LE 证书与一条灰云 A），模式 2/5 的订阅域名固定复用节点域名（同一条分发别名与
 # CNAME，订阅走 https://<节点域名>/subscribe）。同名复用不再提问，每条链路最多两个名字。
 # 节点名不在这里提示：模式 5 要把直连与 CDN 两个节点名排在一起（见 collect_cloudfront_install_inputs）。
 # 续装例外：沿用安装身份里已落盘的域名（旧版身份可能带独立源站/订阅域名）。
@@ -216,7 +216,7 @@ collect_cloudfront_install_inputs() {
         printf '%s-%s-4%s-8%s-%s\n' "${u:0:8}" "${u:8:4}" "${u:13:3}" "${u:17:3}" "${u:20:12}"
     ))}
     validate_uuid "${VLESS_UUID}" || die "VLESS_UUID 无效"
-    # 模式 6 的 Reality short_id 在此确定；keypair 依赖已安装的 sing-box，留到 core 阶段生成。
+    # 模式 3 的 Reality short_id 在此确定；keypair 依赖已安装的 sing-box，留到 core 阶段生成。
     if runtime_has_reality_entry; then
         REALITY_SHORT_ID=${REALITY_SHORT_ID:-$(openssl rand -hex 8)}
         [[ "${REALITY_SHORT_ID}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
@@ -243,7 +243,7 @@ collect_cloudfront_install_inputs() {
 
 # --- Cloudflare token and DNS -------------------------------------------------
 
-# 收集、格式校验与 0600 持久化都在 lib/cf-dns.sh（五模式共用）。
+# 收集、格式校验与 0600 持久化都在 lib/cf-dns.sh（六模式共用）。
 
 cloudflare_clear_api_token() {
     unset CLOUDFLARE_API_TOKEN 2>/dev/null || true
@@ -593,7 +593,7 @@ cloudfront_marker() {
 
 build_distribution_config() {
     local destination=$1 caller=$2 origin_https_port
-    # 回源端口由模式派生（design §2 F）：模式 4 的 Caddy 在 443，模式 5 在 8443。
+    # 回源端口由模式派生（design §2 F）：模式 2 的 Caddy 在 443，模式 5 在 8443。
     origin_https_port=$(caddy_site_port) || exit 1
     jq -n \
         --arg caller "${caller}" --arg alias "${CF_NODE_DOMAIN}" \
@@ -1087,7 +1087,7 @@ build_mihomo_proxy_names() {
         '($names + $extra)[] | "        - \(.|@json)"'
 }
 
-# 模式 5 不生成额外 CDN 分组（与模式 3 一致，PROXY 手动选择）；
+# 模式 5 不生成额外 CDN 分组（与模式 6 一致，PROXY 手动选择）；
 # 模板占位必须成功输出空内容。
 build_mihomo_proxy_groups() {
     printf ''
@@ -1161,7 +1161,7 @@ refresh_runtime_subscription() {
 
 # --- Local acceptance ---------------------------------------------------------
 
-# 本机节点必须来自当前身份且固定在列表头部：模式 4 只有 CloudFront，模式 2 只有 Cloudflare 橙云节点；
+# 本机节点必须来自当前身份且固定在列表头部：模式 2 只有 CloudFront，模式 1 只有 Cloudflare 橙云节点；
 # 聚合节点可以跟在后面，但不得冒充本机节点。
 
 # 六产物就绪：当前 state/模板重新渲染的结果必须与已发布文件逐字节一致，
@@ -1402,7 +1402,7 @@ show_status() {
         else
             printf '证书异常：未覆盖所需域名、与私钥不配对或链无效；请执行 sudo easy_all renew-cert\n'
         fi
-    elif state_protocol_uses_cloudfront "${PROTOCOL}" || [[ "${PROTOCOL}" == "anytls" ]]; then
+    elif state_protocol_uses_cloudfront "${PROTOCOL}"; then
         printf '证书: 缺失；请执行 sudo easy_all renew-cert\n'
     fi
     printf 'sing-box: '
@@ -1447,11 +1447,11 @@ cdn_commit_local_runtime() {
     fi
 }
 
-# 只有模式 5/6 有直连 TCP 443 入口；模式 4 必须 remove，以清除旧版本、异常中断或
+# 只有模式 3/5 有直连 TCP 443 入口；模式 2 必须 remove，以清除旧版本、异常中断或
 # 先前直连模式留下的 unit/规则/drop-in。条件不得用「是否 CloudFront」代替。
 # 失败显式传播：调用点据此 return 1 或 die。
 cloudfront_probe_log_sync() {
-    if [[ "${PROTOCOL}" == "combined-cloudfront" || "${PROTOCOL}" == "reality-self" ]]; then
+    if [[ "${PROTOCOL}" == "combined-cloudfront" || "${PROTOCOL}" == "reality-cloudfront" ]]; then
         probe_log_enable_and_replay || return 1
     else
         remove_probe_log || return 1

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mode 6: Reality self-steal direct entry (TCP 443) plus the CloudFront CDN entry
+# Mode 3: Reality self-steal direct entry (TCP 443) plus the CloudFront CDN entry
 # (Caddy origin 8443 → sing-box loopback VLESS WebSocket on 10086), same shape as
 # mode 5. 443 is a vless/xtls-rprx-vision/reality inbound: any non-Reality
 # handshake (including active probing) is handed to Caddy on 127.0.0.1:9443 and
@@ -8,8 +8,8 @@
 set -Eeuo pipefail
 umask 077
 
-readonly REALITY_SELF_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-EASY_ALL_RUNTIME_LIB_DIR="${REALITY_SELF_PROFILE_ROOT}/../lib"
+readonly REALITY_CLOUDFRONT_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+EASY_ALL_RUNTIME_LIB_DIR="${REALITY_CLOUDFRONT_PROFILE_ROOT}/../lib"
 export EASY_ALL_RUNTIME_LIB_DIR
 
 # 两个节点名的推荐默认值：必须在加载 singbox-runtime.sh 之前赋值，否则会被其
@@ -22,11 +22,11 @@ source "${EASY_ALL_RUNTIME_LIB_DIR}/runtime-core.sh"
 # shellcheck source=lib/cloudfront-mode.sh
 source "${EASY_ALL_RUNTIME_LIB_DIR}/cloudfront-mode.sh"
 
-PROTOCOL=reality-self
+PROTOCOL=reality-cloudfront
 BACKEND=sing-box
 CDN_PROVIDER=aws
-readonly CDN_PROFILE_KEY=reality-self
-readonly CDN_EXPECTED_PROTOCOL=reality-self
+readonly CDN_PROFILE_KEY=reality-cloudfront
+readonly CDN_EXPECTED_PROTOCOL=reality-cloudfront
 readonly CDN_MODE_LABEL="Reality + CloudFront"
 readonly CDN_ENTRY_SUMMARY="VLESS Reality direct 443 + 伪装站 127.0.0.1:9443 + AWS CloudFront VLESS WebSocket"
 # 声明性元数据：实际安装端口预检由 runtime_public_tcp_ports（443 8443） /

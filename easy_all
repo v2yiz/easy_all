@@ -84,9 +84,9 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择安装模式（1 AnyTLS 直连 / 2 纯 CloudFlare /
-                   3 AnyTLS + CloudFlare / 4 纯 CloudFront / 5 AnyTLS + CloudFront /
-                   6 Reality + CloudFront / 7 Reality + CloudFlare）
+  install          交互选择安装模式（1 纯 CloudFlare / 2 纯 CloudFront /
+                   3 Reality + CloudFront / 4 Reality + CloudFlare /
+                   5 AnyTLS + CloudFront / 6 AnyTLS + CloudFlare）
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
@@ -99,8 +99,8 @@ launcher_usage() {
   update-core      重装/修复当前锁定版本的核心（sing-box + Caddy）
   renew-cert       重新签发/部署当前模式的 TLS 证书
   hellogfw [--since <时间范围>] [--my-ip <IPv4> ...]
-                   分析直连 TCP 443 主动探测日志（仅 anytls / combined-cloudflare /
-                   combined-cloudfront / reality-self / reality-cloudflare；
+                   分析直连 TCP 443 主动探测日志（仅 combined-cloudflare /
+                   combined-cloudfront / reality-cloudfront / reality-cloudflare；
                    `hellogfw -h` 免 root 查看帮助）
   status           显示运行状态
   cleanup-partial  清理上次中断安装留下的本机残留（未安装状态使用；不改云端资源）
@@ -171,6 +171,20 @@ launcher_marker_schema_gate() {
 
 # 上次安装被 SSH 断线打断后，没有状态文件也就没有 uninstall 可用；这条命令是唯一
 # 能从本机自救的入口。它只信安装期写入的 marker 来定位模式，不猜测、不动云端资源。
+# 已删除（模式 1）与已重命名（reality-self）的旧标记无法映射到当前 Profile：
+# 必须在 profile_file 之前给出可执行处置，不能退化成「不支持的安装模式」。
+launcher_marker_mode_gate() {
+    local mode=$1 progress_file=$2
+    case "${mode}" in
+    anytls)
+        launcher_die "安装进度标记来自已删除的模式 1（PROFILE=anytls，${progress_file}）；请用安装时的旧版执行 cleanup-partial，或人工清理本机残留后删除该标记文件（不要改云端资源）"
+        ;;
+    reality-self)
+        launcher_die "安装进度标记使用旧协议标识（PROFILE=reality-self，${progress_file}）；该协议已重命名为 reality-cloudfront。请先运行交付方提供的迁移脚本，或用旧版执行 cleanup-partial"
+        ;;
+    esac
+}
+
 cleanup_partial_install_command() {
     local progress_file mode stage started_at chain answer module
     local snapshot_before snapshot_after marker_schema
@@ -202,6 +216,7 @@ cleanup_partial_install_command() {
     IFS='|' read -r _ mode stage started_at chain marker_schema <<<"${snapshot_before}"
     [[ -n "${mode}" ]] || launcher_die "安装进度标记缺少模式信息（${progress_file}）；请核对标记内容或人工清理残留后重装"
     launcher_marker_schema_gate "${marker_schema:-}"
+    launcher_marker_mode_gate "${mode}" "${progress_file}"
     profile_file "${mode}" >/dev/null
     printf '检测到未完成的 %s 安装（中断于 %s 阶段）\n' "${mode}" "${stage}" >&2
     if [[ "${FORCE:-0}" != "1" ]]; then
@@ -236,22 +251,20 @@ choose_install_mode() {
     local choice
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
-    printf '  1. AnyTLS 直连（直连效果良好且 IP 未被封时；订阅可选）\n' >&2
-    printf '  2. 纯 CloudFlare（橙云单域名同时提供节点与订阅）\n' >&2
-    printf '  3. AnyTLS + CloudFlare（直连与橙云节点，橙云域名同时提供订阅）\n' >&2
-    printf '  4. 纯 CloudFront（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
+    printf '  1. 纯 CloudFlare（橙云单域名同时提供节点与订阅）\n' >&2
+    printf '  2. 纯 CloudFront（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
+    printf '  3. Reality + CloudFront（自偷 Reality 直连伪装回落 + AWS CloudFront）\n' >&2
+    printf '  4. Reality + CloudFlare（自偷 Reality 直连伪装回落 + Cloudflare 橙云）\n' >&2
     printf '  5. AnyTLS + CloudFront（一次部署直连与 CDN 两个入口）\n' >&2
-    printf '  6. Reality + CloudFront（自偷 Reality 直连伪装回落 + AWS CloudFront）\n' >&2
-    printf '  7. Reality + CloudFlare（自偷 Reality 直连伪装回落 + Cloudflare 橙云）\n' >&2
+    printf '  6. AnyTLS + CloudFlare（直连与橙云节点，橙云域名同时提供订阅）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
-    1) printf 'anytls\n' ;;
-    2) printf 'cloudflare\n' ;;
-    3) printf 'combined-cloudflare\n' ;;
-    4) printf 'cloudfront\n' ;;
+    1) printf 'cloudflare\n' ;;
+    2) printf 'cloudfront\n' ;;
+    3) printf 'reality-cloudfront\n' ;;
+    4) printf 'reality-cloudflare\n' ;;
     5) printf 'combined-cloudfront\n' ;;
-    6) printf 'reality-self\n' ;;
-    7) printf 'reality-cloudflare\n' ;;
+    6) printf 'combined-cloudflare\n' ;;
     *) launcher_die "不支持的安装模式：${choice}" ;;
     esac
 }
@@ -264,12 +277,12 @@ launcher_state_complete() {
 }
 
 # 输出既能识别又能门禁的模式分类：
-#   anytls / reality-self / reality-cloudflare / cloudfront / cloudflare / combined-cloudfront / combined-cloudflare
+#   cloudflare / cloudfront / reality-cloudfront / reality-cloudflare / combined-cloudfront / combined-cloudflare
 #   cdn / combined（旧 Cloudflare 链路，仅卸载）
 #   incomplete-*（新协议但字段不齐，仅卸载）
 # schema 1 但协议不可识别（缺失或写坏）输出 incomplete-unknown：不猜协议，只保留本机卸载通道。
-# 旧 schema 与已删除的协议（reality / cdn / combined）一律拒绝：
-# 覆盖代码前不做自动迁移，必须先由写该状态的旧版本卸载。
+# 旧 schema、已删除的协议（reality / cdn / combined / anytls）一律拒绝；已重命名的
+# reality-self 单独提示迁移；覆盖代码前不做自动迁移。
 detect_installed_mode() {
     local protocol="" state_version=""
     # 不可读的状态文件（目录可搜索、文件 0600 root）同样交给 main 统一提示 root。
@@ -283,9 +296,12 @@ detect_installed_mode() {
         state_schema_supported "${state_version}" \
             || launcher_die "$(state_legacy_rejection_message "${state_version:-缺失}")"
         case "${protocol}" in
-        anytls | reality-self | reality-cloudflare | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) ;;
-        reality | cdn | combined)
-            launcher_die "检测到已删除的旧协议（PROTOCOL=${protocol}，schema ${state_version}）；当前版本只支持 anytls/reality-self/reality-cloudflare/cloudfront/cloudflare/combined-cloudfront/combined-cloudflare。请先用安装该版本的旧 easy_all 执行 sudo easy_all uninstall（旧版可加 --purge-cloud 一并清理云端；当前版本的 uninstall 已默认清理云端、不再接受该参数），再重新安装。"
+        reality-cloudfront | reality-cloudflare | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) ;;
+        reality | cdn | combined | anytls)
+            launcher_die "检测到已删除的旧协议（PROTOCOL=${protocol}，schema ${state_version}）；当前版本只支持 cloudflare/cloudfront/reality-cloudfront/reality-cloudflare/combined-cloudfront/combined-cloudflare。请先用安装该版本的旧 easy_all 执行 sudo easy_all uninstall（旧版可加 --purge-cloud 一并清理云端；当前版本的 uninstall 已默认清理云端、不再接受该参数），再重新安装。"
+            ;;
+        reality-self)
+            launcher_die "检测到旧版协议标识（PROTOCOL=reality-self，schema ${state_version}）；当前版本已将其重命名为 reality-cloudfront。请先运行交付方提供的迁移脚本（或将 state.env 中的 PROTOCOL 改为 reality-cloudfront）后重试；不要执行 uninstall，无需重建云端资源。"
             ;;
         *)
             # 状态本身已损坏（如 PROTOCOL 丢失）：整个卸载通道不能跟着失效，
@@ -324,8 +340,7 @@ launcher_require_installed_mode() {
 profile_file() {
     local mode=$1 candidate
     case "${mode}" in
-    anytls | incomplete-anytls) candidate="${EASY_ALL_ROOT}/profiles/anytls.sh" ;;
-    reality-self | incomplete-reality-self) candidate="${EASY_ALL_ROOT}/profiles/reality-self.sh" ;;
+    reality-cloudfront | incomplete-reality-cloudfront) candidate="${EASY_ALL_ROOT}/profiles/reality-cloudfront.sh" ;;
     reality-cloudflare | incomplete-reality-cloudflare)
         candidate="${EASY_ALL_ROOT}/profiles/reality-cloudflare.sh" ;;
     cloudfront | incomplete-cloudfront) candidate="${EASY_ALL_ROOT}/profiles/cloudfront.sh" ;;
@@ -521,7 +536,7 @@ dispatch_profile_command() {
     tcp-resume) resume_skyline_after_reboot "$@" ;;
     apply-cloud)
         case "${mode}" in
-        anytls | reality-self | reality-cloudflare | cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) ;;
+        reality-cloudfront | reality-cloudflare | cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) ;;
         *) launcher_die "apply-cloud 仅适用于 CDN 与带订阅站点的模式" ;;
         esac
         apply_cloud_resources
@@ -530,30 +545,30 @@ dispatch_profile_command() {
     update-core) update_current_core "$@" ;;
     cdn-traffic-sync)
         case "${mode}" in
-        cloudfront | combined-cloudfront | reality-self) cdn_traffic_protection_sync ;;
+        cloudfront | combined-cloudfront | reality-cloudfront) cdn_traffic_protection_sync ;;
         *) launcher_die "cdn-traffic-sync 仅适用于 CloudFront 模式" ;;
         esac
         ;;
     renew-cert)
         case "${mode}" in
-        anytls | reality-self | reality-cloudflare | cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) renew_certificate ;;
+        reality-cloudfront | reality-cloudflare | cloudfront | combined-cloudfront | cloudflare | combined-cloudflare) renew_certificate ;;
         *) launcher_die "当前模式不使用本工具签发的 TLS 证书" ;;
         esac
         ;;
     hellogfw)
         case "${mode}" in
-        anytls | combined-cloudflare | combined-cloudfront | reality-self | reality-cloudflare)
+        combined-cloudflare | combined-cloudfront | reality-cloudfront | reality-cloudflare)
             require_root
             run_hellogfw "$@"
             ;;
-        *) launcher_die "hellogfw 仅支持含直连 443 的模式（anytls / combined-cloudflare / combined-cloudfront / reality-self / reality-cloudflare）" ;;
+        *) launcher_die "hellogfw 仅支持含直连 443 的模式（combined-cloudflare / combined-cloudfront / reality-cloudfront / reality-cloudflare）" ;;
         esac
         ;;
     status) show_status ;;
     self-update) unified_self_update "$@" ;;
     uninstall)
         case "${mode}" in
-        incomplete-anytls | incomplete-reality-self | incomplete-reality-cloudflare | incomplete-cloudfront \
+        incomplete-reality-cloudfront | incomplete-reality-cloudflare | incomplete-cloudfront \
             | incomplete-combined-cloudfront | incomplete-cloudflare | incomplete-combined-cloudflare \
             | incomplete-unknown)
             uninstall_incomplete
@@ -641,7 +656,7 @@ main() {
         mode=$(detect_installed_mode)
         launcher_require_installed_mode "${mode}" "${command}"
         case "${mode}" in
-        anytls | combined-cloudflare | combined-cloudfront | reality-self | reality-cloudflare) ;;
+        combined-cloudflare | combined-cloudfront | reality-cloudfront | reality-cloudflare) ;;
         *) launcher_die "当前模式（${mode}）不使用直连 TCP 443 探测日志；拒绝重放采集规则" ;;
         esac
         probe_log_rules_replay || launcher_die "重放 TCP 443 GFW_CHK: 采集规则失败"
@@ -718,9 +733,9 @@ main() {
 
     if [[ "${mode}" == "incomplete-unknown" ]]; then
         # 协议不可识别的损坏状态：profile_file 按协议选模块，这里只能走协议中立的
-        # 本机清理。anytls 的 runtime-core 只含中立逻辑，uninstall_incomplete 不读
+        # 本机清理。cloudflare 的 runtime-core 只含中立逻辑，uninstall_incomplete 不读
         # PROTOCOL，也不会把猜测的协议写回状态。
-        module="${EASY_ALL_ROOT}/profiles/anytls.sh"
+        module="${EASY_ALL_ROOT}/profiles/cloudflare.sh"
     else
         module=$(profile_file "${mode}")
     fi

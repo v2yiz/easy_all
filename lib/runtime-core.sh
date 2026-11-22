@@ -229,7 +229,7 @@ internal_traffic_prepare() {
         install_marker_chain_matches "${CDN_PROFILE_KEY:-}" \
             || die "安装进度标记缺少本模式要求的 CHAIN；拒绝启动 sing-box"
         case "${CDN_PROFILE_KEY:-}" in
-        cloudfront | combined-cloudfront | reality-self) chain=cloudfront ;;
+        cloudfront | combined-cloudfront | reality-cloudfront) chain=cloudfront ;;
         cloudflare) chain=cloudflare ;;
         *) die "当前模式没有可校验的 saas 链：${CDN_PROFILE_KEY:-空}" ;;
         esac
@@ -298,11 +298,7 @@ normalize_vless_path() {
 # 本机探活仍用 caddy_site_host：它才是本机实际监听的源站/订阅站点主机。
 subscription_link_domain() {
     case "${PROTOCOL:-}" in
-    anytls)
-        subscription_enabled || die "模式 1 未部署订阅（link）；没有可发布的订阅链接"
-        caddy_require_host SUBSCRIPTION_DOMAIN
-        ;;
-    cloudfront | combined-cloudfront | reality-self) caddy_require_host SUBSCRIPTION_DOMAIN ;;
+    cloudfront | combined-cloudfront | reality-cloudfront) caddy_require_host SUBSCRIPTION_DOMAIN ;;
     cloudflare | combined-cloudflare | reality-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
@@ -312,8 +308,7 @@ subscription_link_domain() {
 
 runtime_protocol_label() {
     case "${PROTOCOL:-}" in
-    anytls) printf 'AnyTLS（direct TCP 443）' ;;
-    reality-self) printf 'Reality（direct TCP 443）+ VLESS WebSocket over AWS CloudFront' ;;
+    reality-cloudfront) printf 'Reality（direct TCP 443）+ VLESS WebSocket over AWS CloudFront' ;;
     reality-cloudflare) printf 'Reality（direct TCP 443）+ VLESS WebSocket over Cloudflare 橙云' ;;
     cloudfront) printf 'VLESS WebSocket over AWS CloudFront' ;;
     cloudflare) printf 'VLESS WebSocket over Cloudflare 橙云' ;;
@@ -339,11 +334,10 @@ runtime_has_cdn_entry() {
     state_protocol_has_cdn_entry "${PROTOCOL:-}"
 }
 
-# 公网 TCP 业务端口（design §2）。模式 2 的 443 与模式 1 的 8443 只对 Cloudflare 段开放。
+# 公网 TCP 业务端口（design §2）。模式 1 的 443 与模式 4/6 的 8443 只对 Cloudflare 段开放。
 runtime_public_tcp_ports() {
     case "${PROTOCOL:-}" in
-    anytls) printf '443' ;;
-    reality-self) printf '443 8443' ;;
+    reality-cloudfront) printf '443 8443' ;;
     reality-cloudflare) printf '443' ;;
     cloudfront) printf '443' ;;
     cloudflare) printf '' ;;
@@ -354,11 +348,10 @@ runtime_public_tcp_ports() {
 }
 
 # 只允许 Cloudflare IPv4 段访问的业务端口；空表示本模式没有该端口。
-# 模式 6 的 8443 由 Caddy 的 X-Easy-All-Origin-Key 守卫（与模式 5 一致），不按源段限制。
+# 模式 3/5 的 8443 由 Caddy 的 X-Easy-All-Origin-Key 守卫，不按源段限制。
 runtime_cloudflare_only_port() {
     case "${PROTOCOL:-}" in
     cloudflare) printf '443' ;;
-    anytls) subscription_enabled && printf '8443' ;;
     combined-cloudflare | reality-cloudflare) printf '8443' ;;
     esac
     return 0
@@ -371,27 +364,26 @@ runtime_cdn_loopback_port() {
 
 runtime_caddy_site_enabled() {
     case "${PROTOCOL:-}" in
-    anytls) subscription_enabled ;;
-    # 模式 6：Caddy 始终运行：它同时承担 127.0.0.1:9443 的 Reality 伪装站与
-    # 0.0.0.0:8443 的 CloudFront 源站（含订阅）；模式 7 同构（8443 橙云回源 + 9443 伪装站）。
-    reality-self | reality-cloudflare) return 0 ;;
+    # 模式 3：Caddy 始终运行：它同时承担 127.0.0.1:9443 的 Reality 伪装站与
+    # 0.0.0.0:8443 的 CloudFront 源站（含订阅）；模式 4 同构（8443 橙云回源 + 9443 伪装站）。
+    reality-cloudfront | reality-cloudflare) return 0 ;;
     cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
 
-# 订阅站点是否启用：模式 6/7 与模式 5 同构，没有 link 模式，8443 订阅站点始终随之部署；
+# 订阅站点是否启用：模式 3/4 与模式 5 同构，没有 link 模式，8443 订阅站点始终随之部署；
 # 其余模式的订阅站点与 Caddy 站点重合。
 runtime_subscription_site_enabled() {
     case "${PROTOCOL:-}" in
-    reality-self | reality-cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare) return 0 ;;
     esac
     runtime_caddy_site_enabled
 }
 
 runtime_singbox_exec_start_pre() {
     case "${PROTOCOL:-}" in
-    cloudfront | combined-cloudfront | reality-self)
+    cloudfront | combined-cloudfront | reality-cloudfront)
         printf '%s internal-traffic-prepare' "${COMMAND_PATH}"
         ;;
     *) printf '' ;;
@@ -400,8 +392,8 @@ runtime_singbox_exec_start_pre() {
 
 # --- 状态契约与订阅配置（六模式共用） ---------------------------------------
 
-# AnyTLS 直连身份（模式 1/3/5 共用）：域名、节点名与密码先落盘再创建任何资源。
-# 域名与节点名分两步提示：模式 3/5 要先把所有域名问完，再把两个节点名排在一起。
+# AnyTLS 直连身份（模式 5/6 共用）：域名、节点名与密码先落盘再创建任何资源。
+# 域名与节点名分两步提示：模式 5/6 要先把所有域名问完，再把两个节点名排在一起。
 anytls_collect_direct_domain() {
     DIRECT_DOMAIN=$(normalize_domain "$(prompt_value \
         '直连节点域名（灰云 A 记录指向本机）' "${DIRECT_DOMAIN:-node.${CF_ZONE}}")")
@@ -839,13 +831,6 @@ cdn_validate_state_structure() {
         [[ "${CF_ORIGIN_DOMAIN}" != "${SUBSCRIPTION_DOMAIN}" ]] \
             || die "状态中的源站域名不得等于订阅域名"
     fi
-    if [[ "${protocol}" == "anytls" ]]; then
-        validate_domain "${DIRECT_DOMAIN}" || die "状态中的直连域名无效：${DIRECT_DOMAIN}"
-        if subscription_enabled; then
-            validate_domain "${SUBSCRIPTION_DOMAIN}" \
-                || die "状态中的订阅域名无效：${SUBSCRIPTION_DOMAIN}"
-        fi
-    fi
     if [[ "${protocol}" == "combined-cloudflare" || "${protocol}" == "reality-cloudflare" ]]; then
         validate_domain "${CF_NODE_DOMAIN}" || die "状态中的节点域名无效：${CF_NODE_DOMAIN}"
         [[ "${CF_NODE_DOMAIN}" == *".${CF_ZONE}" ]] \
@@ -853,7 +838,7 @@ cdn_validate_state_structure() {
         [[ "${CF_NODE_DOMAIN}" != "${DIRECT_DOMAIN}" ]] \
             || die "状态中的节点域名不得等于直连域名：${CF_NODE_DOMAIN}"
         [[ "${SUBSCRIPTION_MODE}" == "deploy" ]] \
-            || die "状态中的订阅模式无效（模式 3/7 固定 deploy）：${SUBSCRIPTION_MODE}"
+            || die "状态中的订阅模式无效（模式 4/6 固定 deploy）：${SUBSCRIPTION_MODE}"
     fi
     cdn_derive_runtime_fields || die "状态缺少可用于派生运行时的字段"
 }
@@ -976,7 +961,7 @@ snapshot_ufw_state() {
     fi
 }
 
-# 按模式放行公网端口；橙云与模式 1 的订阅端口只允许 Cloudflare 官方 IPv4 段。
+# 按模式放行公网端口；模式 1 的 443 与橙云回源（模式 4/6）的 8443 只允许 Cloudflare 官方 IPv4 段。
 configure_runtime_ufw() {
     local public_ports cf_port desired_ports
     snapshot_ufw_state
@@ -1024,18 +1009,13 @@ certificate_required_hosts() {
         if runtime_has_direct_entry; then
             printf '%s\n' "${DIRECT_DOMAIN}"
         fi
-        if [[ "${PROTOCOL}" == "anytls" ]]; then
-            if subscription_enabled; then
-                printf '%s\n' "${SUBSCRIPTION_DOMAIN}"
-            fi
-        elif state_protocol_uses_cloudfront "${PROTOCOL}"; then
+        if state_protocol_uses_cloudfront "${PROTOCOL}"; then
             printf '%s\n' "${CF_ORIGIN_DOMAIN}"
         elif [[ "${PROTOCOL}" == "combined-cloudflare" || "${PROTOCOL}" == "reality-cloudflare" ]]; then
-            # 模式 3/7 的橙云节点域名同时是订阅站点：同一个 LE 证书覆盖直连与回源。
+            # 模式 4/6 的橙云节点域名同时是订阅站点：同一个 LE 证书覆盖直连与回源。
             printf '%s\n' "${CF_NODE_DOMAIN}"
         fi
     } | sort -u
-    # subscription_enabled 为假时上面的分支没有输出，显式返回成功（调用方 set -e）。
     return 0
 }
 
@@ -1219,7 +1199,7 @@ runtime_served_certificate_endpoints() {
 }
 
 # 服务实际送出的证书必须与磁盘一致：证书轮换只换文件、配置内容不变，
-# Caddy/sing-box 可能仍持有旧证书；模式 2 的 Origin CA 吊销与 LE 续期都不得靠猜测。
+# Caddy/sing-box 可能仍持有旧证书；模式 1 的 Origin CA 吊销与 LE 续期都不得靠猜测。
 runtime_served_certificate_matches_disk() {
     local host port expected actual attempt matched
     expected=$(runtime_certificate_fingerprint_on_disk) || return 1
@@ -1335,7 +1315,7 @@ certificate_remove_lineage() {
         "${etc_dir}/renewal/${CERTBOT_LINEAGE_NAME}.conf"
 }
 
-# --- Reality 自偷入口（模式 6） ---------------------------------
+# --- Reality 自偷入口（模式 3/4） ---------------------------------
 
 # 伪装站静态页面与 Caddy 配置同生命周期：写 Caddy 配置前必须先有页面，
 # 否则 Caddy 的 root 指向不存在的文件，首页探活必失败（见 runtime_write_config）。
@@ -1378,7 +1358,7 @@ reality_generate_keypair() {
         || die "无法落盘 Reality 密钥对；已停止安装（避免续装更换密钥）"
 }
 
-# 模式 6 的直连运行时：Reality 身份齐全 + 密钥对已生成 + 伪装页就位，然后落盘身份。
+# 模式 3 的直连运行时：Reality 身份齐全 + 密钥对已生成 + 伪装页就位，然后落盘身份。
 reality_prepare_runtime() {
     [[ -n "${DIRECT_DOMAIN:-}" && -n "${DIRECT_NODE_NAME:-}" ]] \
         || die "直连域名/节点名缺失；请先执行 sudo easy_all uninstall 后重新安装"
@@ -1456,7 +1436,7 @@ runtime_reload_caddy() {
 
 # --- 本机验收 -----------------------------------------------------------------
 
-# 本机探活参数：模式可提供自有 CA（模式 2 的 Origin CA）与源站守卫头。
+# 本机探活参数：模式可提供自有 CA（模式 1 的 Origin CA）与源站守卫头。
 # 严格 TLS 校验始终保持，禁止 -k。
 runtime_local_probe_context() {
     RUNTIME_PROBE_HOST=$(caddy_site_host 2>/dev/null || true)
@@ -1513,7 +1493,7 @@ runtime_singbox_required_ports() {
 }
 
 # sing-box 入站与 Caddy 站点分别验收：Caddy health 不能替代核心入站断言。
-# 模式 6 的伪装站不提供 /easy_all-health，因此订阅站点与伪装站分开判定，
+# 模式 3/4 的伪装站不提供 /easy_all-health，因此订阅站点与伪装站分开判定，
 # 并用 443 回洛链路（sing-box → 127.0.0.1:9443）做真实探测。
 runtime_caddy_probe_ok() {
     runtime_caddy_site_enabled || return 0
@@ -2001,7 +1981,7 @@ uninstall_incomplete() {
         cdn_traffic_counters_remove \
             || die "回收 mangle 计量规则失败；已保留本机状态与命令，修正后重试 uninstall"
     fi
-    # 模式 6 可能已部署伪装站页面：这条路径不 source state、也不知道协议，
+    # 模式 3/4 可能已部署伪装站页面：这条路径不 source state、也不知道协议，
     # 因此按固定路径回收，口径与 cleanup_partial_install 一致（只删本工具写的文件与空目录）。
     if [[ -n "${CAMOUFLAGE_DIR:-}" ]]; then
         rm -f -- "${CAMOUFLAGE_DIR}/index.html" 2>/dev/null || true

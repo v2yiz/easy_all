@@ -483,11 +483,10 @@ assert_equal "--dport 4435 不被 443 子串误匹配（不误删）" "1" \
 assert_no_unstubbed "${dup_case}"
 
 # --- 3. 模式矩阵 -------------------------------------------------------------
-for spec in "mode1:anytls.sh:probe_log_enable_and_replay" \
-    "mode3:combined-cloudflare.sh:probe_log_enable_and_replay" \
-    "mode7:reality-cloudflare.sh:probe_log_enable_and_replay" \
-    "mode5:combined.sh:cloudfront_probe_log_sync" \
-    "mode6:reality-self.sh:cloudfront_probe_log_sync"; do
+for spec in "combined-cloudflare:combined-cloudflare.sh:probe_log_enable_and_replay" \
+    "reality-cloudflare:reality-cloudflare.sh:probe_log_enable_and_replay" \
+    "combined-cloudfront:combined.sh:cloudfront_probe_log_sync" \
+    "reality-cloudfront:reality-cloudfront.sh:cloudfront_probe_log_sync"; do
     name=${spec%%:*}
     rest=${spec#*:}
     profile=${rest%%:*}
@@ -530,9 +529,9 @@ for spec in "mode2:cloudflare.sh:remove_probe_log" \
     assert_no_unstubbed "${dir}"
 done
 
-assert_contains "cloudfront 守卫只接受 combined-cloudfront || reality-self" \
+assert_contains "cloudfront 守卫只接受 combined-cloudfront || reality-cloudfront" \
     "$(<"${ROOT_DIR}/lib/cloudfront-mode.sh")" \
-    'if [[ "${PROTOCOL}" == "combined-cloudfront" || "${PROTOCOL}" == "reality-self" ]]; then'
+    'if [[ "${PROTOCOL}" == "combined-cloudfront" || "${PROTOCOL}" == "reality-cloudfront" ]]; then'
 
 # --- 4. 窄锚点：最后一次 UFW reload 之后才同步探测 ---------------------------
 function_body() { # $1=file $2=函数名
@@ -568,37 +567,37 @@ flare_body_apply=$(function_body "${ROOT_DIR}/lib/cloudflare-mode.sh" apply_easy
 flare_body_cloud=$(function_body "${ROOT_DIR}/lib/cloudflare-mode.sh" apply_cloud_resources)
 flare_body_install=$(function_body "${ROOT_DIR}/lib/cloudflare-mode.sh" install_all)
 
-assert_line_before "模式 1/3 apply 同步在提交之后" "${anytls_body_apply}" \
+assert_line_before "模式 4/6 apply 同步在提交之后" "${anytls_body_apply}" \
     "commit_subscription_update" "probe_log_enable_and_replay"
-assert_line_before "模式 1/3 apply 同步在 success 之前" "${anytls_body_apply}" \
+assert_line_before "模式 4/6 apply 同步在 success 之前" "${anytls_body_apply}" \
     "probe_log_enable_and_replay" 'success "本机配置与订阅已应用'
-assert_line_before "模式 1/3 apply-cloud 同步在提交之后" "${anytls_body_cloud}" \
+assert_line_before "模式 4/6 apply-cloud 同步在提交之后" "${anytls_body_cloud}" \
     "commit_subscription_update" "probe_log_enable_and_replay"
-assert_line_before "模式 1/3 安装同步在 SSH/UFW 收尾之后" "${anytls_body_install}" \
+assert_line_before "模式 4/6 安装同步在 SSH/UFW 收尾之后" "${anytls_body_install}" \
     "configure_post_install_ssh_port" "probe_log_enable_and_replay"
-assert_line_before "模式 1/3 安装同步仍在回滚钩子内" "${anytls_body_install}" \
+assert_line_before "模式 4/6 安装同步仍在回滚钩子内" "${anytls_body_install}" \
     "probe_log_enable_and_replay" "INSTALL_ROLLBACK_ON_EXIT=0"
 
-assert_line_before "模式 5/6 apply 同步在提交之后" "${cf_body_apply}" \
+assert_line_before "模式 2/3/5 apply 同步在提交之后" "${cf_body_apply}" \
     "commit_subscription_update" "cloudfront_probe_log_sync"
-assert_line_before "模式 5/6 apply 同步在 success 之前" "${cf_body_apply}" \
+assert_line_before "模式 2/3/5 apply 同步在 success 之前" "${cf_body_apply}" \
     "cloudfront_probe_log_sync" 'success "本机配置与订阅已应用'
-assert_line_before "模式 5/6 apply-cloud 同步在提交之后" "${cf_body_cloud}" \
+assert_line_before "模式 2/3/5 apply-cloud 同步在提交之后" "${cf_body_cloud}" \
     "commit_subscription_update" "cloudfront_probe_log_sync"
-assert_line_before "模式 4/5/6 安装同步在 SSH/UFW 收尾之后" "${cf_body_install}" \
+assert_line_before "模式 2/3/5 安装同步在 SSH/UFW 收尾之后" "${cf_body_install}" \
     "configure_post_install_ssh_port" "cloudfront_probe_log_sync"
-assert_line_before "模式 4/5/6 安装同步仍在回滚钩子内" "${cf_body_install}" \
+assert_line_before "模式 2/3/5 安装同步仍在回滚钩子内" "${cf_body_install}" \
     "cloudfront_probe_log_sync" "INSTALL_ROLLBACK_ON_EXIT=0"
 
-assert_line_before "模式 2 apply 收敛在提交之后" "${flare_body_apply}" \
+assert_line_before "模式 1 apply 收敛在提交之后" "${flare_body_apply}" \
     "commit_subscription_update" "remove_probe_log"
-assert_line_before "模式 2 apply 收敛在 success 之前" "${flare_body_apply}" \
+assert_line_before "模式 1 apply 收敛在 success 之前" "${flare_body_apply}" \
     "remove_probe_log" 'success "本机配置与订阅已应用'
-assert_line_before "模式 2 apply-cloud 收敛在提交之后" "${flare_body_cloud}" \
+assert_line_before "模式 1 apply-cloud 收敛在提交之后" "${flare_body_cloud}" \
     "commit_subscription_update" "remove_probe_log"
-assert_line_before "模式 2 安装收敛在 SSH/UFW 收尾之后" "${flare_body_install}" \
+assert_line_before "模式 1 安装收敛在 SSH/UFW 收尾之后" "${flare_body_install}" \
     "configure_post_install_ssh_port" "remove_probe_log"
-assert_line_before "模式 2 安装收敛仍在回滚钩子内" "${flare_body_install}" \
+assert_line_before "模式 1 安装收敛仍在回滚钩子内" "${flare_body_install}" \
     "remove_probe_log" "INSTALL_ROLLBACK_ON_EXIT=0"
 
 incomplete_body=$(function_body "${ROOT_DIR}/lib/runtime-core.sh" uninstall_incomplete)
@@ -621,10 +620,10 @@ cloudflare_configure_origin_firewall() { :; }
 # 4b. apply 锚点：真实 configure_runtime_ufw → probe_log_enable_and_replay
 ufw_case=$(new_case ufw-order-apply)
 capture "${ufw_case}" "
-source \"\$1/profiles/anytls.sh\"
+source \"\$1/profiles/combined-cloudflare.sh\"
 ${HOST_BOUNDARY_STUBS}
 detect_ssh_ports() { SSH_PORTS=22222; }
-SUBSCRIPTION_MODE=link
+SUBSCRIPTION_MODE=deploy
 configure_runtime_ufw
 probe_log_enable_and_replay
 "
@@ -755,7 +754,7 @@ printf '%s\n' \
     '-A INPUT -i eth0 -p tcp --dport 443 --syn -m limit --limit 30/min --limit-burst 60 -j LOG --log-prefix "GFW_CHK: " --log-level 4' \
     >"${sync_remove_fail}/stub/iptables.input"
 capture "${sync_remove_fail}" 'source "$1/profiles/cloudfront.sh"; cloudfront_probe_log_sync'
-assert_equal "模式 4 清理失败时 cloudfront_probe_log_sync 非零" "1" "${LAST_STATUS}"
+assert_equal "模式 2 清理失败时 cloudfront_probe_log_sync 非零" "1" "${LAST_STATUS}"
 assert_contains "清理失败点名删除失败" "${LAST_OUTPUT}" "删除"
 assert_contains "清理失败保留重试依据" "${LAST_OUTPUT}" "失败"
 assert_no_unstubbed "${sync_remove_fail}"
@@ -768,40 +767,40 @@ assert_no_bare_call() { # $1=label $2=body $3=函数名
         fail "$1：仍存在裸调用 <$3>（失败会被吞掉）"
     fi
 }
-assert_contains "模式 1/3 apply 传播失败" "${anytls_body_apply}" \
+assert_contains "模式 4/6 apply 传播失败" "${anytls_body_apply}" \
     "probe_log_enable_and_replay || return 1"
-assert_contains "模式 1/3 apply-cloud 传播失败" "${anytls_body_cloud}" \
+assert_contains "模式 4/6 apply-cloud 传播失败" "${anytls_body_cloud}" \
     "probe_log_enable_and_replay || return 1"
-assert_contains "模式 1/3 安装失败触发回滚" "${anytls_body_install}" \
+assert_contains "模式 4/6 安装失败触发回滚" "${anytls_body_install}" \
     "probe_log_enable_and_replay || die "
-assert_no_bare_call "模式 1/3 apply 无裸调用" "${anytls_body_apply}" \
+assert_no_bare_call "模式 4/6 apply 无裸调用" "${anytls_body_apply}" \
     "probe_log_enable_and_replay"
-assert_no_bare_call "模式 1/3 apply-cloud 无裸调用" "${anytls_body_cloud}" \
+assert_no_bare_call "模式 4/6 apply-cloud 无裸调用" "${anytls_body_cloud}" \
     "probe_log_enable_and_replay"
-assert_no_bare_call "模式 1/3 安装无裸调用" "${anytls_body_install}" \
+assert_no_bare_call "模式 4/6 安装无裸调用" "${anytls_body_install}" \
     "probe_log_enable_and_replay"
 
-assert_contains "模式 5/6 apply 传播失败" "${cf_body_apply}" \
+assert_contains "模式 2/3/5 apply 传播失败" "${cf_body_apply}" \
     "cloudfront_probe_log_sync || return 1"
-assert_contains "模式 5/6 apply-cloud 传播失败" "${cf_body_cloud}" \
+assert_contains "模式 2/3/5 apply-cloud 传播失败" "${cf_body_cloud}" \
     "cloudfront_probe_log_sync || return 1"
-assert_contains "模式 4/5/6 安装失败触发回滚" "${cf_body_install}" \
+assert_contains "模式 2/3/5 安装失败触发回滚" "${cf_body_install}" \
     "cloudfront_probe_log_sync || die "
-assert_no_bare_call "模式 5/6 apply 无裸调用" "${cf_body_apply}" "cloudfront_probe_log_sync"
-assert_no_bare_call "模式 5/6 apply-cloud 无裸调用" "${cf_body_cloud}" \
+assert_no_bare_call "模式 2/3/5 apply 无裸调用" "${cf_body_apply}" "cloudfront_probe_log_sync"
+assert_no_bare_call "模式 2/3/5 apply-cloud 无裸调用" "${cf_body_cloud}" \
     "cloudfront_probe_log_sync"
-assert_no_bare_call "模式 4/5/6 安装无裸调用" "${cf_body_install}" "cloudfront_probe_log_sync"
+assert_no_bare_call "模式 2/3/5 安装无裸调用" "${cf_body_install}" "cloudfront_probe_log_sync"
 sync_helper_body=$(function_body "${ROOT_DIR}/lib/cloudfront-mode.sh" cloudfront_probe_log_sync)
 assert_contains "守卫内启用分支传播失败" "${sync_helper_body}" \
     "probe_log_enable_and_replay || return 1"
 assert_contains "守卫内清理分支传播失败" "${sync_helper_body}" "remove_probe_log || return 1"
 
-assert_contains "模式 2 apply 传播失败" "${flare_body_apply}" "remove_probe_log || return 1"
-assert_contains "模式 2 apply-cloud 传播失败" "${flare_body_cloud}" "remove_probe_log || return 1"
-assert_contains "模式 2 安装失败触发回滚" "${flare_body_install}" "remove_probe_log || die "
-assert_no_bare_call "模式 2 apply 无裸调用" "${flare_body_apply}" "remove_probe_log"
-assert_no_bare_call "模式 2 apply-cloud 无裸调用" "${flare_body_cloud}" "remove_probe_log"
-assert_no_bare_call "模式 2 安装无裸调用" "${flare_body_install}" "remove_probe_log"
+assert_contains "模式 1 apply 传播失败" "${flare_body_apply}" "remove_probe_log || return 1"
+assert_contains "模式 1 apply-cloud 传播失败" "${flare_body_cloud}" "remove_probe_log || return 1"
+assert_contains "模式 1 安装失败触发回滚" "${flare_body_install}" "remove_probe_log || die "
+assert_no_bare_call "模式 1 apply 无裸调用" "${flare_body_apply}" "remove_probe_log"
+assert_no_bare_call "模式 1 apply-cloud 无裸调用" "${flare_body_cloud}" "remove_probe_log"
+assert_no_bare_call "模式 1 安装无裸调用" "${flare_body_install}" "remove_probe_log"
 
 # disable/stop 失败不得静默：告警后仍完成规则清理，不依赖 ExecStop 成功。
 disable_warn_case=$(new_case disable-warn)
@@ -887,7 +886,7 @@ assert_equal "恢复失败仍清除了采集规则" "" "$(<"${remove_fail_case}/
 
 # --- 7. 清理保守性 -----------------------------------------------------------
 cons_case=$(new_case cleanup-no-iptables)
-printf 'STATE_VERSION=1\nPROTOCOL=anytls\n' >"${cons_case}/state/state.env"
+printf 'STATE_VERSION=1\nPROTOCOL=combined-cloudflare\n' >"${cons_case}/state/state.env"
 : >"${cons_case}/systemd/easy_all-probe-log.service"
 printf '[Journal]\nMaxRetentionSec=30day\n' \
     >"${cons_case}/journald.conf.d/99-easy_all-probe-retention.conf"
@@ -919,7 +918,7 @@ assert_equal "无任何相关资源时缺 iptables 放行" "0" "${early_status}"
 assert_equal "早期清理无输出噪音" "" "${early_out}"
 
 query_fail_case=$(new_case cleanup-query-fail)
-printf 'STATE_VERSION=1\nPROTOCOL=anytls\n' >"${query_fail_case}/state/state.env"
+printf 'STATE_VERSION=1\nPROTOCOL=combined-cloudflare\n' >"${query_fail_case}/state/state.env"
 : >"${query_fail_case}/stub/iptables.query-fail"
 capture "${query_fail_case}" "
 ${PROBE_LIB_SNIPPET}

@@ -124,11 +124,6 @@ render_mode() {
             AWS_CLOUDFRONT_DOMAIN=d111111abcdef8.cloudfront.net
             AWS_ACM_CERTIFICATE_ARN=arn:aws:acm:us-east-1:123456789012:certificate/x
         fi
-        if [[ "${PROTOCOL}" == "anytls" ]]; then
-            SUBSCRIPTION_DOMAIN=sub.example.com
-            CLOUDFLARE_ORIGIN_RULESET_ID=rs
-            CLOUDFLARE_ORIGIN_RULE_ID=rule
-        fi
         cdn_derive_runtime_fields || exit 1
         # 真实核心校验 TLS 证书与私钥：这里用一次性自签材料，只验证配置可被核心接受。
         install -d -m 0700 "${CERT_DIR}"
@@ -148,7 +143,7 @@ render_mode() {
     printf 'ok - %s 配置通过真实核心校验\n' "${profile}"
 }
 
-for profile in anytls reality-self reality-cloudflare cloudfront cloudflare combined combined-cloudflare; do
+for profile in reality-cloudfront reality-cloudflare cloudfront cloudflare combined combined-cloudflare; do
     render_mode "${profile}" "${WORK_DIR}/${profile}"
 done
 
