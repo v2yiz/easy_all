@@ -162,8 +162,23 @@ assert_equal "模式 5 blocked 只保留 AnyTLS" "anytls-in" \
 assert_equal "模式 3 blocked 只保留 AnyTLS" "anytls-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render combined-cloudflare 1)")"
 
+# 模式 7：Reality 直连 + 回环 VLESS WS；没有 AnyTLS 入站，blocked 只省略 CDN 入站。
+reality_cf_json=$(render reality-cloudflare 0)
+assert_equal "模式 7 只有 Reality 与 VLESS 入站" "vless-reality-in,vless-cdn-in" \
+    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${reality_cf_json}")"
+assert_equal "模式 7 Reality 入站监听 0.0.0.0:443" "0.0.0.0 443" \
+    "$(jq -r '.inbounds[] | select(.tag == "vless-reality-in") | "\(.listen) \(.listen_port)"' <<<"${reality_cf_json}")"
+assert_equal "模式 7 Reality 回落至回环 9443" "127.0.0.1 9443" \
+    "$(jq -r '.inbounds[] | select(.tag == "vless-reality-in") | .tls.reality.handshake | "\(.server) \(.server_port)"' <<<"${reality_cf_json}")"
+assert_equal "模式 7 Reality 用户为 xtls-rprx-vision" "xtls-rprx-vision" \
+    "$(jq -r '.inbounds[] | select(.tag == "vless-reality-in") | .users[0].flow' <<<"${reality_cf_json}")"
+assert_equal "模式 7 回环 CDN 入站 10086" "127.0.0.1 10086" \
+    "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | "\(.listen) \(.listen_port)"' <<<"${reality_cf_json}")"
+assert_equal "模式 7 blocked 只保留 Reality 直连" "vless-reality-in" \
+    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render reality-cloudflare 1)")"
+
 # 公共结构：log/dns/outbounds/route 按 design §7。
-for proto in anytls reality-self cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+for proto in anytls reality-self reality-cloudflare cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     body=$(render "${proto}" 0)
     assert_equal "${proto}: log 级别 warning" "warning" "$(jq -r '.log.level' <<<"${body}")"
     assert_equal "${proto}: DNS 显式 IPv4-only" "ipv4_only" "$(jq -r '.dns.strategy' <<<"${body}")"
@@ -211,6 +226,10 @@ if (PROTOCOL=anytls; DIRECT_DOMAIN=""; render_singbox_config "${TMP_DIR}/x.json"
 fi
 if (PROTOCOL=cloudfront; VLESS_PATH=""; render_singbox_config "${TMP_DIR}/x.json" 0) >/dev/null 2>&1; then
     fail "缺少 VLESS_PATH 必须失败"
+fi
+# 模式 7 不生成 AnyTLS 入站，因此不得依赖 ANYTLS_PASSWORD。
+if ! ( PROTOCOL=reality-cloudflare; unset ANYTLS_PASSWORD; render_singbox_config "${TMP_DIR}/reality-cf.json" 0 ) >/dev/null 2>&1; then
+    fail "模式 7 渲染不得依赖 ANYTLS_PASSWORD"
 fi
 
 # --- 客户端节点（design §12） -----------------------------------------------

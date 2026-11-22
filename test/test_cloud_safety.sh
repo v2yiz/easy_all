@@ -1182,7 +1182,7 @@ run_prompt_order() { # $1=profile -> 逐行输出 prompt_value 的提示文案
 combined_order=$(run_prompt_order combined)
 assert_equal "模式 5 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \
     "$(printf '%s\n' "${combined_order}" | sed -n 2p)"
-assert_equal "模式 5 域名先问完，第 3 条才是节点名" "CloudFront 节点域名（CNAME 指向分发，灰云）" \
+assert_equal "模式 5 域名先问完，第 3 条才是节点名" "CloudFront 节点域名（CNAME 指向分发，灰云，同时提供节点与订阅）" \
     "$(printf '%s\n' "${combined_order}" | sed -n 3p)"
 assert_equal "模式 5 两个节点名相邻（直连后紧接 CDN）" \
     "CloudFront 节点名（完整单节点名）" \
@@ -1208,6 +1208,17 @@ assert_equal "模式 3 域名先问完，第 3 条才是 CDN 节点域名" \
 assert_equal "模式 3 两个节点名相邻（直连后紧接 CDN）" \
     "CDN 节点名（完整单节点名）" \
     "$(printf '%s\n' "${combined_cf_order}" | sed -n 5p)"
+reality_cf_order=$(run_prompt_order reality-cloudflare)
+assert_equal "模式 7 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \
+    "$(printf '%s\n' "${reality_cf_order}" | sed -n 2p)"
+assert_equal "模式 7 域名先问完，第 3 条才是 CDN 节点域名" \
+    "CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）" \
+    "$(printf '%s\n' "${reality_cf_order}" | sed -n 3p)"
+assert_equal "模式 7 两个节点名相邻（直连后紧接 CDN）" "CDN 节点名（完整单节点名）" \
+    "$(printf '%s\n' "${reality_cf_order}" | sed -n 5p)"
+assert_equal "模式 7 提示总数与模式 3 一致" "9" \
+    "$(printf '%s\n' "${reality_cf_order}" | grep -c .)"
+assert_not_contains "模式 7 不询问订阅域名（由节点域名派生）" "${reality_cf_order}" "订阅域名"
 # 3b-4. 优选前缀与订阅配置的新顺序：前缀先问并暂存，配置落定后再写进 cdnEdgeAddress。
 apply_prefix_case() { # $1=初始订阅配置 $2=暂存前缀 $3=PROTOCOL -> 最终订阅配置
     bash -c '
@@ -1226,6 +1237,9 @@ assert_contains "前缀写入不含 cdnEdgeAddress 的配置" \
 assert_contains "前缀写入 reality-self 配置" \
     "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[]}' k7m2qp4x9d reality-self)" \
     '"cdnEdgeAddress":"k7m2qp4x9d.cloudfront.182682.xyz"'
+assert_contains "前缀写入 reality-cloudflare 配置（橙云后缀）" \
+    "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[]}' k7m2qp4x9d reality-cloudflare)" \
+    '"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"'
 assert_contains "前缀覆盖安装生成的旧前缀" \
     "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[],"cdnEdgeAddress":"aa11bb22cc.cloudflare.182682.xyz"}' k7m2qp4x9d combined-cloudflare)" \
     '"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"'
@@ -2098,6 +2112,7 @@ combined cloudfront.182682.xyz
 reality-self cloudfront.182682.xyz
 cloudflare cloudflare.182682.xyz
 combined-cloudflare cloudflare.182682.xyz
+reality-cloudflare cloudflare.182682.xyz
 EDGE_PROFILES
 edge_anytls_calls=$(run_edge_collector_case anytls) || fail "模式 1 安装输入收集失败"
 assert_equal "模式 1 不调用 CDN 优选收集器" "" "${edge_anytls_calls}"
@@ -2304,6 +2319,36 @@ edge_chain_shape=no
 assert_equal "reality-self 串联后的优选地址形状：<${edge_chain_addr}>" "yes" "${edge_chain_shape}"
 assert_contains "reality-self 串联把地址写进订阅配置" \
     "$(sed -n 's/^CONFIG=//p' <<<"${edge_chain}")" "\"cdnEdgeAddress\":\"${edge_chain_addr}\""
+
+# 9d-3. 串联：模式 7 按 cloudflare 后缀落盘（与模式 3 同形）。
+edge_cf_chain_case() { # $1=订阅配置 -> stdout: CONFIG=<写后配置> / EDGE=<校验后 cdnEdgeAddress>
+    local dir
+    dir=$(mktemp -d "${TMP_DIR}/edge-cf-chain.XXXXXX")
+    mkdir -p "${dir}/state/certs" "${dir}/runtime"
+    RUNTIME_TMP="${dir}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${dir}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${dir}/state/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${dir}/subs" \
+        bash -c '
+            source "$1/profiles/reality-cloudflare.sh"
+            SUBSCRIPTION_CONFIG=$2
+            cdn_edge_interactive() { return 0; }
+            read_bilingual() { printf -v "$2" "%s" ""; }
+            collect_cdn_edge_address
+            apply_cdn_edge_prefix
+            normalized=$(normalize_subscription_config "${SUBSCRIPTION_CONFIG}" "[]")
+            printf "CONFIG=%s\nEDGE=%s\n" "${SUBSCRIPTION_CONFIG}" \
+                "$(jq -r .cdnEdgeAddress <<<"${normalized}")"
+        ' _ "${ROOT_DIR}" "$1" 2>&1
+}
+edge_cf_chain=$(edge_cf_chain_case "${edge_chain_cfg}") \
+    || fail "reality-cloudflare 串联收集/写入/校验失败：${edge_cf_chain}"
+edge_cf_chain_addr=$(sed -n 's/^EDGE=//p' <<<"${edge_cf_chain}")
+edge_cf_chain_shape=no
+[[ "${edge_cf_chain_addr}" =~ ^[a-z][a-z0-9]{9}\.cloudflare\.182682\.xyz$ ]] && edge_cf_chain_shape=yes
+assert_equal "reality-cloudflare 串联后的优选地址形状：<${edge_cf_chain_addr}>" "yes" "${edge_cf_chain_shape}"
+assert_contains "reality-cloudflare 串联把地址写进订阅配置" \
+    "$(sed -n 's/^CONFIG=//p' <<<"${edge_cf_chain}")" "\"cdnEdgeAddress\":\"${edge_cf_chain_addr}\""
 
 # 9e. 结构断言：每个「定义 update_subscription 且渲染订阅」的模式库，
 # 都必须在快照与写运行配置之前校验订阅配置（验收条件 4 结构证据）。

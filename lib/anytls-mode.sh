@@ -2,8 +2,10 @@
 
 # Mode 1: AnyTLS 直连入口（TCP 443）+ 可选订阅站点（Caddy 8443，仅 Cloudflare 回源段）。
 # Mode 3: 同一直连入口 + 橙云节点域名（Caddy 8443 回源，同时提供 VLESS WebSocket 与订阅）。
+# Mode 7: 直连入口换成 VLESS Reality（回环 9443 伪装回落）+ 同模式 3 的橙云入口。
 #
-# Profile 契约（由 profiles/anytls.sh、profiles/combined-cloudflare.sh 在本文件之前提供）：
+# Profile 契约（由 profiles/anytls.sh、profiles/combined-cloudflare.sh、
+# profiles/reality-cloudflare.sh 在本文件之前提供）：
 #   CDN_PROFILE_KEY / CDN_EXPECTED_PROTOCOL / CDN_MODE_LABEL / CDN_ENTRY_SUMMARY /
 #   CDN_INSTALL_PORTS / CDN_RECORD_COMMENT
 # 与 CloudFront 模式相同的命令契约（install/apply/apply-cloud/edit-sub/renew-cert/
@@ -11,7 +13,7 @@
 #
 # 模式 1 的订阅是可选入口：SUBSCRIPTION_MODE=deploy 建立 SUBSCRIPTION_DOMAIN 橙云 A 记录 +
 # 精确 http.host 的 Origin Rule（回源 8443）+ LE 证书；SUBSCRIPTION_MODE=link 只输出节点。
-# 模式 3 固定 deploy：CF_NODE_DOMAIN 同时是回环 VLESS WebSocket 的站点、订阅域名与
+# 模式 3/7 固定 deploy：CF_NODE_DOMAIN 同时是回环 VLESS WebSocket 的站点、订阅域名与
 # 证书名，直连与橙云两个节点都进入订阅。
 
 # 公网验收重试次数/间隔；测试可经 *_OVERRIDE 缩短，生产默认不变。
@@ -23,7 +25,7 @@ readonly CDN_PUBLIC_ACCEPT_SECONDS="${CDN_PUBLIC_ACCEPT_SECONDS_OVERRIDE:-10}"
 cdn_derive_runtime_fields() {
     [[ -n "${DIRECT_DOMAIN:-}" ]] || return 1
     BACKEND=sing-box
-    if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+    if [[ "${PROTOCOL}" == "combined-cloudflare" || "${PROTOCOL}" == "reality-cloudflare" ]]; then
         # 橙云节点域名同时是 WebSocket Host、订阅域名与证书名；固定 deploy。
         [[ -n "${CF_NODE_DOMAIN:-}" ]] || return 1
         SUBSCRIPTION_MODE=deploy
@@ -58,13 +60,13 @@ cdn_config_ready() {
 collect_anytls_install_inputs() {
     CF_ZONE=$(normalize_domain "$(prompt_value 'Cloudflare 根 Zone（如 example.com）' "${CF_ZONE:-}")")
     validate_domain "${CF_ZONE}" || die "Cloudflare Zone 无效：${CF_ZONE}"
-    # 先把所有域名问完（模式 3 多一个 CDN 节点域名），再把两个节点名排在一起。
+    # 先把所有域名问完（模式 3/7 多一个 CDN 节点域名），再把两个节点名排在一起。
     anytls_collect_direct_domain
-    if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+    if runtime_has_cdn_entry; then
         collect_combined_cloudflare_cdn_domain
     fi
     anytls_collect_direct_node_name
-    if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+    if runtime_has_cdn_entry; then
         collect_combined_cloudflare_cdn_node_name
         VLESS_PATH=$(normalize_vless_path "${VLESS_PATH:-}")
         validate_vless_path "${VLESS_PATH}" || die "VLESS 路径无效：${VLESS_PATH}"
@@ -96,14 +98,25 @@ collect_anytls_install_inputs() {
     cdn_derive_runtime_fields || die "运行时字段派生失败：缺少直连域名或 CDN 节点域名"
     # Token 收集/校验/持久化是各模式共用的（lib/cf-dns.sh）：下一进程可直接复用已存值。
     cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑；deploy 还需 Zone Settings 只读 + Origin Rules 编辑）'
-    ANYTLS_PASSWORD=${ANYTLS_PASSWORD:-$(generate_secret)}
-    # 模式 3（直连 + 橙云）先问优选前缀，再问订阅配置；模式 1 没有 CDN 入站。
-    if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+    # 直连身份在输入阶段就位：Reality 的 short_id 在此生成（keypair 依赖已安装的 sing-box，
+    # 留到 core 阶段）；AnyTLS 模式在此生成密码。身份由 install_all 紧接着落盘。
+    if runtime_has_reality_entry; then
+        # Reality short_id 在输入阶段确定；keypair 依赖已安装的 sing-box，留到 core 阶段生成。
+        REALITY_SHORT_ID=${REALITY_SHORT_ID:-$(openssl rand -hex 8)}
+        [[ "${REALITY_SHORT_ID}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
+            || die "Reality short_id 无效：${REALITY_SHORT_ID}"
+    fi
+    if runtime_has_anytls_entry; then
+        ANYTLS_PASSWORD=${ANYTLS_PASSWORD:-$(generate_secret)}
+        [[ ${#ANYTLS_PASSWORD} -ge 16 ]] || die "AnyTLS 密码长度不足 16"
+    fi
+    # 模式 3/7（直连 + 橙云）先问优选前缀，再问订阅配置；模式 1 没有 CDN 入站。
+    if runtime_has_cdn_entry; then
         collect_cdn_edge_address
     fi
     SUBSCRIPTION_CONFIG=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}") \
         || die "订阅配置无效：需包含 allowedTokens 与 nodes"
-    if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+    if runtime_has_cdn_entry; then
         apply_cdn_edge_prefix
     fi
     cdn_apply_subscription_config "${SUBSCRIPTION_CONFIG}" \
@@ -114,7 +127,7 @@ collect_anytls_install_inputs() {
     fi
 }
 
-# 模式 3：节点域名同时承载 WebSocket 节点与订阅，必须是 Zone 的一级子域名（默认边缘证书覆盖范围）。
+# 模式 3/7：节点域名同时承载 WebSocket 节点与订阅，必须是 Zone 的一级子域名（默认边缘证书覆盖范围）。
 # 域名与节点名分两步：域名先问（紧跟直连域名），节点名与直连节点名排在一起。
 collect_combined_cloudflare_cdn_domain() {
     CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value \
@@ -152,7 +165,7 @@ anytls_ensure_dns() {
     info "配置直连解析（灰云 A）：${DIRECT_DOMAIN} -> ${VPS_PUBLIC_IPV4}"
     dns_ensure_record "${DIRECT_DOMAIN}" A "${VPS_PUBLIC_IPV4}" false
     if subscription_enabled; then
-        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        if runtime_has_cdn_entry; then
             info "配置节点/订阅解析（橙云 A）：${SUBSCRIPTION_DOMAIN} -> ${VPS_PUBLIC_IPV4}"
         else
             info "配置订阅解析（橙云 A）：${SUBSCRIPTION_DOMAIN} -> ${VPS_PUBLIC_IPV4}"
@@ -219,7 +232,11 @@ write_runtime_config() {
 
 build_node_links() {
     local extra
-    build_anytls_link
+    if singbox_protocol_has_reality; then
+        build_reality_link
+    else
+        build_anytls_link
+    fi
     if runtime_has_cdn_entry; then
         printf '\n'
         build_vless_ws_link
@@ -232,7 +249,11 @@ build_node_links() {
 
 build_mihomo_nodes() {
     local extra
-    build_mihomo_anytls_node
+    if singbox_protocol_has_reality; then
+        build_mihomo_reality_node
+    else
+        build_mihomo_anytls_node
+    fi
     if runtime_has_cdn_entry; then
         printf '\n'
         build_mihomo_ws_node
@@ -420,9 +441,13 @@ show_status() {
     printf '模式: %s\n' "${CDN_MODE_LABEL}"
     printf '协议: %s\n' "$(runtime_protocol_label)"
     show_tcp_acceleration_status
-    printf '直连域名: %s（AnyTLS，TCP 443 公网）\n' "${DIRECT_DOMAIN}"
+    if runtime_has_reality_entry; then
+        printf '直连域名: %s（VLESS Reality，TCP 443 公网；伪装站 127.0.0.1:9443）\n' "${DIRECT_DOMAIN}"
+    else
+        printf '直连域名: %s（AnyTLS，TCP 443 公网）\n' "${DIRECT_DOMAIN}"
+    fi
     if subscription_enabled; then
-        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        if runtime_has_cdn_entry; then
             printf '节点/订阅域名: %s（橙云 A，Caddy 8443 仅 Cloudflare 回源段，同时提供 WebSocket 节点与订阅）\n' \
                 "${SUBSCRIPTION_DOMAIN}"
         else
@@ -492,9 +517,9 @@ apply_cloud_phase() {
     anytls_ensure_zone_id
     if subscription_enabled; then
         cloudflare_ensure_zone_ssl_strict
-        # 模式 3 的橙云节点走 WebSocket：Zone 关闭 WebSockets 时链路必失败。
+        # 模式 3/7 的橙云节点走 WebSocket：Zone 关闭 WebSockets 时链路必失败。
         # 模式 1 不走 CDN 代理，不查该开关。
-        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        if runtime_has_cdn_entry; then
             cloudflare_ensure_zone_websockets_on
         fi
     fi
@@ -567,6 +592,8 @@ update_subscription() {
 }
 
 renew_certificate() {
+    local direct_label=AnyTLS
+    runtime_has_reality_entry && direct_label=Reality
     require_root
     acquire_runtime_write_lock
     collect_installed_state
@@ -590,12 +617,13 @@ renew_certificate() {
     fi
     save_state
     commit_subscription_update
-    success "证书已更新（AnyTLS 与订阅入口使用同一 lineage）"
+    success "证书已更新（${direct_label} 与订阅入口使用同一 lineage）"
 }
 
 cdn_local_uninstall_common() {
     stop_maintenance_services || true
     stop_services
+    reality_remove_camouflage_page
     remove_certbot_deploy_hook || true
     certificate_remove_lineage || true
     restore_platform_security_state || {
@@ -620,7 +648,7 @@ cdn_print_cloud_inventory() {
     printf '云端资源清单：\n' >&2
     printf '  直连 A 记录（灰云）: %s -> %s\n' "${DIRECT_DOMAIN:-未知}" "${VPS_PUBLIC_IPV4:-未知}" >&2
     if subscription_enabled; then
-        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        if runtime_has_cdn_entry; then
             printf '  节点/订阅 A 记录（橙云）: %s -> %s\n' "${SUBSCRIPTION_DOMAIN:-未知}" \
                 "${VPS_PUBLIC_IPV4:-未知}" >&2
         else
@@ -714,6 +742,7 @@ cleanup_partial_install() {
     cleanup_partial_install_local || return 1
     remove_probe_log \
         || { warn "回收 TCP 443 探测日志规则与单元失败；已保留安装进度标记与状态，修正后重试 sudo easy_all cleanup-partial"; return 1; }
+    reality_remove_camouflage_page
     remove_certbot_deploy_hook || true
     certificate_remove_lineage || true
     remove_daily_reboot_schedule || true
@@ -743,13 +772,14 @@ rollback_fresh_install() {
     install_progress_clear
 }
 
-# 首轮端口预检：模式 3 的直连/橙云回源/回环端口与模式 1 的 443 直连入口必然使用；
+# 首轮端口预检：模式 3/7 的直连/橙云回源/回环端口与模式 1 的 443 直连入口必然使用；
 # 模式 1 的订阅站点 8443 只在 deploy 时使用，订阅模式到输入阶段才确定（见下方补检）。
 cdn_prepare_install_ports() {
     if runtime_has_cdn_entry; then
-        # 模式 3：443 直连、8443 橙云回源与回环 10086 都必须空闲。
+        # 模式 3/7：443 直连、8443 橙云回源与回环 10086 都必须空闲；Reality 还占用 9443 伪装回环。
         prepare_fresh_install "$(runtime_public_tcp_ports)" "$(runtime_cloudflare_only_port)" \
-            "$(runtime_cdn_loopback_port)"
+            "$(runtime_cdn_loopback_port)" \
+            $(runtime_has_reality_entry && caddy_reality_camouflage_port || true)
     else
         prepare_fresh_install 443
         # 续装已从落盘身份恢复订阅模式：deploy 的 8443 仍需预检，不能因首轮只传
@@ -761,9 +791,9 @@ cdn_prepare_install_ports() {
 }
 
 # 模式 1 的 Caddy 8443 只在 deploy 订阅时启用：订阅模式确定后补检，仍早于任何云端
-# 资源创建；模式 3 的 8443 已由首轮预检覆盖，这里不重复。
+# 资源创建；模式 3/7 的 8443 已由首轮预检覆盖，这里不重复。
 anytls_assert_subscription_port_free() {
-    [[ "${PROTOCOL}" != "combined-cloudflare" ]] || return 0
+    [[ "${PROTOCOL}" == "anytls" ]] || return 0
     subscription_enabled || return 0
     assert_install_ports_free "$(runtime_cloudflare_only_port)"
 }
@@ -779,11 +809,7 @@ install_all() {
     ensure_swap
     install_failure_begin "${CDN_PROFILE_KEY}"
     cdn_prepare_install_ports
-    if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
-        install_progress_begin "${CDN_PROFILE_KEY}" cloudflare
-    else
-        install_progress_begin "${CDN_PROFILE_KEY}" anytls
-    fi
+    install_progress_begin "${CDN_PROFILE_KEY}" "$(runtime_has_cdn_entry && printf 'cloudflare' || printf 'anytls')"
     snapshot_fresh_install
 
     install_progress_stage packages
@@ -802,12 +828,14 @@ install_all() {
     collect_anytls_install_inputs
     # 订阅模式到输入阶段才确定：deploy 才占用 8443，此刻补检仍在任何云端资源创建之前。
     anytls_assert_subscription_port_free
-    # 身份在创建任何云端资源前落盘（persist_install_identity），中断后可续装；
-    # 后面的第二次落盘只补 Origin Rule 的 ruleset/rule ID。
-    anytls_prepare_runtime
+    # 身份在创建任何云端资源前落盘，中断后可续装。Reality 的 keypair 依赖已下载的
+    # sing-box（generate reality-keypair），由 core 阶段的 cdn_prepare_direct_runtime
+    # 补齐并再次落盘；第二次落盘只补 Origin Rule 的 ruleset/rule ID。
+    persist_install_identity || die "无法落盘安装身份；在创建云端资源前停止安装"
     install_progress_stage core
     download_singbox
     download_caddy
+    cdn_prepare_direct_runtime
     install_progress_stage services
     cloudflare_collect_api_token
     persist_cloudflare_token
@@ -815,7 +843,7 @@ install_all() {
     anytls_ensure_zone_id
     if subscription_enabled; then
         cloudflare_ensure_zone_ssl_strict
-        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        if runtime_has_cdn_entry; then
             cloudflare_ensure_zone_websockets_on
         fi
     fi
@@ -828,6 +856,7 @@ install_all() {
     register_easy_all_command
     runtime_apply_runtime_services
     validate_protocol_runtime
+    cdn_validate_direct_runtime
     anytls_ensure_origin_rule
     persist_install_identity || die "无法落盘安装身份；已保留云端资源"
     install_progress_stage subscription

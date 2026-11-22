@@ -23,7 +23,7 @@ assert_not_contains() {
 source "${ROOT_DIR}/lib/state.sh"
 
 [[ "${EASY_ALL_STATE_SCHEMA_VERSION}" == "1" ]] || fail "schema 必须为 1"
-for protocol in anytls reality-self cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+for protocol in anytls reality-self reality-cloudflare cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     state_protocol_valid "${protocol}" || fail "协议应受支持：${protocol}"
 done
 for legacy in reality cdn combined ""; do
@@ -107,8 +107,39 @@ state_field_allows_empty reality-self deploy MIHOMO_TEMPLATE_SNAPSHOT 0 \
 state_field_allows_empty reality-self link SCHEDULED_REBOOT_HOUR 0 \
     || fail "模式 6 关闭定时重启时小时字段可为空"
 
+# 模式 7：Reality 直连 + 橙云（无 link 模式、无 AWS 字段）；订阅走 Origin Rule 而不是 CloudFront。
+state_protocol_valid reality-cloudflare || fail "reality-cloudflare 应受支持"
+state_protocol_has_direct_entry reality-cloudflare || fail "reality-cloudflare 占用直连入口 443"
+state_protocol_has_reality_entry reality-cloudflare || fail "reality-cloudflare 必须要求 Reality 凭据"
+state_protocol_has_anytls_entry reality-cloudflare && fail "reality-cloudflare 不得要求 AnyTLS 密码"
+state_protocol_has_cdn_entry reality-cloudflare || fail "reality-cloudflare 必须有 CDN 入口"
+state_protocol_uses_cloudfront reality-cloudflare && fail "reality-cloudflare 不走 CloudFront 链路"
+state_protocol_uses_origin_ca reality-cloudflare && fail "reality-cloudflare 不使用 Origin CA"
+state_protocol_has_subscription_site reality-cloudflare deploy \
+    || fail "reality-cloudflare deploy 有订阅站点"
+state_protocol_has_subscription_site reality-cloudflare link \
+    || fail "reality-cloudflare 没有 link 模式：订阅站点恒存在"
+fields=$(state_required_fields reality-cloudflare deploy)
+for required in DIRECT_DOMAIN DIRECT_NODE_NAME VLESS_UUID REALITY_PRIVATE_KEY \
+    REALITY_PUBLIC_KEY REALITY_SHORT_ID CF_NODE_DOMAIN CF_NODE_PREFIX VLESS_PATH \
+    CLOUDFLARE_ORIGIN_RULESET_ID CLOUDFLARE_ORIGIN_RULE_ID; do
+    grep -Fxq "${required}" <<<"${fields}" || fail "模式 7 deploy 需要 ${required}"
+done
+assert_absent "${fields}" SUBSCRIPTION_DOMAIN "模式 7 的订阅域名由节点域名派生，不落盘"
+assert_absent "${fields}" ANYTLS_PASSWORD "模式 7 不得要求 AnyTLS 密码"
+assert_absent "${fields}" ORIGIN_HEADER_SECRET "模式 7 不使用源站头密钥"
+assert_absent "${fields}" CF_ORIGIN_DOMAIN "模式 7 没有独立源站域名"
+assert_absent "${fields}" CDN_TRAFFIC_PROTECTION_GB "模式 7 没有 985GB 熔断"
+assert_absent "${fields}" AWS_CLOUDFRONT_DISTRIBUTION_ID "模式 7 不用 AWS"
+assert_absent "${fields}" AWS_ACM_CERTIFICATE_ARN "模式 7 不用 AWS"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 7 不使用 Origin CA"
+[[ "$(grep -Fxc VLESS_UUID <<<"${fields}")" == "1" ]] \
+    || fail "模式 7 的 VLESS_UUID 必须恰好出现一次"
+state_field_allows_empty reality-cloudflare deploy MIHOMO_TEMPLATE_SNAPSHOT 0 \
+    && fail "模式 7 恒发布订阅，模板快照必须落盘"
+
 # 字段集不得跨组重复：重复行会让 state_render 写出重复键，也让“缺失字段”判断错位。
-for protocol in anytls reality-self cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+for protocol in anytls reality-self reality-cloudflare cloudfront cloudflare combined-cloudfront combined-cloudflare; do
     for mode in deploy link; do
         duplicates=$(state_required_fields "${protocol}" "${mode}" | sort | uniq -d)
         [[ -z "${duplicates}" ]] || fail "${protocol}/${mode} 字段集有重复：${duplicates}"
@@ -336,6 +367,9 @@ MENU
 assert_contains "菜单 6 文案" "${install_menu_body}" \
     "6. Reality + CloudFront（自偷 Reality 直连伪装回落 + AWS CloudFront）"
 assert_contains "菜单 6 映射" "${install_menu_body}" "6) printf 'reality-self\\n'"
+assert_contains "菜单 7 文案" "${install_menu_body}" \
+    "7. Reality + CloudFlare（自偷 Reality 直连伪装回落 + Cloudflare 橙云）"
+assert_contains "菜单 7 映射" "${install_menu_body}" "7) printf 'reality-cloudflare\\n'"
 [[ $(printf '%s\n' "${install_menu_body}" | grep -n "  2\. 纯 CloudFlare" | cut -d: -f1) \
     -lt $(printf '%s\n' "${install_menu_body}" | grep -n "  4\. 纯 CloudFront" | cut -d: -f1) ]] \
     || fail "菜单编号顺序错误：2 应为纯 CloudFlare、4 应为纯 CloudFront"

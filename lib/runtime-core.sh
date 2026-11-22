@@ -303,7 +303,7 @@ subscription_link_domain() {
         caddy_require_host SUBSCRIPTION_DOMAIN
         ;;
     cloudfront | combined-cloudfront | reality-self) caddy_require_host SUBSCRIPTION_DOMAIN ;;
-    cloudflare | combined-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
+    cloudflare | combined-cloudflare | reality-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
@@ -314,6 +314,7 @@ runtime_protocol_label() {
     case "${PROTOCOL:-}" in
     anytls) printf 'AnyTLS（direct TCP 443）' ;;
     reality-self) printf 'Reality（direct TCP 443）+ VLESS WebSocket over AWS CloudFront' ;;
+    reality-cloudflare) printf 'Reality（direct TCP 443）+ VLESS WebSocket over Cloudflare 橙云' ;;
     cloudfront) printf 'VLESS WebSocket over AWS CloudFront' ;;
     cloudflare) printf 'VLESS WebSocket over Cloudflare 橙云' ;;
     combined-cloudfront) printf 'AnyTLS（direct TCP 443）+ VLESS WebSocket over AWS CloudFront' ;;
@@ -343,6 +344,7 @@ runtime_public_tcp_ports() {
     case "${PROTOCOL:-}" in
     anytls) printf '443' ;;
     reality-self) printf '443 8443' ;;
+    reality-cloudflare) printf '443' ;;
     cloudfront) printf '443' ;;
     cloudflare) printf '' ;;
     combined-cloudfront) printf '443 8443' ;;
@@ -357,7 +359,7 @@ runtime_cloudflare_only_port() {
     case "${PROTOCOL:-}" in
     cloudflare) printf '443' ;;
     anytls) subscription_enabled && printf '8443' ;;
-    combined-cloudflare) printf '8443' ;;
+    combined-cloudflare | reality-cloudflare) printf '8443' ;;
     esac
     return 0
 }
@@ -370,19 +372,19 @@ runtime_cdn_loopback_port() {
 runtime_caddy_site_enabled() {
     case "${PROTOCOL:-}" in
     anytls) subscription_enabled ;;
-    # 模式 6 的 Caddy 始终运行：它同时承担 127.0.0.1:9443 的 Reality 伪装站与
-    # 0.0.0.0:8443 的 CloudFront 源站（含订阅）。
-    reality-self) return 0 ;;
+    # 模式 6：Caddy 始终运行：它同时承担 127.0.0.1:9443 的 Reality 伪装站与
+    # 0.0.0.0:8443 的 CloudFront 源站（含订阅）；模式 7 同构（8443 橙云回源 + 9443 伪装站）。
+    reality-self | reality-cloudflare) return 0 ;;
     cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
 
-# 订阅站点是否启用：模式 6 与模式 5 同构，没有 link 模式，8443 订阅站点始终随之部署；
+# 订阅站点是否启用：模式 6/7 与模式 5 同构，没有 link 模式，8443 订阅站点始终随之部署；
 # 其余模式的订阅站点与 Caddy 站点重合。
 runtime_subscription_site_enabled() {
     case "${PROTOCOL:-}" in
-    reality-self) return 0 ;;
+    reality-self | reality-cloudflare) return 0 ;;
     esac
     runtime_caddy_site_enabled
 }
@@ -844,14 +846,14 @@ cdn_validate_state_structure() {
                 || die "状态中的订阅域名无效：${SUBSCRIPTION_DOMAIN}"
         fi
     fi
-    if [[ "${protocol}" == "combined-cloudflare" ]]; then
+    if [[ "${protocol}" == "combined-cloudflare" || "${protocol}" == "reality-cloudflare" ]]; then
         validate_domain "${CF_NODE_DOMAIN}" || die "状态中的节点域名无效：${CF_NODE_DOMAIN}"
         [[ "${CF_NODE_DOMAIN}" == *".${CF_ZONE}" ]] \
             || die "状态中的节点域名不属于 ${CF_ZONE}：${CF_NODE_DOMAIN}"
         [[ "${CF_NODE_DOMAIN}" != "${DIRECT_DOMAIN}" ]] \
             || die "状态中的节点域名不得等于直连域名：${CF_NODE_DOMAIN}"
         [[ "${SUBSCRIPTION_MODE}" == "deploy" ]] \
-            || die "状态中的订阅模式无效（模式 3 固定 deploy）：${SUBSCRIPTION_MODE}"
+            || die "状态中的订阅模式无效（模式 3/7 固定 deploy）：${SUBSCRIPTION_MODE}"
     fi
     cdn_derive_runtime_fields || die "状态缺少可用于派生运行时的字段"
 }
@@ -1028,8 +1030,8 @@ certificate_required_hosts() {
             fi
         elif state_protocol_uses_cloudfront "${PROTOCOL}"; then
             printf '%s\n' "${CF_ORIGIN_DOMAIN}"
-        elif [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
-            # 模式 3 的橙云节点域名同时是订阅站点：同一个 LE 证书覆盖直连与回源。
+        elif [[ "${PROTOCOL}" == "combined-cloudflare" || "${PROTOCOL}" == "reality-cloudflare" ]]; then
+            # 模式 3/7 的橙云节点域名同时是订阅站点：同一个 LE 证书覆盖直连与回源。
             printf '%s\n' "${CF_NODE_DOMAIN}"
         fi
     } | sort -u

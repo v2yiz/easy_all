@@ -256,7 +256,7 @@ assert.match(hellogfwExtraHelp.stderr, /hellogfw 不支持参数：--help/);
 const hellogfwModeGate = run(['hellogfw'], stateEnv);
 assert.notEqual(hellogfwModeGate.status, 0);
 assert.match(hellogfwModeGate.stderr,
-  /hellogfw 仅支持含直连 443 的模式（anytls \/ combined-cloudflare \/ combined-cloudfront \/ reality-self）/);
+  /hellogfw 仅支持含直连 443 的模式（anytls \/ combined-cloudflare \/ combined-cloudfront \/ reality-self \/ reality-cloudflare）/);
 assert.doesNotMatch(hellogfwModeGate.stderr, /请使用 root 用户运行此脚本/,
   '模式门禁必须先于 root 门禁给出可操作的拒绝理由');
 
@@ -399,6 +399,65 @@ assert.match(run(['status'], { EASY_ALL_STATE_FILE_OVERRIDE: legacyRealityFile }
   /已删除的旧协议/,
   '旧的 PROTOCOL=reality 必须继续被拒绝，不得被 reality-self 兼容掉');
 
+// 6bd. 模式 7（Reality + CloudFlare）：橙云回源字段集，无 AWS/源站头；命令面进实现。
+function realityCfState() {
+  return [
+    'STATE_VERSION=1',
+    'PROTOCOL=reality-cloudflare',
+    'TCP_ACCELERATION=off',
+    'VPS_PUBLIC_IPV4=203.0.113.10',
+    'CF_ZONE=example.com',
+    'CLOUDFLARE_ZONE_ID=zoneid',
+    'SUBSCRIPTION_MODE=deploy',
+    'SUB_DOWNLOAD_NAME=EASY_ALL',
+    'OWNER_TOKEN=token-abcdefgh',
+    'ALLOWED_TOKENS=\\{\"owner\":\"token-abcdefgh\"\\}',
+    'SUBSCRIPTION_CONFIG=\\{\"allowedTokens\":\{\"owner\":\"token-abcdefgh\"\\}\\,\"nodes\":\\[\\]\\}',
+    'MIHOMO_TEMPLATE_SNAPSHOT=1',
+    'SCHEDULED_REBOOT_ENABLED=0',
+    'SCHEDULED_REBOOT_HOUR=4',
+    'DIRECT_DOMAIN=direct.example.com',
+    'DIRECT_NODE_NAME=Reality',
+    'VLESS_UUID=11111111-2222-4333-8444-555555555555',
+    `REALITY_PRIVATE_KEY=${realityKeys.private}`,
+    `REALITY_PUBLIC_KEY=${realityKeys.public}`,
+    'REALITY_SHORT_ID=0123456789abcdef',
+    'CF_NODE_DOMAIN=cf.example.com',
+    'CF_NODE_PREFIX=CF',
+    'VLESS_PATH=/vless-0123456789ab',
+    'CLOUDFLARE_ORIGIN_RULESET_ID=rs1',
+    'CLOUDFLARE_ORIGIN_RULE_ID=rule1',
+  ];
+}
+const realityCfFile = join(tmp, 'state-reality-cloudflare.env');
+writeFileSync(realityCfFile, realityCfState().join('\n') + '\n');
+const realityCfEnv = { EASY_ALL_STATE_FILE_OVERRIDE: realityCfFile };
+const realityCfMode = sourceLauncher('detect_installed_mode', realityCfEnv);
+assert.equal(realityCfMode.stdout.trim(), 'reality-cloudflare', realityCfMode.stderr);
+for (const command of ['apply-cloud', 'renew-cert']) {
+  const res = run([command], realityCfEnv);
+  assert.notEqual(res.status, 0, `${command} 在模式 7 的非 root 调用必须非零`);
+  assert.match(res.stderr, /请使用 root 用户运行此脚本/,
+    `${command} 在模式 7 应进入实现（root 门禁），而不是被路由拒绝`);
+}
+const realityCfSync = run(['cdn-traffic-sync'], realityCfEnv);
+assert.notEqual(realityCfSync.status, 0);
+assert.match(realityCfSync.stderr, /cdn-traffic-sync 仅适用于 CloudFront 模式/,
+  '模式 7 没有 CloudFront 计量，必须被 cdn-traffic-sync 拒绝');
+const incompleteRealityCfFile = join(tmp, 'state-reality-cloudflare-incomplete.env');
+writeFileSync(incompleteRealityCfFile,
+  realityCfState().filter((line) => !line.startsWith('REALITY_SHORT_ID=')).join('\n') + '\n');
+const incompleteRealityCf = sourceLauncher('detect_installed_mode', {
+  EASY_ALL_STATE_FILE_OVERRIDE: incompleteRealityCfFile,
+});
+assert.equal(incompleteRealityCf.stdout.trim(), 'incomplete-reality-cloudflare',
+  incompleteRealityCf.stderr);
+const realityCfIncompleteStatus = run(['status'], {
+  EASY_ALL_STATE_FILE_OVERRIDE: incompleteRealityCfFile,
+});
+assert.notEqual(realityCfIncompleteStatus.status, 0);
+assert.match(realityCfIncompleteStatus.stderr, /只能先执行 sudo easy_all uninstall/);
+
 // 6c. 已安装（schema 1）情况下，旧 marker 同样必须在代码覆盖前拒绝 register/self-update。
 const installedLegacyMarker = 'PROFILE=combined\nSTAGE=services\nSTARTED_AT=T2\n';
 writeFileSync(markerFile, installedLegacyMarker);
@@ -454,9 +513,9 @@ const currentMarker = sourceLauncher('launcher_marker_schema_gate 1', markerEnv)
 assert.equal(currentMarker.status, 0, currentMarker.stderr);
 assert.doesNotMatch(currentMarker.stderr, /旧版本/);
 
-process.stdout.write('ok - CLI 门禁与五模式入口测试通过\n');
+process.stdout.write('ok - CLI 门禁与七模式入口测试通过\n');
 
-// 8. hellogfw 的直连模式路由：1/3/5/6 进入实现后命中 root 门禁，2 被模式门禁拒绝。
+// 8. hellogfw 的直连模式路由：1/3/5/6/7 进入实现后命中 root 门禁，2 被模式门禁拒绝。
 // 不走完整 launcher 是因为这里只需要验证 dispatch_profile_command 的路由分支；
 // 真实 launcher 的 help 与参数门禁已在上文验证。
 function dispatchHellogfw(profile) {
@@ -469,8 +528,9 @@ function dispatchHellogfw(profile) {
 const cloudflareRoute = dispatchHellogfw('cloudflare');
 assert.notEqual(cloudflareRoute.status, 0);
 assert.match(cloudflareRoute.stderr,
-  /hellogfw 仅支持含直连 443 的模式（anytls \/ combined-cloudflare \/ combined-cloudfront \/ reality-self）/);
-for (const profile of ['anytls', 'combined-cloudflare', 'combined-cloudfront', 'reality-self']) {
+  /hellogfw 仅支持含直连 443 的模式（anytls \/ combined-cloudflare \/ combined-cloudfront \/ reality-self \/ reality-cloudflare）/);
+for (const profile of ['anytls', 'combined-cloudflare', 'combined-cloudfront', 'reality-self',
+  'reality-cloudflare']) {
   if (process.getuid() !== 0) {
     const res = dispatchHellogfw(profile);
     assert.notEqual(res.status, 0, `${profile} 的非 help 调用必须非零`);

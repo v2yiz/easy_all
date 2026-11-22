@@ -69,7 +69,7 @@ read_confirmation() {
 }
 
 # --- CDN 优选连接地址（cdnEdgeAddress）的安装交互 -------------------------------
-# 模式 4/5/6 拼 CloudFront 泛域名后缀，模式 2/3 拼 Cloudflare 泛域名后缀（由 WeTest 公布并解析）。
+# 模式 4/5/6 拼 CloudFront 泛域名后缀，模式 2/3/7 拼 Cloudflare 泛域名后缀（由 WeTest 公布并解析）。
 CDN_EDGE_CLOUDFRONT_SUFFIX="cloudfront.182682.xyz"
 CDN_EDGE_CLOUDFLARE_SUFFIX="cloudflare.182682.xyz"
 # 安装时生成的优选地址形态：10 位前缀 + 当前模式的泛域名后缀（首位字母，后九位字母或数字）。
@@ -80,7 +80,7 @@ CDN_EDGE_ALNUM="0123456789abcdefghijklmnopqrstuvwxyz"
 cdn_edge_mode_suffix() {
     case "${PROTOCOL:-}" in
     cloudfront | combined-cloudfront | reality-self) printf '%s' "${CDN_EDGE_CLOUDFRONT_SUFFIX}" ;;
-    cloudflare | combined-cloudflare) printf '%s' "${CDN_EDGE_CLOUDFLARE_SUFFIX}" ;;
+    cloudflare | combined-cloudflare | reality-cloudflare) printf '%s' "${CDN_EDGE_CLOUDFLARE_SUFFIX}" ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
@@ -584,6 +584,7 @@ profile_script_for() {
     case "${1:-}" in
     anytls) printf 'anytls.sh' ;;
     reality-self) printf 'reality-self.sh' ;;
+    reality-cloudflare) printf 'reality-cloudflare.sh' ;;
     cloudfront) printf 'cloudfront.sh' ;;
     cloudflare) printf 'cloudflare.sh' ;;
     combined-cloudfront) printf 'combined.sh' ;;
@@ -820,10 +821,11 @@ install_marker_chain_matches() {
     local current=$1 expected
     case "${current}" in
     anytls) expected=anytls ;;
-    # 模式 6 与模式 4/5 共用 cloudfront 链路（计量/启动门禁与持久阻断都按链判定）。
+    # 模式 6 与模式 4/5 共用 cloudfront 链路（计量/启动门禁与持久阻断都按链判定）；
+    # 模式 7 与模式 3 共用 cloudflare 链路（橙云回源与 Origin Rule）。
     reality-self) expected=cloudfront ;;
     cloudfront | combined-cloudfront) expected=cloudfront ;;
-    cloudflare | combined-cloudflare) expected=cloudflare ;;
+    cloudflare | combined-cloudflare | reality-cloudflare) expected=cloudflare ;;
     *) return 1 ;;
     esac
     [[ "$(install_progress_field CHAIN 2>/dev/null || true)" == "${expected}" ]]

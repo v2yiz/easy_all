@@ -178,7 +178,7 @@ collect_cloudfront_domain_inputs() {
     else
         CF_ORIGIN_DOMAIN=$(normalize_domain "$(prompt_value '源站域名（解析至 VPS，灰云直连）' "${CF_ORIGIN_DOMAIN:-origin.${CF_ZONE}}")")
     fi
-    CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value 'CloudFront 节点域名（CNAME 指向分发，灰云）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
+    CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value 'CloudFront 节点域名（CNAME 指向分发，灰云，同时提供节点与订阅）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
     # 同理：续装沿用旧身份里的独立订阅域名，其余情况固定复用节点域名。
     [[ "${INSTALL_RESUME:-0}" == "1" && -n "${SUBSCRIPTION_DOMAIN:-}" ]] \
         || SUBSCRIPTION_DOMAIN=${CF_NODE_DOMAIN}

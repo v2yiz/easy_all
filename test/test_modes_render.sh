@@ -342,4 +342,38 @@ assert_not_contains "模式 6 Mihomo 不写 PQ 开关" "${out}/nodes.yaml" 'supp
 assert_equal "模式 6 PROXY 成员是 Reality + CDN" \
     $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
 
-printf 'ok - 六模式渲染测试通过\n'
+# --- 模式 7：Reality 443 + 橙云回源/订阅 8443 + 回环伪装站 9443 ----------------
+out="${TMP_DIR}/reality-cloudflare"
+render_mode reality-cloudflare "${out}"
+assert_contains "模式 7 Reality 入站" "${out}/config.json" '"tag": "vless-reality-in"'
+assert_contains "模式 7 Reality 端口 443" "${out}/config.json" '"listen_port": 443'
+assert_contains "模式 7 启用 vision 流控" "${out}/config.json" '"flow": "xtls-rprx-vision"'
+assert_contains "模式 7 握手目标回环 9443" "${out}/config.json" '"server_port": 9443'
+assert_contains "模式 7 保留回环 CDN 入站" "${out}/config.json" '"tag": "vless-cdn-in"'
+assert_not_contains "模式 7 没有 AnyTLS 入站" "${out}/config.json" 'anytls-in'
+assert_contains "模式 7 伪装站 9443" "${out}/Caddyfile" 'https://direct.example.com:9443 {'
+assert_contains "模式 7 橙云回源站点 8443" "${out}/Caddyfile" 'https://cf.example.com:8443 {'
+assert_not_contains "模式 7 回源站点无源站头守卫" "${out}/Caddyfile" 'abort @easy_all_bad_origin'
+assert_contains "模式 7 回源站点反代回环" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
+assert_contains "模式 7 订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
+camo_block=$(awk '/^https:\/\/[^[:space:]]+:9443 \{$/{inside=1;next} inside&&/^\}$/{exit} inside' "${out}/Caddyfile")
+[[ -n "${camo_block}" ]] || fail "模式 7 缺少 9443 伪装站块"
+grep -Fq 'bind 127.0.0.1' <<<"${camo_block}" || fail "模式 7 伪装站必须只绑回环"
+grep -Fq 'handle @easy_all_camo_page {' <<<"${camo_block}" \
+    || fail "模式 7 伪装站缺少登录页"
+if grep -Fq '@easy_all_health' <<<"${camo_block}"; then
+    fail "模式 7 伪装站不得暴露 health"
+fi
+if grep -Fq '@easy_all_sub' <<<"${camo_block}"; then
+    fail "模式 7 伪装站不得暴露订阅入口"
+fi
+assert_contains "模式 7 节点是 Reality" "${out}/links.txt" 'security=reality'
+assert_contains "模式 7 节点含 VLESS ws" "${out}/links.txt" 'type=ws'
+assert_not_contains "模式 7 节点不是 AnyTLS" "${out}/links.txt" 'anytls://'
+assert_contains "模式 7 Mihomo reality-opts" "${out}/nodes.yaml" 'reality-opts:'
+assert_contains "模式 7 Mihomo ws 节点" "${out}/nodes.yaml" 'network: ws'
+assert_not_contains "模式 7 不带 AnyTLS 节点" "${out}/nodes.yaml" 'type: anytls'
+assert_equal "模式 7 PROXY 成员是 Reality + 橙云" \
+    $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
+
+printf 'ok - 七模式渲染测试通过\n'

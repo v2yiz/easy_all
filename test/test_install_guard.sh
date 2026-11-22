@@ -285,9 +285,10 @@ install_progress_clear
 [[ ! -d "$(dirname "${EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE}")" ]] \
     || fail "clearing the marker removes the empty directory"
 
-# 6b. 标记链路身份：五种模式各自接受同链路标记，其他链路一律拒绝
+# 6b. 标记链路身份：七种模式各自接受同链路标记，其他链路一律拒绝
 # （回归：模式 1 的 anytls 链被漏掉，中断后续装总被要求清理重装）。
-# 模式 6 与模式 4/5 共用 cloudfront 链（计量/启动门禁与持久阻断都按链判定）。
+# 模式 6 与模式 4/5 共用 cloudfront 链（计量/启动门禁与持久阻断都按链判定）；
+# 模式 7 与模式 3 共用 cloudflare 链（橙云回源与 Origin Rule）。
 while read -r marker_profile marker_chain; do
     install_progress_begin "${marker_profile}" "${marker_chain}"
     install_marker_chain_matches "${marker_profile}" \
@@ -295,6 +296,7 @@ while read -r marker_profile marker_chain; do
 done <<'MARKER_CASES'
 anytls anytls
 reality-self cloudfront
+reality-cloudflare cloudflare
 cloudfront cloudfront
 combined-cloudfront cloudfront
 cloudflare cloudflare
@@ -654,6 +656,8 @@ rm -rf -- "${EASY_ALL_GUARD_STATE_DIR}"
 # 13. 跨模式清理：profile 映射齐全，未知模式拒绝猜测
 assert_equal "anytls maps to its profile" "anytls.sh" "$(profile_script_for anytls)"
 assert_equal "reality-self maps to its profile" "reality-self.sh" "$(profile_script_for reality-self)"
+assert_equal "reality-cloudflare maps to its profile" "reality-cloudflare.sh" \
+    "$(profile_script_for reality-cloudflare)"
 assert_equal "cloudfront maps to its profile" "cloudfront.sh" "$(profile_script_for cloudfront)"
 assert_equal "cloudflare maps to its profile" "cloudflare.sh" "$(profile_script_for cloudflare)"
 assert_equal "combined-cloudfront maps to its profile" "combined.sh" \
@@ -664,6 +668,8 @@ assert_equal "unknown mode is rejected" "1" \
     "$(profile_script_for nope >/dev/null 2>&1 && echo 0 || echo 1)"
 assert_equal "reality-self 清理脚本存在" "1" \
     "$([[ -f "${ROOT_DIR}/profiles/$(profile_script_for reality-self)" ]] && echo 1 || echo 0)"
+assert_equal "reality-cloudflare 清理脚本存在" "1" \
+    "$([[ -f "${ROOT_DIR}/profiles/$(profile_script_for reality-cloudflare)" ]] && echo 1 || echo 0)"
 output=$(capture run_recorded_profile_cleanup nope || true)
 assert_contains "unknown recorded mode is explained" "${output}" "无法识别上次安装的模式"
 
@@ -1549,6 +1555,9 @@ legacy_route=$(bash -c '
     done
     printf "combined-cloudfront=%s\n" "$(basename "$(profile_file combined-cloudfront)")"
     printf "combined-cloudflare=%s\n" "$(basename "$(profile_file combined-cloudflare)")"
+    printf "reality-cloudflare=%s\n" "$(basename "$(profile_file reality-cloudflare)")"
+    printf "incomplete-reality-cloudflare=%s\n" \
+        "$(basename "$(profile_file incomplete-reality-cloudflare)")"
 ' _ "${ROOT_DIR}/easy_all" 2>&1)
 for legacy in cdn combined reality; do
     assert_contains "旧模式 ${legacy} 不加载 Profile" "${legacy_route}" "${legacy}=rejected"
@@ -1556,6 +1565,10 @@ done
 assert_contains "模式 5 路由到 combined.sh" "${legacy_route}" "combined-cloudfront=combined.sh"
 assert_contains "模式 3 路由到 combined-cloudflare.sh" "${legacy_route}" \
     "combined-cloudflare=combined-cloudflare.sh"
+assert_contains "模式 7 路由到 reality-cloudflare.sh" "${legacy_route}" \
+    "reality-cloudflare=reality-cloudflare.sh"
+assert_contains "模式 7 不完整状态路由到 reality-cloudflare.sh" "${legacy_route}" \
+    "incomplete-reality-cloudflare=reality-cloudflare.sh"
 [[ ! -e "${ROOT_DIR}/profiles/cdn.sh" ]] || fail "旧 profiles/cdn.sh 必须已删除"
 
 # 新链路清理删除自有 certbot lineage，且不调用云端 API
@@ -2825,6 +2838,7 @@ bash "${reality_work}/run.sh" "${ROOT_DIR}" "${reality_work}" >"${reality_work}/
 # 41. runtime.manifest ↔ profiles/ 双向一致（缺失项会让 verify-release 或自更新失效）
 manifest_file="${ROOT_DIR}/runtime.manifest"
 grep -Fxq 'profiles/reality-self.sh' "${manifest_file}" || fail "manifest 缺少模式 6 Profile"
+grep -Fxq 'profiles/reality-cloudflare.sh' "${manifest_file}" || fail "manifest 缺少模式 7 Profile"
 grep -Fxq 'templates/camouflage-login.html' "${manifest_file}" \
     || fail "manifest 缺少伪装站页面模板"
 while IFS= read -r relative_path; do
@@ -2928,6 +2942,104 @@ assert_equal "模式 6 订阅域名复用节点域名" "yes" \
     "$(uninstall_entry_value "${reality_install_all_output}" SUBDOMAIN_EQ_NODE)"
 grep -Fxq 'ANYTLS_PASSWORD_SET=' <<<"${reality_install_all_output}" \
     || fail "模式 6 的输入阶段不得生成 AnyTLS 密码"
+
+# 42b. 模式 7 从 install_all 入口走到 services 阶段：身份先于核心下载、
+# 橙云链路标记、Reality 不生成 AnyTLS 密码（design v2 §2.9）。
+run_reality_cf_install_all_case() {
+    local case_dir="${TMP_DIR}/reality-cloudflare-install-all"
+    rm -rf -- "${case_dir}"
+    mkdir -p "${case_dir}"
+    EASY_ALL_GUARD_STATE_DIR="${case_dir}/state" \
+    EASY_ALL_GUARD_STATE_FILE="${case_dir}/state/state.env" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/subscriptions" \
+    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${case_dir}/progress/install-progress.env" \
+    CAMOUFLAGE_DIR="${case_dir}/camouflage" \
+    RUNTIME_TMP="${case_dir}/runtime" \
+        bash -c '
+            set -Eeuo pipefail
+            # shellcheck source=/dev/null
+            source "$1/profiles/reality-cloudflare.sh"
+            require_root() { :; }
+            acquire_runtime_write_lock() { :; }
+            require_systemd() { :; }
+            check_platform() { :; }
+            report_host_init_state() { :; }
+            ensure_swap() { :; }
+            install_failure_begin() { :; }
+            install_progress_begin() { printf "PROGRESS-BEGIN: %s %s\n" "$1" "$2"; }
+            prepare_fresh_install() { printf "PRECHECK:%s|%s|%s|%s\n" "$1" "${2:-}" "${3:-}" "${4:-}"; }
+            snapshot_fresh_install() { :; }
+            install_packages() { :; }
+            install_certbot_deploy_hook() { :; }
+            choose_tcp_acceleration() { :; }
+            configure_tcp_acceleration() { :; }
+            configure_daily_reboot() { :; }
+            configure_ipv4_only() { :; }
+            prompt_value() { printf "%s\n" "$2"; }
+            cloudflare_collect_api_token() { :; }
+            collect_cdn_edge_address() { :; }
+            apply_cdn_edge_prefix() { :; }
+            choose_subscription_config() {
+                printf %s "{\"allowedTokens\":{\"owner\":\"token-abcdefgh\"},\"nodes\":[]}"
+            }
+            cdn_apply_subscription_config() { :; }
+            cdn_validate_install_owner_token() { :; }
+            detect_public_ipv4() { printf %s "203.0.113.10"; }
+            persist_install_identity() {
+                printf "IDENTITY-PERSIST:keypair=%s anytls=%s\n" \
+                    "${REALITY_PRIVATE_KEY:+set}" "${ANYTLS_PASSWORD:+set}"
+            }
+            download_singbox() { printf "DOWNLOAD-SINGBOX\n"; }
+            download_caddy() { printf "DOWNLOAD-CADDY\n"; }
+            reality_prepare_runtime() {
+                printf "PREPARE-DIRECT:identity=%s\n" \
+                    "$([[ -n "${DIRECT_DOMAIN:-}" && -n "${VLESS_UUID:-}" && -n "${REALITY_SHORT_ID:-}" ]] && echo ok || echo missing)"
+            }
+            install_progress_stage() {
+                printf "STAGE:%s\n" "$1"
+                if [[ "$1" == "services" ]]; then
+                    printf "UUID=%s\n" "${VLESS_UUID:-}"
+                    printf "SHORT_ID=%s\n" "${REALITY_SHORT_ID:-}"
+                    printf "PRIVATE_KEY=%s\n" "${REALITY_PRIVATE_KEY:-}"
+                    printf "ANYTLS_PASSWORD_SET=%s\n" "${ANYTLS_PASSWORD:+yes}"
+                    printf "SUBSCRIPTION_MODE=%s\n" "${SUBSCRIPTION_MODE:-}"
+                    printf "SUBDOMAIN_EQ_NODE=%s\n" \
+                        "$([[ "${SUBSCRIPTION_DOMAIN:-}" == "${CF_NODE_DOMAIN:-}" ]] && echo yes || echo no)"
+                    exit 0
+                fi
+            }
+            CF_ZONE=example.com
+            install_all_definition=$(declare -f install_all | grep -v "^    \[\[ -t 0 \]\]")
+            eval "${install_all_definition}"
+            install_all
+        ' _ "${ROOT_DIR}" 2>&1
+}
+reality_cf_install_all_output=$(run_reality_cf_install_all_case)
+assert_contains "模式 7 安装写橙云链路标记" "${reality_cf_install_all_output}" \
+    "PROGRESS-BEGIN: reality-cloudflare cloudflare"
+assert_equal "模式 7 首轮端口预检覆盖 443/8443/10086/9443" \
+    "PRECHECK:443|8443|10086|9443" \
+    "$(grep -F 'PRECHECK:' <<<"${reality_cf_install_all_output}" || true)"
+reality_cf_uuid=$(uninstall_entry_value "${reality_cf_install_all_output}" UUID)
+[[ "${reality_cf_uuid}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]] \
+    || fail "模式 7 输入阶段必须生成 v4 VLESS_UUID：${reality_cf_uuid:-空}"
+reality_cf_sid=$(uninstall_entry_value "${reality_cf_install_all_output}" SHORT_ID)
+[[ "${reality_cf_sid}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
+    || fail "模式 7 输入阶段必须生成 Reality short_id：${reality_cf_sid:-空}"
+assert_equal "模式 7 输入阶段不生成 keypair（依赖已下载核心）" "" \
+    "$(uninstall_entry_value "${reality_cf_install_all_output}" PRIVATE_KEY)"
+assert_equal "模式 7 订阅恒为 deploy" "deploy" \
+    "$(uninstall_entry_value "${reality_cf_install_all_output}" SUBSCRIPTION_MODE)"
+assert_equal "模式 7 订阅域名复用节点域名" "yes" \
+    "$(uninstall_entry_value "${reality_cf_install_all_output}" SUBDOMAIN_EQ_NODE)"
+grep -Fxq 'ANYTLS_PASSWORD_SET=' <<<"${reality_cf_install_all_output}" \
+    || fail "模式 7 的输入阶段与身份落盘都不得生成 AnyTLS 密码"
+# 身份落盘必须先于核心下载；keypair 在核心下载后的 cdn_prepare_direct_runtime 才生成。
+reality_cf_sequence=$(grep -E '^(STAGE:|IDENTITY-PERSIST|DOWNLOAD-|PREPARE-DIRECT)' \
+    <<<"${reality_cf_install_all_output}")
+assert_contains "模式 7 身份先于核心下载落盘" "${reality_cf_sequence}" \
+    $'STAGE:inputs\nIDENTITY-PERSIST:keypair= anytls=\nSTAGE:core\nDOWNLOAD-SINGBOX\nDOWNLOAD-CADDY\nPREPARE-DIRECT:identity=ok\nSTAGE:services'
 
 # 43. 模式 6 的 985GB 熔断启动链：只接受 cloudfront 链，且持久阻断必须拒绝启动。
 boot_work="${TMP_DIR}/reality-boot"

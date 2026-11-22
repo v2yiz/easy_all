@@ -485,6 +485,7 @@ assert_no_unstubbed "${dup_case}"
 # --- 3. 模式矩阵 -------------------------------------------------------------
 for spec in "mode1:anytls.sh:probe_log_enable_and_replay" \
     "mode3:combined-cloudflare.sh:probe_log_enable_and_replay" \
+    "mode7:reality-cloudflare.sh:probe_log_enable_and_replay" \
     "mode5:combined.sh:cloudfront_probe_log_sync" \
     "mode6:reality-self.sh:cloudfront_probe_log_sync"; do
     name=${spec%%:*}

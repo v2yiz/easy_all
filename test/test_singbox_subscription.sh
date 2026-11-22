@@ -399,6 +399,7 @@ while IFS='|' read -r profile expected_default has_direct; do
 done <<'PROFILES'
 anytls|🇺🇸直连|yes
 reality-self|🇺🇸直连|yes
+reality-cloudflare|🇺🇸直连|yes
 cloudfront|🇺🇸CF|no
 cloudflare|🇺🇸CF|no
 combined|🇺🇸直连|yes
@@ -431,6 +432,34 @@ assert_equal "模式 6 不生成 AnyTLS 节点" "0" \
     "$(jq -r '[.outbounds[] | select(.type == "anytls")] | length' "${reality_json}")"
 assert_equal "模式 6 PROXY 默认选择 Reality 节点" '"🇺🇸直连"' \
     "$(jq -c '.outbounds[] | select(.tag == "PROXY") | .default' "${reality_json}")"
+
+# --- 模式 7：Reality + CloudFlare 双本地节点进入 JSON 订阅 -------------------
+reality_cf_out="${TMP_DIR}/reality-cloudflare"
+render_mode reality-cloudflare "${reality_cf_out}" >"${reality_cf_out}.log" 2>&1 || {
+    cat "${reality_cf_out}.log" >&2
+    fail "模式 7 订阅渲染失败"
+}
+reality_cf_json="${reality_cf_out}/subs/singbox.json"
+assert_equal "模式 7 本机 Reality 节点字段" \
+    "vless direct.example.com 443 ${VLESS_UUID} xtls-rprx-vision direct.example.com ${REALITY_PBK} ${REALITY_SID} chrome xudp" \
+    "$(jq -r '.outbounds[] | select(.tag == "🇺🇸直连") |
+        "\(.type) \(.server) \(.server_port) \(.uuid) \(.flow) \(.tls.server_name) \(.tls.reality.public_key) \(.tls.reality.short_id) \(.tls.utls.fingerprint) \(.packet_encoding)"' "${reality_cf_json}")"
+assert_equal "模式 7 本机橙云节点字段" \
+    "vless cf.example.com 443 ${VLESS_UUID} ws cf.example.com ${VLESS_PATH} xudp" \
+    "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
+        "\(.type) \(.server) \(.server_port) \(.uuid) \(.transport.type) \(.tls.server_name) \(.transport.path) \(.packet_encoding)"' "${reality_cf_json}")"
+assert_equal "模式 7 两个本机节点按 Reality → 橙云 顺序" \
+    '["🇺🇸直连","🇺🇸CF"]' \
+    "$(jq -c '[.outbounds[] | select(.tag == "🇺🇸直连" or .tag == "🇺🇸CF") | .tag]' "${reality_cf_json}")"
+assert_not_contains "模式 7 订阅不泄私钥" "$(<"${reality_cf_json}")" "${REALITY_PRIV}"
+assert_equal "模式 7 不生成 AnyTLS 节点" "0" \
+    "$(jq -r '[.outbounds[] | select(.type == "anytls")] | length' "${reality_cf_json}")"
+assert_equal "模式 7 PROXY 默认选择 Reality 节点" '"🇺🇸直连"' \
+    "$(jq -c '.outbounds[] | select(.tag == "PROXY") | .default' "${reality_cf_json}")"
+assert_not_contains "模式 7 Mihomo 不含 anytls 节点" "$(<"${reality_cf_out}/subs/mihomo.yaml")" "type: anytls"
+reality_cf_b64=$(openssl base64 -d -A <<<"$(<"${reality_cf_out}/subs/base64.txt")")
+assert_contains "模式 7 Base64 同时含 Reality 与 ws" "${reality_cf_b64}" "security=reality"
+assert_contains "模式 7 Base64 含橙云 ws 节点" "${reality_cf_b64}" "type=ws"
 
 # --- 候选校验拒绝错误配置 -----------------------------------------------------
 validate_with_lib() {

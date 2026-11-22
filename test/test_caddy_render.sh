@@ -457,6 +457,69 @@ EXTRA
     exit 0
 ) || fail "Reality 结构校验行为不符合预期"
 
+# --- 模式 7：Reality 伪装站 + 橙云回源站点（design §2.3、§5） ------------------
+# 与模式 6 同构的 9443 伪装站；8443 站点主机是橙云节点域名，且没有源站头守卫。
+render_reality_cf_caddy() { # $1=文件 [$2=blocked] [$3=subscription_ok]
+    ( PROTOCOL=reality-cloudflare render_caddy_config "$1" "${2:-0}" "${3:-1}" ) \
+        || fail "模式 7 渲染失败：${1##*/}"
+}
+reality_cf_ready_file="${TMP_DIR}/Caddyfile-reality-cloudflare-ready"
+reality_cf_blocked_file="${TMP_DIR}/Caddyfile-reality-cloudflare-blocked"
+reality_cf_unready_file="${TMP_DIR}/Caddyfile-reality-cloudflare-unready"
+render_reality_cf_caddy "${reality_cf_ready_file}" 0 1
+render_reality_cf_caddy "${reality_cf_blocked_file}" 1 1
+render_reality_cf_caddy "${reality_cf_unready_file}" 0 0
+reality_cf_ready=$(<"${reality_cf_ready_file}")
+reality_cf_camo=$(caddy_site_block_lines "${reality_cf_ready_file}" 9443)
+reality_cf_origin=$(caddy_site_block_lines "${reality_cf_ready_file}" 8443)
+
+assert_equal "模式 7 站点主机/端口是橙云节点域名 8443" "cf.example.com 8443" \
+    "$( PROTOCOL=reality-cloudflare SUBSCRIPTION_MODE=link
+        printf '%s %s' "$(caddy_site_host)" "$(caddy_site_port)" )"
+assert_equal "模式 7 只渲染两个顶层站点块" "2" \
+    "$(grep -Ec '^https://[^[:space:]]+:[0-9]+ \{$' <<<"${reality_cf_ready}")"
+assert_contains "模式 7 伪装站 9443" "${reality_cf_ready}" "https://direct.example.com:9443 {"
+assert_contains "模式 7 伪装站只绑回环" "${reality_cf_camo}" "bind 127.0.0.1"
+assert_not_contains "模式 7 伪装站无订阅入口" "${reality_cf_camo}" "@easy_all_sub"
+assert_not_contains "模式 7 伪装站无 health" "${reality_cf_camo}" "/easy_all-health"
+assert_not_contains "模式 7 伪装站无源站守卫" "${reality_cf_camo}" "@easy_all_bad_origin"
+assert_contains "模式 7 回源站点 8443" "${reality_cf_ready}" "https://cf.example.com:8443 {"
+assert_contains "模式 7 回源站点只绑公网" "${reality_cf_origin}" "bind 0.0.0.0"
+assert_not_contains "模式 7 回源站点没有源站头守卫" "${reality_cf_origin}" "@easy_all_bad_origin"
+assert_not_contains "模式 7 回源站点不引用源站头" "${reality_cf_origin}" "X-Easy-All-Origin-Key"
+assert_contains "模式 7 精确代理路径" "${reality_cf_origin}" "handle /vless-abcdef123456 {"
+assert_contains "模式 7 反代回环 10086" "${reality_cf_origin}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "模式 7 订阅入口" "${reality_cf_origin}" "@easy_all_sub path /subscribe /sub"
+assert_contains "模式 7 health" "${reality_cf_origin}" \
+    'respond @easy_all_health "easy_all ok" 200'
+assert_count "模式 7 两站点各一处 file_server" "${reality_cf_ready}" "file_server" 2
+blocked_cf_origin=$(caddy_site_block_lines "${reality_cf_blocked_file}" 8443)
+assert_contains "模式 7 blocked 代理路径 503" "${blocked_cf_origin}" "respond 503"
+assert_not_contains "模式 7 blocked 不反代回环" "${blocked_cf_origin}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "模式 7 blocked 保留 9443 伪装站" "$(<"${reality_cf_blocked_file}")" \
+    "https://direct.example.com:9443 {"
+unready_cf_origin=$(caddy_site_block_lines "${reality_cf_unready_file}" 8443)
+assert_contains "模式 7 订阅未就绪时 503" "${unready_cf_origin}" "respond 503"
+assert_not_contains "模式 7 订阅未就绪时订阅站不挂 file_server" "${unready_cf_origin}" "file_server"
+
+(
+    CADDY_BIN=${TMP_DIR}/absent/caddy
+    PROTOCOL=reality-cloudflare
+    validate_caddy_config "${reality_cf_ready_file}" || exit 1
+    validate_caddy_config "${reality_cf_blocked_file}" || exit 1
+    validate_caddy_config "${reality_cf_unready_file}" || exit 1
+    # 负例：回源站点缺少精确订阅入口 / health。
+    sed '/@easy_all_sub path /d' "${reality_cf_ready_file}" >"${TMP_DIR}/reality-cf-no-sub"
+    validate_caddy_config "${TMP_DIR}/reality-cf-no-sub" >/dev/null 2>&1 && exit 1
+    sed '/@easy_all_health path /d' "${reality_cf_ready_file}" >"${TMP_DIR}/reality-cf-no-health"
+    validate_caddy_config "${TMP_DIR}/reality-cf-no-health" >/dev/null 2>&1 && exit 1
+    # 负例：伪装站出现订阅入口（橙云回源也不得把订阅路由挂到 9443）。
+    awk '{print} /^\t\troot \* / {print "\t\t@easy_all_sub path /subscribe /sub"}' \
+        "${reality_cf_ready_file}" >"${TMP_DIR}/reality-cf-camo-sub"
+    validate_caddy_config "${TMP_DIR}/reality-cf-camo-sub" >/dev/null 2>&1 && exit 1
+    exit 0
+) || fail "模式 7 结构校验行为不符合预期"
+
 # --- 输入校验 ---------------------------------------------------------------
 if (PROTOCOL=anytls; SUBSCRIPTION_MODE=link; render_caddy_config "${TMP_DIR}/x" 0 1) >/dev/null 2>&1; then
     fail "模式 1 link 不得生成 Caddy 站点"

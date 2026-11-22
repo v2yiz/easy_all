@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 六模式 Caddy 站点：代理路径、订阅路由、公共响应头与服务管理（design §6、§8）。
+# 七模式 Caddy 站点：代理路径、订阅路由、公共响应头与服务管理（design §6、§8）。
 # 依赖调用方提供 log.sh 的 die/warn/info/fail，以及模式字段：
 # PROTOCOL、CF_NODE_DOMAIN、SUBSCRIPTION_DOMAIN、CF_ORIGIN_DOMAIN、VLESS_PATH、
 # ORIGIN_HEADER_SECRET、ALLOWED_TOKENS、SUB_DOWNLOAD_NAME、CERT_FILE、KEY_FILE。
@@ -17,14 +17,14 @@ source "${CADDY_RUNTIME_LIB_DIR}/caddy-core.sh"
 
 caddy_require_protocol() {
     case "${PROTOCOL:-}" in
-    anytls | reality-self | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
+    anytls | reality-self | reality-cloudflare | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
 
 caddy_protocol_has_cdn() {
     case "${PROTOCOL:-}" in
-    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare | reality-self) return 0 ;;
+    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare | reality-self | reality-cloudflare) return 0 ;;
     esac
     return 1
 }
@@ -32,6 +32,15 @@ caddy_protocol_has_cdn() {
 caddy_protocol_needs_origin_guard() {
     case "${PROTOCOL:-}" in
     cloudfront | combined-cloudfront | reality-self) return 0 ;;
+    esac
+    return 1
+}
+
+# Reality 自偷入口（模式 6/7）：只有这两个模式同时渲染 9443 伪装站。
+# 本文件会被测试直接 source（不经 runtime-core），因此不调用 runtime_has_reality_entry。
+caddy_protocol_has_reality() {
+    case "${PROTOCOL:-}" in
+    reality-self | reality-cloudflare) return 0 ;;
     esac
     return 1
 }
@@ -45,8 +54,8 @@ caddy_require_host() {
 }
 
 # 站点主机与端口由模式派生（design §2）：模式 1 订阅 8443、模式 2 节点域 443、
-# 模式 4 源站 443、模式 3 节点域 8443、模式 5/6 源站 8443；不接受用户另设端口。
-# 模式 6 与模式 5 同构：8443 源站（含订阅）+ 回环 9443 伪装站（见 caddy_reality_camouflage_port）。
+# 模式 4 源站 443、模式 3/7 节点域 8443、模式 5/6 源站 8443；不接受用户另设端口。
+# 模式 6/7 同构：8443 站点（含订阅）+ 回环 9443 伪装站（见 caddy_reality_camouflage_port）。
 caddy_site_host() {
     caddy_require_protocol
     case "${PROTOCOL}" in
@@ -56,13 +65,13 @@ caddy_site_host() {
         caddy_require_host SUBSCRIPTION_DOMAIN
         ;;
     cloudfront | combined-cloudfront | reality-self) caddy_require_host CF_ORIGIN_DOMAIN ;;
-    cloudflare | combined-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
+    cloudflare | combined-cloudflare | reality-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
     esac
 }
 
 caddy_site_port() {
     case "${PROTOCOL:-}" in
-    anytls | combined-cloudfront | combined-cloudflare | reality-self) printf '8443\n' ;;
+    anytls | combined-cloudfront | combined-cloudflare | reality-self | reality-cloudflare) printf '8443\n' ;;
     cloudfront | cloudflare) printf '443\n' ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
@@ -288,7 +297,7 @@ caddy_render_https_site() {
     printf '}\n'
 }
 
-# 模式 6 伪装站：只监听回环 9443，给 sing-box 的 Reality handshake 一个真实的
+# 模式 6/7 伪装站：只监听回环 9443，给 sing-box 的 Reality handshake 一个真实的
 # TLS 1.3 目标。不提供 /easy_all-health、/subscribe、/sub 或源站头守卫（那是 8443 的事）。
 caddy_render_camouflage_site() {
     local host
@@ -347,8 +356,8 @@ render_caddy_config() {
         || die "Mihomo 下载文件名无效：${SUB_DOWNLOAD_NAME:-空}"
     {
         caddy_render_global_options
-        # 模式 6：回环伪装站（9443）+ CloudFront 源站/订阅站点（8443）同时渲染。
-        if [[ "${PROTOCOL}" == "reality-self" ]]; then
+        # 模式 6/7：回环伪装站（9443）+ 源站/订阅站点（8443）同时渲染。
+        if caddy_protocol_has_reality; then
             caddy_render_camouflage_site
         fi
         caddy_render_https_site "${host}" "${port}" 0.0.0.0 \
@@ -368,12 +377,12 @@ caddy_site_block_lines() { # $1=文件 $2=端口
 }
 
 # 结构断言：外层 route 在任何 handle 之前、file_server 只在鉴权后的订阅处理器里、
-# 订阅入口是精确路径。模式 6 按顶层块分别校验伪装站与订阅站。
+# 订阅入口是精确路径。模式 6/7 按顶层块分别校验伪装站与订阅站。
 caddy_config_structure_ok() {
     local file=$1 route_line handle_line sub_line file_server_line file_server_count
     [[ -s "${file}" ]] || return 1
     grep -Fq 'auto_https off' "${file}" || return 1
-    if [[ "${PROTOCOL:-}" == "reality-self" ]]; then
+    if caddy_protocol_has_reality; then
         caddy_reality_structure_ok "${file}"
         return
     fi
@@ -400,7 +409,7 @@ caddy_config_structure_ok() {
     return 0
 }
 
-# 模式 6：伪装站（9443）与 CloudFront 源站/订阅站（8443）是两个独立站点，
+# 模式 6/7：伪装站（9443）与回源/订阅站（8443）是两个独立站点，
 # 各自断言自己的契约。
 # 否定断言只看指令行并排除 `root *` 路径行，避免 CAMOUFLAGE_DIR 里的 `/sub` 子串误拒：
 # `root *` 目录名与 `tls` 证书路径都可能合法地包含 subscribe/sub 子串，站点地址行同理。
@@ -442,19 +451,24 @@ caddy_reality_camouflage_structure_ok() { # $1=站点块行
     return 0
 }
 
-# 8443 CloudFront 源站块：源站头守卫必须出现在任何 handle 之前（守卫晚于 handle
-# 就是个可以绕过的空守卫），且必须提供精确订阅入口。
+# 8443 回源块：有源站头守卫的模式（CloudFront 链路）必须把守卫放在任何 handle 之前
+# （守卫晚于 handle 就是个可以绕过的空守卫）；橙云回源模式（模式 3/7）没有该守卫，
+# 由 UFW 只放行 Cloudflare 段，因此不要求这两行。两种模式都必须提供精确订阅入口。
 caddy_reality_origin_structure_ok() { # $1=站点块行
     local origin=$1 bad_origin_line abort_line handle_line sub_line file_server_line file_server_count
     grep -Fq 'bind 0.0.0.0' <<<"${origin}" || return 1
-    grep -Fq '@easy_all_bad_origin expression' <<<"${origin}" || return 1
-    grep -Fq 'abort @easy_all_bad_origin' <<<"${origin}" || return 1
+    if caddy_protocol_needs_origin_guard; then
+        grep -Fq '@easy_all_bad_origin expression' <<<"${origin}" || return 1
+        grep -Fq 'abort @easy_all_bad_origin' <<<"${origin}" || return 1
+    fi
     bad_origin_line=$(grep -n '@easy_all_bad_origin' <<<"${origin}" | head -n 1 | cut -d: -f1)
     abort_line=$(grep -n '^[[:space:]]*abort @easy_all_bad_origin[[:space:]]*$' <<<"${origin}" \
         | head -n 1 | cut -d: -f1)
     handle_line=$(grep -n '^[[:space:]]*handle' <<<"${origin}" | head -n 1 | cut -d: -f1)
-    [[ -n "${bad_origin_line}" && -n "${abort_line}" && -n "${handle_line}" ]] || return 1
-    ((bad_origin_line < handle_line && abort_line < handle_line)) || return 1
+    if caddy_protocol_needs_origin_guard; then
+        [[ -n "${bad_origin_line}" && -n "${abort_line}" && -n "${handle_line}" ]] || return 1
+        ((bad_origin_line < handle_line && abort_line < handle_line)) || return 1
+    fi
     grep -Fq '@easy_all_sub path /subscribe /sub' <<<"${origin}" || return 1
     grep -Fq '@easy_all_health path /easy_all-health' <<<"${origin}" || return 1
     if grep -Eq 'handle /[^[:space:]]*\*|path /(subscribe|sub)\*' <<<"${origin}"; then
