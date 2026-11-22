@@ -2810,7 +2810,7 @@ cdn_traffic_counters_ready() { return 1; }
 cdn_traffic_read_usage() { printf '%s' '{"protection_offline":false}'; }
 show_cdn_traffic_protection_status() { :; }
 CDN_SUBSCRIPTION_CORRUPT=0
-CERT_FILE="${WORK}/certs/absent.pem"
+rm -f -- "${CERT_FILE}"
 status_output=$(show_status 2>&1)
 [[ "${status_output}" == *"VLESS Reality"* ]] || fail "状态未标明 Reality 直连"
 [[ "${status_output}" == *"伪装站"* ]] || fail "状态未说明伪装站回落目标"
