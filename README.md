@@ -54,9 +54,11 @@ Host *
 
 七种模式共用同一套本机运行时（sing-box 节点入站 + Caddy 订阅与回源分发）。**客户端节点与订阅入口统一使用 443 端口**。
 
-$\textcolor{red}{\textbf{模式推荐：线路好选模式 5，}}$<br>
-$\textcolor{red}{\textbf{线路一般就直接模式 4；}}$<br>
-$\textcolor{red}{\textbf{没有可用信用卡才选模式 2 或模式 3。}}$<br>
+$\textcolor{red}{\textbf{模式推荐：}}$<br>
+$\textcolor{red}{\textbf{线路一般+无可用信用卡，选模式 2}}$<br>
+$\textcolor{red}{\textbf{线路一般+有可用信用卡，选模式 4}}$<br>
+$\textcolor{red}{\textbf{线路好+有可用信用卡，选模式 6}}$<br>
+$\textcolor{red}{\textbf{线路好+无可用信用卡，选模式 7}}$<br>
 $\textcolor{red}{\textbf{纯直连在非常时期被封的概率太高，不推荐。}}$
 
 | 模式 | 适用场景 | 客户端节点入口 | 订阅入口 | 所需凭据 | 子域名数量 |
@@ -77,7 +79,7 @@ $\textcolor{red}{\textbf{纯直连在非常时期被封的概率太高，不推�
 > - **升级提示**：不支持从 4.x 直接升级，请先执行旧版 `sudo easy_all uninstall` 后重新安装。
 
 > [!WARNING]
-> **Cloudflare 提供免费套餐，但官方规则限制通过 CDN 代理翻墙流量，模式 2 与模式 3 存在潜在封禁风险，请自行评估使用。**
+> **Cloudflare 提供免费套餐，但官方规则限制通过 CDN 代理翻墙流量，模式 2、模式 3 与模式 7 存在潜在封禁风险，请自行评估使用。**
 >
 > **模式 4、模式 5 与模式 6 使用 CloudFront。注册 AWS 账号时需要绑定信用卡，使用 CloudFront 流量超过 1 TB 会产生费用。**
 >
