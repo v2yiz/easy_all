@@ -339,27 +339,6 @@ reality_state=$(
         bash -c 'source "$1"; detect_installed_mode' _ "${ROOT_DIR}/easy_all" 2>&1
 ) && fail "已删除协议必须被拒绝"
 assert_contains "已删除协议提示" "${reality_state}" "已删除的旧协议"
-{
-    printf 'STATE_VERSION=1\nPROTOCOL=anytls\n'
-} >"${damaged_dir}/state-anytls.env"
-anytls_state=$(
-    EASY_ALL_STATE_FILE_OVERRIDE="${damaged_dir}/state-anytls.env" \
-    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${TMP_DIR}/no-marker" \
-        bash -c 'source "$1"; detect_installed_mode' _ "${ROOT_DIR}/easy_all" 2>&1
-) && fail "已删除的 anytls 协议必须被拒绝"
-assert_contains "anytls 走已删除协议提示" "${anytls_state}" "已删除的旧协议"
-{
-    printf 'STATE_VERSION=1\nPROTOCOL=reality-self\n'
-} >"${damaged_dir}/state-reality-self.env"
-reality_self_state=$(
-    EASY_ALL_STATE_FILE_OVERRIDE="${damaged_dir}/state-reality-self.env" \
-    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${TMP_DIR}/no-marker" \
-        bash -c 'source "$1"; detect_installed_mode' _ "${ROOT_DIR}/easy_all" 2>&1
-) && fail "旧协议标识 reality-self 必须被拒绝"
-assert_contains "reality-self 提示已重命名" "${reality_self_state}" "重命名为 reality-cloudfront"
-assert_contains "reality-self 指向迁移而非卸载" "${reality_self_state}" "迁移脚本"
-assert_not_contains "reality-self 不得误导用户卸载" "${reality_self_state}" "请先用安装该版本的旧 easy_all"
-
 printf 'ok - 状态 schema 门禁测试通过\n'
 
 # --- 安装菜单编号：1 纯 CloudFlare / 2 纯 CloudFront / 3 Reality+CloudFront / 4 Reality+CloudFlare / 5 AnyTLS+CloudFront / 6 AnyTLS+CloudFlare

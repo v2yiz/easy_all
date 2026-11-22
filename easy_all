@@ -171,20 +171,6 @@ launcher_marker_schema_gate() {
 
 # 上次安装被 SSH 断线打断后，没有状态文件也就没有 uninstall 可用；这条命令是唯一
 # 能从本机自救的入口。它只信安装期写入的 marker 来定位模式，不猜测、不动云端资源。
-# 已删除（模式 1）与已重命名（reality-self）的旧标记无法映射到当前 Profile：
-# 必须在 profile_file 之前给出可执行处置，不能退化成「不支持的安装模式」。
-launcher_marker_mode_gate() {
-    local mode=$1 progress_file=$2
-    case "${mode}" in
-    anytls)
-        launcher_die "安装进度标记来自已删除的模式 1（PROFILE=anytls，${progress_file}）；请用安装时的旧版执行 cleanup-partial，或人工清理本机残留后删除该标记文件（不要改云端资源）"
-        ;;
-    reality-self)
-        launcher_die "安装进度标记使用旧协议标识（PROFILE=reality-self，${progress_file}）；该协议已重命名为 reality-cloudfront。请先运行交付方提供的迁移脚本，或用旧版执行 cleanup-partial"
-        ;;
-    esac
-}
-
 cleanup_partial_install_command() {
     local progress_file mode stage started_at chain answer module
     local snapshot_before snapshot_after marker_schema
@@ -216,7 +202,6 @@ cleanup_partial_install_command() {
     IFS='|' read -r _ mode stage started_at chain marker_schema <<<"${snapshot_before}"
     [[ -n "${mode}" ]] || launcher_die "安装进度标记缺少模式信息（${progress_file}）；请核对标记内容或人工清理残留后重装"
     launcher_marker_schema_gate "${marker_schema:-}"
-    launcher_marker_mode_gate "${mode}" "${progress_file}"
     profile_file "${mode}" >/dev/null
     printf '检测到未完成的 %s 安装（中断于 %s 阶段）\n' "${mode}" "${stage}" >&2
     if [[ "${FORCE:-0}" != "1" ]]; then
@@ -281,8 +266,7 @@ launcher_state_complete() {
 #   cdn / combined（旧 Cloudflare 链路，仅卸载）
 #   incomplete-*（新协议但字段不齐，仅卸载）
 # schema 1 但协议不可识别（缺失或写坏）输出 incomplete-unknown：不猜协议，只保留本机卸载通道。
-# 旧 schema、已删除的协议（reality / cdn / combined / anytls）一律拒绝；已重命名的
-# reality-self 单独提示迁移；覆盖代码前不做自动迁移。
+# 旧 schema、已删除的协议（reality / cdn / combined）一律拒绝；覆盖代码前不做自动迁移。
 detect_installed_mode() {
     local protocol="" state_version=""
     # 不可读的状态文件（目录可搜索、文件 0600 root）同样交给 main 统一提示 root。
@@ -297,11 +281,8 @@ detect_installed_mode() {
             || launcher_die "$(state_legacy_rejection_message "${state_version:-缺失}")"
         case "${protocol}" in
         reality-cloudfront | reality-cloudflare | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) ;;
-        reality | cdn | combined | anytls)
+        reality | cdn | combined)
             launcher_die "检测到已删除的旧协议（PROTOCOL=${protocol}，schema ${state_version}）；当前版本只支持 cloudflare/cloudfront/reality-cloudfront/reality-cloudflare/combined-cloudfront/combined-cloudflare。请先用安装该版本的旧 easy_all 执行 sudo easy_all uninstall（旧版可加 --purge-cloud 一并清理云端；当前版本的 uninstall 已默认清理云端、不再接受该参数），再重新安装。"
-            ;;
-        reality-self)
-            launcher_die "检测到旧版协议标识（PROTOCOL=reality-self，schema ${state_version}）；当前版本已将其重命名为 reality-cloudfront。请先运行交付方提供的迁移脚本（或将 state.env 中的 PROTOCOL 改为 reality-cloudfront）后重试；不要执行 uninstall，无需重建云端资源。"
             ;;
         *)
             # 状态本身已损坏（如 PROTOCOL 丢失）：整个卸载通道不能跟着失效，

@@ -57,8 +57,8 @@ Host *
 $\textcolor{red}{\textbf{模式推荐：}}$<br>
 $\textcolor{red}{\textbf{线路一般+无可用信用卡，选模式 1}}$<br>
 $\textcolor{red}{\textbf{线路一般+有可用信用卡，选模式 2}}$<br>
-$\textcolor{red}{\textbf{线路好+有可用信用卡，选模式 3}}$<br>
-$\textcolor{red}{\textbf{线路好+无可用信用卡，选模式 4}}$<br>
+$\textcolor{red}{\textbf{线路好+有可用信用卡，选模式 3 模式5(更推荐模式3)}}$<br>
+$\textcolor{red}{\textbf{线路好+无可用信用卡，选模式 4 模式6(更推荐模式4)}}$<br>
 
 | 模式 | 适用场景 | 客户端节点入口 | 订阅入口 | 所需凭据 | 子域名数量 |
 | :--- | :--- | :--- | :--- | :--- | :---: |

@@ -471,17 +471,6 @@ for (const command of ['register-command', 'self-update']) {
 }
 rmSync(markerFile, { force: true });
 
-// 6c-bis. 已删除的 anytls 与已重命名的 reality-self：分别给出卸载/迁移提示。
-writeState(['STATE_VERSION=1', 'PROTOCOL=anytls', 'SUBSCRIPTION_MODE=deploy']);
-const legacyAnytls = sourceLauncher('detect_installed_mode', stateEnv);
-assert.notEqual(legacyAnytls.status, 0);
-assert.match(legacyAnytls.stderr, /已删除的旧协议/);
-writeState(['STATE_VERSION=1', 'PROTOCOL=reality-self', 'SUBSCRIPTION_MODE=deploy']);
-const renamedReality = sourceLauncher('detect_installed_mode', stateEnv);
-assert.notEqual(renamedReality.status, 0);
-assert.match(renamedReality.stderr, /重命名为 reality-cloudfront/);
-assert.match(renamedReality.stderr, /迁移脚本/);
-assert.doesNotMatch(renamedReality.stderr, /请先用安装该版本的旧 easy_all/);
 // 不完整状态（合法协议但字段不齐）仍只保留卸载通道。
 writeState(['STATE_VERSION=1', 'PROTOCOL=combined-cloudflare', 'SUBSCRIPTION_MODE=deploy']);
 const incomplete = sourceLauncher('detect_installed_mode', stateEnv);
@@ -525,33 +514,6 @@ assert.match(oldMarker.stderr, /旧版本/);
 const currentMarker = sourceLauncher('launcher_marker_schema_gate 1', markerEnv);
 assert.equal(currentMarker.status, 0, currentMarker.stderr);
 assert.doesNotMatch(currentMarker.stderr, /旧版本/);
-
-// 7b. cleanup-partial 对已删除（anytls）与已重命名（reality-self）的旧标记必须拒绝并给出处置。
-// 门禁函数与 launcher_marker_schema_gate 同口径；root 门禁在它之前，真实调用需 root，
-// 因此直接验证门禁函数本身，并断言它排在 profile_file 之前。
-for (const [legacyMode, expected] of [
-  ['anytls', /已删除的模式 1/],
-  ['reality-self', /重命名为 reality-cloudfront/],
-]) {
-  const gate = sourceLauncher(
-    `launcher_marker_mode_gate ${legacyMode} /var/lib/easy_all/install-progress.env`,
-    markerEnv,
-  );
-  assert.notEqual(gate.status, 0, `cleanup-partial 必须拒绝旧标记 ${legacyMode}`);
-  assert.match(gate.stderr, expected);
-  assert.match(gate.stderr, /cleanup-partial|迁移脚本/);
-  assert.doesNotMatch(gate.stderr, /不支持的安装模式/,
-    '旧标记必须有可执行的处置提示，而不是笼统的路由错误');
-}
-const launcherText = readFileSync(launcher, 'utf8');
-const cleanupBody = launcherText.slice(
-  launcherText.indexOf('cleanup_partial_install_command() {'),
-  launcherText.indexOf('choose_install_mode() {'),
-);
-const gateCallAt = cleanupBody.indexOf('launcher_marker_mode_gate "${mode}" "${progress_file}"');
-assert.ok(gateCallAt > 0, 'cleanup-partial 必须调用 launcher_marker_mode_gate');
-assert.ok(gateCallAt < cleanupBody.indexOf('profile_file "${mode}"'),
-  '旧标记门禁必须早于 profile_file，否则会退化成不支持的安装模式');
 
 process.stdout.write('ok - CLI 门禁与六模式入口测试通过\n');
 
