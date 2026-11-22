@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mode 2: Cloudflare orange-cloud single domain (one proxied A record serves both
-# the VLESS HTTPUpgrade node and the Token-protected subscription on 443).
+# the VLESS WebSocket node and the Token-protected subscription on 443).
 set -Eeuo pipefail
 umask 077
 
@@ -23,7 +23,7 @@ CDN_PROVIDER=cloudflare
 readonly CDN_PROFILE_KEY=cloudflare
 readonly CDN_EXPECTED_PROTOCOL=cloudflare
 readonly CDN_MODE_LABEL="纯 CloudFlare（单域名）"
-readonly CDN_ENTRY_SUMMARY="Cloudflare 橙云 + VLESS HTTPUpgrade"
+readonly CDN_ENTRY_SUMMARY="Cloudflare 橙云 + VLESS WebSocket"
 CDN_INSTALL_PORTS=(443)
 SUBSCRIPTION_OPTIONAL_VARIANTS=1
 

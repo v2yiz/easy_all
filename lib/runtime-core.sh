@@ -313,11 +313,11 @@ subscription_link_domain() {
 runtime_protocol_label() {
     case "${PROTOCOL:-}" in
     anytls) printf 'AnyTLS（direct TCP 443）' ;;
-    reality-self) printf 'Reality（direct TCP 443）+ VLESS HTTPUpgrade over AWS CloudFront' ;;
-    cloudfront) printf 'VLESS HTTPUpgrade over AWS CloudFront' ;;
-    cloudflare) printf 'VLESS HTTPUpgrade over Cloudflare 橙云' ;;
-    combined-cloudfront) printf 'AnyTLS（direct TCP 443）+ VLESS HTTPUpgrade over AWS CloudFront' ;;
-    combined-cloudflare) printf 'AnyTLS（direct TCP 443）+ VLESS HTTPUpgrade over Cloudflare 橙云' ;;
+    reality-self) printf 'Reality（direct TCP 443）+ VLESS WebSocket over AWS CloudFront' ;;
+    cloudfront) printf 'VLESS WebSocket over AWS CloudFront' ;;
+    cloudflare) printf 'VLESS WebSocket over Cloudflare 橙云' ;;
+    combined-cloudfront) printf 'AnyTLS（direct TCP 443）+ VLESS WebSocket over AWS CloudFront' ;;
+    combined-cloudflare) printf 'AnyTLS（direct TCP 443）+ VLESS WebSocket over Cloudflare 橙云' ;;
     *) printf '%s\n' "${PROTOCOL:-未知}" ;;
     esac
 }
@@ -1563,7 +1563,7 @@ runtime_ports_listening() {
 runtime_base64_markers() {
     runtime_has_anytls_entry && printf 'anytls://\n'
     runtime_has_reality_entry && printf 'security=reality\n'
-    runtime_has_cdn_entry && printf 'type=httpupgrade\n'
+    runtime_has_cdn_entry && printf 'type=ws\n'
     return 0
 }
 

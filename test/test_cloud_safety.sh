@@ -190,7 +190,7 @@ for ssl in strict full flexible off 403; do
     assert_not_contains "模式 2 ${ssl}：没有删除请求" "${log}" "DELETE "
 done
 
-# WebSockets 开关：橙云节点走 HTTPUpgrade（HTTP/1.1 Upgrade），关闭时链路必失败，
+# WebSockets 开关：橙云节点走 WebSocket，关闭时链路必失败，
 # 因此必须在任何 DNS/证书写入前阻断。
 for ws in off 403; do
     log=$(run_strict_case strict cloudflare deploy "${ws}")
@@ -231,7 +231,7 @@ for ssl in strict full; do
     fi
 done
 
-# 模式 3：橙云节点恒走 HTTPUpgrade，WebSockets 非 on 时阻断且不创建任何云资源。
+# 模式 3：橙云节点恒走 WebSocket，WebSockets 非 on 时阻断且不创建任何云资源。
 for ws in off 403; do
     log=$(run_strict_case strict combined-cloudflare deploy "${ws}")
     assert_contains "模式 3 websockets ${ws}：查询了 WebSockets 设置" "${log}" \

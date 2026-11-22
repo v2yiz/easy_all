@@ -2730,7 +2730,7 @@ SUBSCRIPTION_MODE=deploy
 [[ "$(caddy_site_port)" == "8443" ]] || fail "模式 6 Caddy 站点端口应为 8443"
 [[ "$(caddy_site_host)" == "direct.example.com" ]] || fail "模式 6 Caddy 站点应为 CF_ORIGIN_DOMAIN"
 [[ "$(subscription_link_domain)" == "cf.example.com" ]] || fail "模式 6 订阅链接应使用订阅域名"
-[[ "$(runtime_protocol_label)" == "Reality（direct TCP 443）+ VLESS HTTPUpgrade over AWS CloudFront" ]] \
+[[ "$(runtime_protocol_label)" == "Reality（direct TCP 443）+ VLESS WebSocket over AWS CloudFront" ]] \
     || fail "模式 6 协议标签未对齐模式 5：$(runtime_protocol_label)"
 
 # 证书只需覆盖 {DIRECT_DOMAIN, CF_ORIGIN_DOMAIN}：同域去重后不含 ACM 侧的订阅域名。
@@ -2749,8 +2749,8 @@ SUBSCRIPTION_MODE=link
 runtime_subscription_site_enabled || fail "模式 6 没有 link 模式：订阅站点仍须启用"
 SUBSCRIPTION_MODE=deploy
 
-# 订阅标记：Reality + VLESS httpupgrade 两个本地节点。
-[[ "$(runtime_base64_markers | paste -sd, -)" == "security=reality,type=httpupgrade" ]] \
+# 订阅标记：Reality + VLESS ws 两个本地节点。
+[[ "$(runtime_base64_markers | paste -sd, -)" == "security=reality,type=ws" ]] \
     || fail "模式 6 base64 标记错误：$(runtime_base64_markers | paste -sd, -)"
 [[ "$(runtime_mihomo_markers | paste -sd, -)" == "reality-opts:,network: ws" ]] \
     || fail "模式 6 Mihomo 标记错误：$(runtime_mihomo_markers | paste -sd, -)"

@@ -71,7 +71,7 @@ $\textcolor{red}{\textbf{纯直连在非常时期被封的概率太高，不推�
 > **核心约定**：
 > - **域名规划**：全模式只需 **1 个根域名**（托管于同一 Cloudflare Zone），安装器会自动创建对应数量的一级子域名。
 > - **端口规范**：客户端统一连接 `443`，全模式不开放 `80`。回源端口在模式 1 deploy、2、3 仅对 Cloudflare 官方回源 IP 放行（模式 1/3 为 `8443`，模式 2 为 `443`）；模式 4 的源站 `443` 与模式 5/6 的源站 `8443` 对公网可达，由 `X-Easy-All-Origin-Key` 密钥精确校验。
-> - **协议与证书**：CDN 节点均为 **VLESS HTTPUpgrade**（客户端显式约束 `alpn: ["http/1.1"]`）；模式 6 直连为 **VLESS Reality**（`xtls-rprx-vision`），非 Reality 握手透明回落到本机 `127.0.0.1:9443` 的伪装登录站。模式 1/3 直连与模式 4/5/6 源站使用 Let's Encrypt（DNS-01 自动签发），CloudFront 客户端证书由 AWS ACM 托管，模式 2 回源使用 Cloudflare Origin CA（客户端连接 CF 边缘证书）。
+> - **协议与证书**：CDN 节点均为 **VLESS WebSocket**；模式 6 直连为 **VLESS Reality**（`xtls-rprx-vision`），非 Reality 握手透明回落到本机 `127.0.0.1:9443` 的伪装登录站。模式 1/3 直连与模式 4/5/6 源站使用 Let's Encrypt（DNS-01 自动签发），CloudFront 客户端证书由 AWS ACM 托管，模式 2 回源使用 Cloudflare Origin CA（客户端连接 CF 边缘证书）。
 > - **Cloudflare SSL**：模式 1 deploy、2、3 要求目标 Zone 的 SSL/TLS 必须为 **Full (strict)**。
 > - **升级提示**：不支持从 4.x 直接升级，请先执行旧版 `sudo easy_all uninstall` 后重新安装。
 

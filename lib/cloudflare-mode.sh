@@ -329,11 +329,11 @@ cdn_public_subscription_ok() {
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         "https://${CF_NODE_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
-    [[ "${decoded}" == *"type=httpupgrade"* ]] || return 1
+    [[ "${decoded}" == *"type=ws"* ]] || return 1
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' \
         "https://${CF_NODE_DOMAIN}/subscribe") || return 1
-    [[ "${body}" == *"network: ws"* && "${body}" == *"v2ray-http-upgrade: true"* ]]
+    [[ "${body}" == *"network: ws"* ]]
 }
 
 cdn_public_token_rejection_ok() {
@@ -452,7 +452,7 @@ apply_cloud_phase() {
     # 只读查询 Zone ID 必须先于 strict 校验（design §9）：创建任何资源前完成。
     cdn_ensure_zone_id
     cloudflare_ensure_zone_ssl_strict
-    # 橙云 VLESS 节点走 HTTPUpgrade（HTTP/1.1 Upgrade）：Zone 关闭 WebSockets 时链路必失败。
+    # 橙云 VLESS 节点走 WebSocket：Zone 关闭 WebSockets 时链路必失败。
     cloudflare_ensure_zone_websockets_on
     cdn_ensure_dns
     cdn_issue_certificate

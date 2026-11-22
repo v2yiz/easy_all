@@ -125,7 +125,7 @@ assert_equal "模式 4 只有 VLESS 入站" "vless-cdn-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${cloudfront_json}")"
 assert_equal "VLESS 入站监听回环 10086" "127.0.0.1 10086" \
     "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"${cloudfront_json}")"
-assert_equal "VLESS 入站使用 httpupgrade 与精确路径" "httpupgrade ${VLESS_PATH}" \
+assert_equal "VLESS 使用 ws 与精确路径" "ws ${VLESS_PATH}" \
     "$(jq -r '.inbounds[0].transport | "\(.type) \(.path)"' <<<"${cloudfront_json}")"
 assert_equal "VLESS 入站不写 early data 字段" "false" \
     "$(jq -r '.inbounds[0].transport | has("max_early_data") or has("early_data_header_name")' <<<"${cloudfront_json}")"
@@ -219,13 +219,13 @@ assert_equal "AnyTLS 链接格式" \
 assert_equal "AnyTLS 链接按组件编码" \
     "anytls://${ANYTLS_PASSWORD}@direct.example.com:443/?sni=direct.example.com&insecure=0#AnyTLS%20%E7%9B%B4%E8%BF%9E" \
     "$(DIRECT_NODE_NAME="AnyTLS 直连"; build_anytls_link)"
-assert_equal "VLESS httpupgrade 链接格式" \
-    "vless://${VLESS_UUID}@cf.example.com:443?encryption=none&security=tls&type=httpupgrade&sni=cf.example.com&fp=chrome&alpn=http%2F1.1&host=cf.example.com&path=%2Fvless-abcdef123456&packetEncoding=xudp#CDN-WS" \
+assert_equal "VLESS ws 链接格式" \
+    "vless://${VLESS_UUID}@cf.example.com:443?encryption=none&security=tls&type=ws&sni=cf.example.com&fp=chrome&host=cf.example.com&path=%2Fvless-abcdef123456&packetEncoding=xudp#CDN-WS" \
     "$(build_vless_ws_link)"
 vless_link=$(build_vless_ws_link)
 assert_not_contains "VLESS 链接无 Reality flow" "${vless_link}" "flow="
 assert_not_contains "VLESS 链接无 XHTTP 参数" "${vless_link}" "type=xhttp"
-assert_contains "VLESS 链接显式约束 ALPN" "${vless_link}" "alpn=http%2F1.1"
+assert_not_contains "VLESS 链接无 alpn" "${vless_link}" "alpn="
 assert_not_contains "VLESS 链接无源站密钥" "${vless_link}" "X-Easy-All-Origin-Key"
 
 anytls_node=$(build_mihomo_anytls_node)
@@ -248,21 +248,13 @@ assert_contains "VLESS 节点 UUID" "${ws_node}" 'uuid: "'"${VLESS_UUID}"'"'
 assert_contains "VLESS 节点 ws 传输" "${ws_node}" "network: ws"
 assert_contains "VLESS 节点 TLS" "${ws_node}" "tls: true"
 assert_contains "VLESS 节点 SNI" "${ws_node}" 'servername: "cf.example.com"'
-assert_contains "VLESS 节点 ALPN 列表" "${ws_node}" "alpn:"
-assert_contains "VLESS 节点 ALPN 值为 http/1.1" "${ws_node}" "- http/1.1"
 assert_contains "VLESS 节点 ws 路径" "${ws_node}" 'path: "/vless-abcdef123456"'
 assert_contains "VLESS 节点 ws Host" "${ws_node}" 'Host: "cf.example.com"'
-assert_contains "VLESS 节点启用 v2ray-http-upgrade" "${ws_node}" "v2ray-http-upgrade: true"
-assert_contains "VLESS 节点启用 http-upgrade fast open" "${ws_node}" \
-    "v2ray-http-upgrade-fast-open: true"
 assert_contains "VLESS 客户端指纹" "${ws_node}" "client-fingerprint: chrome"
 assert_contains "VLESS xudp 编码" "${ws_node}" "packet-encoding: xudp"
 assert_not_contains "VLESS 节点无源站密钥" "${ws_node}" "X-Easy-All-Origin-Key"
+assert_not_contains "VLESS 节点无 httpupgrade" "${ws_node}" "httpupgrade"
 assert_not_contains "VLESS 节点不写 early data" "${ws_node}" "early-data"
-assert_equal "sing-box 节点 ALPN 与 httpupgrade 传输" \
-    "[\"http/1.1\"] httpupgrade cf.example.com /vless-abcdef123456" \
-    "$(build_singbox_ws_outbound \
-        | jq -r '"\(.tls.alpn) \(.transport.type) \(.transport.host) \(.transport.path)"')"
 assert_equal "sing-box 节点不写 early data" "null null" \
     "$(build_singbox_ws_outbound \
         | jq -r '.transport.max_early_data, .transport.early_data_header_name' | paste -sd' ' -)"
@@ -276,9 +268,9 @@ fi
 
 # --- CDN 优选连接地址：只换连接地址，SNI 与 Host 仍是节点域名 -----------------
 # 期望值来自 design §2 条 3 / §4.5：连接地址是 CF_EDGE_ADDRESS，SNI、servername、
-# HTTPUpgrade Host 保持 CF_NODE_DOMAIN（证书校验、回源 Host 均按节点域名）。
+# WebSocket Host 保持 CF_NODE_DOMAIN（证书校验、回源 Host 均按节点域名）。
 assert_equal "优选地址只替换 VLESS 链接的连接地址" \
-    "vless://${VLESS_UUID}@edge.example-cdn.com:443?encryption=none&security=tls&type=httpupgrade&sni=cf.example.com&fp=chrome&alpn=http%2F1.1&host=cf.example.com&path=%2Fvless-abcdef123456&packetEncoding=xudp#CDN-WS" \
+    "vless://${VLESS_UUID}@edge.example-cdn.com:443?encryption=none&security=tls&type=ws&sni=cf.example.com&fp=chrome&host=cf.example.com&path=%2Fvless-abcdef123456&packetEncoding=xudp#CDN-WS" \
     "$(CF_EDGE_ADDRESS="edge.example-cdn.com" build_vless_ws_link)"
 edge_node=$(CF_EDGE_ADDRESS="edge.example-cdn.com" build_mihomo_ws_node)
 assert_contains "优选地址替换 Mihomo server" "${edge_node}" 'server: "edge.example-cdn.com"'
@@ -287,7 +279,7 @@ assert_contains "优选地址不改 Mihomo ws Host" "${edge_node}" 'Host: "cf.ex
 assert_equal "优选地址只替换 sing-box server" \
     "edge.example-cdn.com cf.example.com cf.example.com" \
     "$(CF_EDGE_ADDRESS="edge.example-cdn.com" build_singbox_ws_outbound \
-        | jq -r '"\(.server) \(.tls.server_name) \(.transport.host)"')"
+        | jq -r '"\(.server) \(.tls.server_name) \(.transport.headers.Host)"')"
 # 空值与未设置都必须回落到节点域名：无字段的既有部署产物逐字节不变（验收条件 5）。
 assert_equal "空优选地址不改变 VLESS 链接" "$(build_vless_ws_link)" \
     "$(CF_EDGE_ADDRESS="" build_vless_ws_link)"
@@ -300,7 +292,7 @@ assert_equal "空优选地址不改变 sing-box 节点" "$(build_singbox_ws_outb
 reality_json=$(render reality-self 0)
 assert_equal "模式 6 双入站：Reality 443 + 回环 CDN" "vless-reality-in,vless-cdn-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${reality_json}")"
-assert_equal "模式 6 CDN 入站监听回环 10086" "vless-cdn-in 127.0.0.1 10086 httpupgrade" \
+assert_equal "模式 6 CDN 入站监听回环 10086" "vless-cdn-in 127.0.0.1 10086 ws" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | "\(.tag) \(.listen) \(.listen_port) \(.transport.type)"' <<<"${reality_json}")"
 assert_equal "Reality 入站监听 0.0.0.0:443" "0.0.0.0 443" \
     "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"${reality_json}")"

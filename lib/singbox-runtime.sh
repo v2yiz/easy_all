@@ -5,7 +5,7 @@
 # PROTOCOL、DIRECT_DOMAIN、DIRECT_NODE_NAME、ANYTLS_PASSWORD、VLESS_UUID、VLESS_PATH、
 # REALITY_PRIVATE_KEY、REALITY_PUBLIC_KEY、REALITY_SHORT_ID、
 # CF_NODE_DOMAIN、CF_NODE_PREFIX。CF_EDGE_ADDRESS 可选：非空时只替换本机 CDN 节点的
-# 连接地址，SNI 与 HTTPUpgrade Host 仍是 CF_NODE_DOMAIN（订阅配置里的 cdnEdgeAddress）。
+# 连接地址，SNI 与 WebSocket Host 仍是 CF_NODE_DOMAIN（订阅配置里的 cdnEdgeAddress）。
 # 证书路径与核心路径可用环境变量覆盖（测试隔离）。
 
 SINGBOX_RUNTIME_LIB_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
@@ -121,7 +121,7 @@ singbox_vless_inbound_json() {
           listen: "127.0.0.1",
           listen_port: 10086,
           users: [{name: "easy_all", uuid: $uuid}],
-          transport: {type: "httpupgrade", path: $path}
+          transport: {type: "ws", path: $path}
         }'
 }
 
@@ -284,13 +284,13 @@ build_vless_ws_link() {
     local encoded_host
     encoded_host=$(singbox_uri_encode "${CF_NODE_DOMAIN}")
     # 连接地址可用 cdnEdgeAddress 换成优选域名；sni/host 仍是分发域名（证书与分发按它选）。
-    printf 'vless://%s@%s:443?encryption=none&security=tls&type=httpupgrade&sni=%s&fp=chrome&alpn=http%%2F1.1&host=%s&path=%s&packetEncoding=xudp#%s' \
+    printf 'vless://%s@%s:443?encryption=none&security=tls&type=ws&sni=%s&fp=chrome&host=%s&path=%s&packetEncoding=xudp#%s' \
         "${VLESS_UUID}" "${CF_EDGE_ADDRESS:-${CF_NODE_DOMAIN}}" "${encoded_host}" "${encoded_host}" \
         "$(singbox_uri_encode "${VLESS_PATH}")" \
         "$(singbox_uri_encode "${CF_NODE_PREFIX}")"
 }
 
-# server 是连接地址（可为优选域名），servername 与 HTTPUpgrade Host 必须是节点域名。
+# server 是连接地址（可为优选域名），servername 与 ws Host 必须是节点域名。
 build_mihomo_ws_node() {
     [[ -n "${CF_NODE_DOMAIN:-}" ]] || die "缺少 CF_NODE_DOMAIN，无法生成 VLESS 节点"
     [[ -n "${VLESS_UUID:-}" ]] || die "缺少 VLESS_UUID，无法生成 VLESS 节点"
@@ -302,9 +302,7 @@ build_mihomo_ws_node() {
         "    uuid: \($uuid|@json)\n    network: ws\n    tls: true\n    udp: true\n" +
         "    skip-cert-verify: false\n    servername: \($host|@json)\n" +
         "    client-fingerprint: chrome\n    packet-encoding: xudp\n" +
-        "    alpn:\n      - http/1.1\n" +
-        "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($host|@json)\n" +
-        "      v2ray-http-upgrade: true\n      v2ray-http-upgrade-fast-open: true\n"'
+        "    ws-opts:\n      path: \($path|@json)\n      headers:\n        Host: \($host|@json)\n"'
 }
 
 # --- sing-box 客户端订阅节点 -------------------------------------------------
@@ -336,7 +334,7 @@ build_singbox_reality_outbound() {
          packet_encoding: "xudp"}'
 }
 
-# 本机 CDN 节点：连接地址可用 cdnEdgeAddress 换成优选域名；SNI 与 HTTPUpgrade Host
+# 本机 CDN 节点：连接地址可用 cdnEdgeAddress 换成优选域名；SNI 与 WebSocket Host
 # 仍是节点域名，源站头永不进入客户端。
 build_singbox_ws_outbound() {
     [[ -n "${CF_NODE_DOMAIN:-}" ]] || die "缺少 CF_NODE_DOMAIN，无法生成 sing-box VLESS 节点"
@@ -345,8 +343,8 @@ build_singbox_ws_outbound() {
     jq -cn --arg tag "${CF_NODE_PREFIX}" --arg server "${CF_EDGE_ADDRESS:-${CF_NODE_DOMAIN}}" \
         --arg host "${CF_NODE_DOMAIN}" --arg uuid "${VLESS_UUID}" --arg path "${VLESS_PATH}" '
         {type: "vless", tag: $tag, server: $server, server_port: 443, uuid: $uuid,
-         tls: {enabled: true, server_name: $host, alpn: ["http/1.1"],
+         tls: {enabled: true, server_name: $host,
                utls: {enabled: true, fingerprint: "chrome"}},
-         transport: {type: "httpupgrade", host: $host, path: $path},
+         transport: {type: "ws", path: $path, headers: {Host: $host}},
          packet_encoding: "xudp"}'
 }

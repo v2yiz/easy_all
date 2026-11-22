@@ -897,25 +897,25 @@ cdn_public_subscription_ok() {
     local token body decoded
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS:-[]}") || return 1
     [[ -n "${token}" && "${token}" != "null" ]] || return 1
-    # 正确 Token：默认 Base64 必须含 HTTPUpgrade 节点，强制 clash 必须含 ws 传输上的 HTTPUpgrade 开关。
+    # 正确 Token：默认 Base64 必须含 WebSocket 节点，强制 clash 必须含 ws 传输。
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
-    [[ "${decoded}" == *"type=httpupgrade"* ]] || return 1
+    [[ "${decoded}" == *"type=ws"* ]] || return 1
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
-    [[ "${body}" == *"network: ws"* && "${body}" == *"v2ray-http-upgrade: true"* ]] || return 1
+    [[ "${body}" == *"network: ws"* ]] || return 1
     # os=ios 走 Mihomo iOS 变体，node=all 走带 optional 节点的额外产物。
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' --data-urlencode 'os=ios' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
-    [[ "${body}" == *"network: ws"* && "${body}" == *"v2ray-http-upgrade: true"* ]] || return 1
+    [[ "${body}" == *"network: ws"* ]] || return 1
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'node=all' \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
-    [[ "${decoded}" == *"type=httpupgrade"* ]]
+    [[ "${decoded}" == *"type=ws"* ]]
 }
 
 cdn_public_token_rejection_ok() {

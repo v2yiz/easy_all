@@ -4,7 +4,7 @@
 
 安装模式对应关系：
 - **1 AnyTLS 直连**：纯 AnyTLS 直连入口（TCP 443），订阅可选（deploy / link）；
-- **2 纯 CloudFlare**：橙云单域名（TCP 443）同时提供 VLESS HTTPUpgrade 节点与订阅；
+- **2 纯 CloudFlare**：橙云单域名（TCP 443）同时提供 VLESS WebSocket 节点与订阅；
 - **3 AnyTLS + CloudFlare**：直连节点（TCP 443）+ 橙云节点/订阅（TCP 8443 回源）；
 - **4 纯 CloudFront**：CloudFront CDN 节点（TCP 443），源站回源（TCP 443）；
 - **5 AnyTLS + CloudFront**：直连节点（TCP 443）+ CloudFront 节点（TCP 443），源站回源（TCP 8443）。
@@ -89,7 +89,7 @@ sudo easy_all apply-cloud
 ### 4.1 服务单元与日志
 | 服务单元 | 职能说明 |
 | :--- | :--- |
-| `easy_all-singbox.service` | 核心入站：AnyTLS / VLESS Reality `0.0.0.0:443`（模式 6 另转发非 Reality 握手到 `127.0.0.1:9443`）、VLESS HTTPUpgrade `127.0.0.1:10086` |
+| `easy_all-singbox.service` | 核心入站：AnyTLS / VLESS Reality `0.0.0.0:443`（模式 6 另转发非 Reality 握手到 `127.0.0.1:9443`）、VLESS WebSocket `127.0.0.1:10086` |
 | `easy_all-caddy.service` | 订阅与 CDN 回源站点（模式 1 deploy / 3 / 5 / 6 监听 `8443`，模式 2 / 4 监听 `443`，模式 6 另在 `127.0.0.1:9443` 提供伪装站） |
 | `easy_all-cdn-traffic-guard.timer` | （仅模式 4/5/6）每 15 秒采样计量规则并落实流量阻断 |
 | `easy_all-probe-log.service` | （仅模式 1/3/5/6）oneshot，重启/`apply` 时重放直连 TCP 443 的限速 `GFW_CHK:` 内核 LOG 规则 |
@@ -99,7 +99,7 @@ sudo easy_all apply-cloud
 
 ### 4.2 节点域名与凭据变更
 - **域名与节点名变更**：节点域名与节点名均与状态深度绑定，改名须执行 `sudo easy_all uninstall` 后重新安装并更新客户端订阅；若仅修改 CDN 优选连接地址，直接通过 `sudo easy_all edit-sub` 修改即可，无需重装。
-- **凭据轮换**：AnyTLS 密码、VLESS UUID、HTTPUpgrade 路径与 Reality 密钥对（`REALITY_PRIVATE_KEY`/`REALITY_PUBLIC_KEY`/`REALITY_SHORT_ID`）在安装时生成落盘，重装将生成全新凭据；用户 Token 可通过 `sudo easy_all edit-sub` 随时增删，被删 Token 即刻失效。
+- **凭据轮换**：AnyTLS 密码、VLESS UUID、WebSocket 路径与 Reality 密钥对（`REALITY_PRIVATE_KEY`/`REALITY_PUBLIC_KEY`/`REALITY_SHORT_ID`）在安装时生成落盘，重装将生成全新凭据；用户 Token 可通过 `sudo easy_all edit-sub` 随时增删，被删 Token 即刻失效。
 
 ### 4.3 证书轮换（`renew-cert`）
 ```bash
@@ -228,5 +228,5 @@ easy_all hellogfw --help
 | **CloudFront 返回 503** | 触发了 985 GB 流量熔断保护。运行 `sudo easy_all status` 确认配额，模式 5/6 可手动切到直连节点继续使用。 |
 | **客户端提示证书错误** | 区分证书链路：直连 AnyTLS 与源站为 Let's Encrypt，CloudFront CDN 节点为 AWS ACM，Cloudflare 橙云为 CF 边缘证书。勿在客户端开启“跳过证书验证”。 |
 | **订阅下载返回 403 / 404** | 403 为 Token 错误或 URL 携带重复参数；404 为路径错误（仅支持 `/subscribe` 与 `/sub`）。运行 `sudo easy_all subscription` 获取最新链接。 |
-| **订阅可下载但节点无法连接** | 1. 确认客户端内核支持 AnyTLS / VLESS Reality / VLESS HTTPUpgrade；<br>2. 检查云安全组业务端口是否放通（全模式放通 443，模式 1 deploy / 3 / 5 / 6 另需放通 8443）；<br>3. 若启用了 CDN 优选地址，运行 `edit-sub` 临时移除 `cdnEdgeAddress` 排除第三方域名故障。 |
+| **订阅可下载但节点无法连接** | 1. 确认客户端内核支持 AnyTLS / VLESS Reality / VLESS WebSocket；<br>2. 检查云安全组业务端口是否放通（全模式放通 443，模式 1 deploy / 3 / 5 / 6 另需放通 8443）；<br>3. 若启用了 CDN 优选地址，运行 `edit-sub` 临时移除 `cdnEdgeAddress` 排除第三方域名故障。 |
 | **提示状态 schema 不受支持** | 当前系统为旧版 4.x 安装，先使用旧版 `sudo easy_all uninstall` 彻底卸载后再安装新版。 |

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 真核心 HTTP/代理链路门禁（design §13）：起真实 sing-box + Caddy，跑订阅矩阵、
-# 源站守卫、AnyTLS 与 Caddy→VLESS HTTPUpgrade 代理链路。
+# 源站守卫、AnyTLS 与 Caddy→VLESS WebSocket 代理链路。
 # 需要 root（绑定 443/8443/10086）与锁定版本核心；缺核心/端口/进程失败即非零，不跳过。
 set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -184,13 +184,13 @@ cat >"${T}/client-anytls.json" <<JSON
 JSON
 cat >"${T}/client-ws.json" <<JSON
 {"log":{"level":"warn"},"inbounds":[{"type":"mixed","listen":"127.0.0.1","listen_port":18081}],
-"outbounds":[{"type":"vless","server":"127.0.0.1","server_port":8443,"uuid":"${VLESS_UUID}","tls":{"enabled":true,"server_name":"origin.example.com","alpn":["http/1.1"],"insecure":true},"transport":{"type":"httpupgrade","host":"origin.example.com","path":"${VLESS_PATH}","headers":{"X-Easy-All-Origin-Key":"${ORIGIN_HEADER_SECRET}"}}}]}
+"outbounds":[{"type":"vless","server":"127.0.0.1","server_port":8443,"uuid":"${VLESS_UUID}","tls":{"enabled":true,"server_name":"origin.example.com","insecure":true},"transport":{"type":"ws","path":"${VLESS_PATH}","headers":{"Host":"origin.example.com","X-Easy-All-Origin-Key":"${ORIGIN_HEADER_SECRET}"}}}]}
 JSON
 "${SB}" run -c "${T}/client-anytls.json" >"${T}/client-anytls.log" 2>&1 & CPID1=$!
 "${SB}" run -c "${T}/client-ws.json" >"${T}/client-ws.log" 2>&1 & CPID2=$!
 sleep 2
 kill -0 "${CPID1}" 2>/dev/null || { tail -5 "${T}/client-anytls.log" >&2; fail "AnyTLS 客户端进程未存活"; }
-kill -0 "${CPID2}" 2>/dev/null || { tail -5 "${T}/client-ws.log" >&2; fail "HTTPUpgrade 客户端进程未存活"; }
+kill -0 "${CPID2}" 2>/dev/null || { tail -5 "${T}/client-ws.log" >&2; fail "WebSocket 客户端进程未存活"; }
 proxy_status() {
     # 探测端点只验「请求真的穿过了代理并由目标站应答」：必须无未认证限流（api.github.com 对匿名
     # 请求会 403/429，CI 共享出口很容易被限流误判成代理不通），且响应体极小。
@@ -209,4 +209,4 @@ for port in 18080 18081; do
     done
     [[ "${status}" == "200" ]] || { tail -5 "${T}/client-anytls.log" "${T}/client-ws.log" >&2; fail "proxy ${port} 返回 ${status:-无}"; }
 done
-printf 'ok - 真核心 HTTP/代理链路（AnyTLS + Caddy→VLESS HTTPUpgrade）\n'
+printf 'ok - 真核心 HTTP/代理链路（AnyTLS + Caddy→VLESS WebSocket）\n'

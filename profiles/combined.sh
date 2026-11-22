@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mode 5: AnyTLS direct entry (TCP 443) plus the CloudFront CDN entry
-# (Caddy origin 8443 → sing-box loopback VLESS HTTPUpgrade on 10086).
+# (Caddy origin 8443 → sing-box loopback VLESS WebSocket on 10086).
 # 直连节点域名同时是 CloudFront 源站域名，订阅域名复用 CloudFront 节点域名：安装只问两个名字。
 set -Eeuo pipefail
 umask 077
@@ -26,7 +26,7 @@ CDN_PROVIDER=aws
 readonly CDN_PROFILE_KEY=combined-cloudfront
 readonly CDN_EXPECTED_PROTOCOL=combined-cloudfront
 readonly CDN_MODE_LABEL="直连+CDN（CloudFront）"
-readonly CDN_ENTRY_SUMMARY="AnyTLS direct 443 + AWS CloudFront VLESS HTTPUpgrade"
+readonly CDN_ENTRY_SUMMARY="AnyTLS direct 443 + AWS CloudFront VLESS WebSocket"
 CDN_INSTALL_PORTS=(443 8443)
 SUBSCRIPTION_OPTIONAL_VARIANTS=1
 

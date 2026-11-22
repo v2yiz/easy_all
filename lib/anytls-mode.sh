@@ -492,7 +492,7 @@ apply_cloud_phase() {
     anytls_ensure_zone_id
     if subscription_enabled; then
         cloudflare_ensure_zone_ssl_strict
-        # 模式 3 的橙云节点走 HTTPUpgrade（HTTP/1.1 Upgrade）：Zone 关闭 WebSockets 时链路必失败。
+        # 模式 3 的橙云节点走 WebSocket：Zone 关闭 WebSockets 时链路必失败。
         # 模式 1 不走 CDN 代理，不查该开关。
         if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
             cloudflare_ensure_zone_websockets_on

@@ -199,10 +199,10 @@ assert_equal "AnyTLS 节点字段" \
     "anytls direct.example.com 443 ${ANYTLS_PASSWORD} direct.example.com false chrome" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸直连") |
         "\(.type) \(.server) \(.server_port) \(.password) \(.tls.server_name) \(.tls.insecure // false) \(.tls.utls.fingerprint)"' "${default_json}")"
-assert_equal "VLESS HTTPUpgrade 节点字段" \
-    "vless cf.example.com 443 ${VLESS_UUID} httpupgrade ${VLESS_PATH} cf.example.com [\"http/1.1\"] xudp" \
+assert_equal "VLESS WS 节点字段" \
+    "vless cf.example.com 443 ${VLESS_UUID} ws ${VLESS_PATH} cf.example.com xudp" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
-        "\(.type) \(.server) \(.server_port) \(.uuid) \(.transport.type) \(.transport.path) \(.transport.host) \(.tls.alpn) \(.packet_encoding)"' "${default_json}")"
+        "\(.type) \(.server) \(.server_port) \(.uuid) \(.transport.type) \(.transport.path) \(.transport.headers.Host) \(.packet_encoding)"' "${default_json}")"
 assert_equal "Reality 节点字段" \
     "vless reality.example.com 8443 ${REALITY_UUID} xtls-rprx-vision reality.example.com ${REALITY_PBK} ab12cd34 chrome xudp" \
     "$(jq -r '.outbounds[] | select(.tag == "R-可用") |
@@ -413,7 +413,7 @@ assert_equal "模式 6 本机 Reality 节点字段" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸直连") |
         "\(.type) \(.server) \(.server_port) \(.uuid) \(.flow) \(.tls.server_name) \(.tls.reality.public_key) \(.tls.reality.short_id) \(.tls.utls.fingerprint) \(.packet_encoding)"' "${reality_json}")"
 assert_equal "模式 6 本机 CloudFront 节点字段" \
-    "vless cf.example.com 443 ${VLESS_UUID} httpupgrade cf.example.com ${VLESS_PATH} xudp" \
+    "vless cf.example.com 443 ${VLESS_UUID} ws cf.example.com ${VLESS_PATH} xudp" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
         "\(.type) \(.server) \(.server_port) \(.uuid) \(.transport.type) \(.tls.server_name) \(.transport.path) \(.packet_encoding)"' "${reality_json}")"
 assert_equal "模式 6 两个本机节点按 Reality → CloudFront 顺序" \
@@ -559,7 +559,7 @@ for edge_artifact in singbox.json singbox-all.json; do
     assert_equal "优选地址替换 ${edge_artifact} 本机 CDN 节点" \
         "k2v8nq4zt6.cloudfront.182682.xyz cf.example.com cf.example.com" \
         "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
-            "\(.server) \(.tls.server_name) \(.transport.host)"' \
+            "\(.server) \(.tls.server_name) \(.transport.headers.Host)"' \
             "${edge_out}/subs/${edge_artifact}")"
 done
 for edge_artifact in mihomo.yaml mihomo-all.yaml; do
