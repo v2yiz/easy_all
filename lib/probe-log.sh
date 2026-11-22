@@ -206,7 +206,7 @@ probe_log_write_file() {
 }
 
 probe_log_retention_notice() {
-    warn "MaxRetentionSec=30day 是 systemd-journald 的全局保留上限，影响主机全部 journal（不限 easy_all 或 GFW_CHK:）；超过上限的主机历史日志可能被 vacuum 且无法恢复。easy_all 不设置容量上限，主机既有容量限制仍可能让实际保留短于 30 天。"
+    info "MaxRetentionSec=30day 是 systemd-journald 的全局保留上限（影响主机全部 journal，超时清理后无法恢复，不设容量上限）"
 }
 
 # 直连模式的探测同步：写 unit 与 drop-in，daemon-reload、enable 后必须 restart 强制重放，
