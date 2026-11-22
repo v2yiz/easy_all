@@ -163,8 +163,7 @@ render_singbox_config() {
             rules: [
               {action: "resolve"},
               {ip_is_private: true, action: "reject"},
-              {ip_cidr: $private, action: "reject"},
-              {network: "udp", port: 443, action: "reject"}
+              {ip_cidr: $private, action: "reject"}
             ],
             final: "direct"
           }

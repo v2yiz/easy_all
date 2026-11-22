@@ -356,21 +356,6 @@
         "outbound": "PROXY"
       },
       {
-        "network": [
-          "udp"
-        ],
-        "port": [
-          443
-        ],
-        "rule_set": [
-          "proxy-services",
-          "geosite-google",
-          "telegram-fallback",
-          "geoip-telegram"
-        ],
-        "action": "reject"
-      },
-      {
         "rule_set": [
           "proxy-services"
         ],
@@ -441,15 +426,6 @@
           "geoip-cn"
         ],
         "outbound": "DIRECT"
-      },
-      {
-        "network": [
-          "udp"
-        ],
-        "port": [
-          443
-        ],
-        "action": "reject"
       }
     ],
     "rule_set": [

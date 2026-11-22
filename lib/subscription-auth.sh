@@ -132,10 +132,15 @@ strip_mihomo_sniffer() {
     [[ -s "${source}" ]] || die "待处理 Mihomo 配置为空：${source}"
     # 行尾注释允许出现（`sniffer:  # 嗅探`），内联映射无法按段剔除。
     # 顶格注释行原样保留：它们也可能属于上一个被剔除的顶层段，不能跟着 sniffer 段一起吐掉。
+    # iOS 变体同时把顶层 `tcp-concurrent` 关掉：并发建连换来的是更高内存占用，会顶到 iOS 后台内存红线。
     content=$(awk '
         /^sniffer:[[:space:]]*(#.*)?$/ { skip = 1; next }
         skip && /^#/ { print; next }
         skip && /^[^[:space:]#]/ { skip = 0 }
+        !skip && /^tcp-concurrent:[[:space:]]*true[[:space:]]*(#.*)?$/ {
+            print "tcp-concurrent: false"
+            next
+        }
         !skip { print }
     ' "${source}") || die "剥离 Mihomo 嗅探配置失败：${source}"
     if grep -q '^sniffer:' <<<"${content}"; then

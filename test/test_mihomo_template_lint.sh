@@ -269,14 +269,14 @@ for template in "${TEMPLATES[@]}"; do
     bare=$(policy_prefix_violations "${path}")
     [[ -z "${bare}" ]] || fail "${template}: nameserver-policy prefix violation: ${bare//$'\n'/; }"
 
-    # 8. sniffer 只允许嗅探 HTTP/TLS。境外 UDP/443 由规则立即 REJECT 并要求应用回退 TCP；
-    #    先嗅探 QUIC 会把这次拒绝拖到握手解析之后（据 Android 实机反馈会让 Google Play 下载长期停在
-    #    “等待中”，本仓库没有客户端内核可复现）。先剔除注释行，避免注释里的半角 "QUIC:" 造成假失败。
+    # 8. sniffer 只允许嗅探 HTTP/TLS。嗅探 QUIC 要解析握手，只会给 UDP 首包白加等待与内存开销；
+    #    没有域名信息的 QUIC 由 geoip 与 MATCH 按已有目标 IP 兜底分流。
+    #    先剔除注释行，避免注释里的半角 "QUIC:" 造成假失败。
     sniffer=$(sniffer_block "${path}")
     [[ -n "${sniffer}" ]] || fail "${template}: missing sniffer block"
     sniffer_body=$(printf '%s\n' "${sniffer}" | grep -v '^[[:space:]]*#' || true)
     if grep -qiE '^[[:space:]]*quic[[:space:]]*:' <<<"${sniffer_body}"; then
-        fail "${template}: QUIC sniffing must stay disabled (UDP/443 is rejected by rules)"
+        fail "${template}: QUIC sniffing must stay disabled (only HTTP/TLS are sniffed)"
     fi
     grep -qiE '^[[:space:]]*tls[[:space:]]*:' <<<"${sniffer_body}" \
         || fail "${template}: sniffer must keep TLS sniffing"
@@ -302,6 +302,21 @@ for template in "${TEMPLATES[@]}"; do
     bad_payloads=$(invalid_telegram_payloads "${path}")
     [[ -z "${bad_payloads}" ]] \
         || fail "${template}: invalid telegram-fallback payload: ${bad_payloads//$'\n'/ }"
+
+    # 12. 桌面端开启并发建连（iOS 变体下发时才改回 false，见 strip_mihomo_sniffer）；
+    #     rules 不得再拦截 UDP/443：直连流量原生走 QUIC，代理流量由 xudp 承载。
+    concurrent=$(sed -n 's/^tcp-concurrent:[[:space:]]*//p' "${path}")
+    [[ "${concurrent}" == "true" ]] \
+        || fail "${template}: tcp-concurrent must be true（实际：${concurrent:-<缺失>}）"
+    rules_block=$(awk '
+        /^rules:[[:space:]]*$/ { inside = 1; next }
+        inside && /^[^[:space:]#]/ { exit }
+        inside { print }
+    ' "${path}")
+    [[ -n "${rules_block}" ]] || fail "${template}: missing rules block"
+    if grep -Eq 'NETWORK,UDP|DST-PORT,443' <<<"${rules_block}"; then
+        fail "${template}: UDP/443 拦截规则必须清除：$(grep -E 'NETWORK,UDP|DST-PORT,443' <<<"${rules_block}" | head -1)"
+    fi
 
     printf 'ok - %s\n' "${template}"
 done

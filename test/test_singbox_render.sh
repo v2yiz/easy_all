@@ -191,8 +191,11 @@ for proto in anytls reality-self cloudfront cloudflare combined-cloudfront combi
     assert_equal "${proto}: 拒绝私网/特殊 CIDR" \
         '["0.0.0.0/8","10.0.0.0/8","100.64.0.0/10","127.0.0.0/8","169.254.0.0/16","172.16.0.0/12","192.0.0.0/24","192.168.0.0/16","198.18.0.0/15","224.0.0.0/4","240.0.0.0/4"]' \
         "$(jq -c '.route.rules[2].ip_cidr' <<<"${body}")"
-    assert_equal "${proto}: 拒绝 UDP/443" '{"network":"udp","port":443,"action":"reject"}' \
-        "$(jq -c '.route.rules[3]' <<<"${body}")"
+    # UDP/443 不再拦截：直连流量原生走 QUIC，代理流量由 xudp/UDP-over-TCP 承载。
+    assert_equal "${proto}: 路由规则恰为 3 条" "3" \
+        "$(jq -r '.route.rules | length' <<<"${body}")"
+    assert_equal "${proto}: 不再拦截 UDP/443" "0" \
+        "$(jq -r '[.route.rules[] | select(.action == "reject" and ((.port // []) | index(443)) != null)] | length' <<<"${body}")"
     assert_not_contains "${proto}: 不启用 v2ray_api" "${body}" "v2ray_api"
     assert_not_contains "${proto}: 不配置 experimental" "${body}" "experimental"
 done

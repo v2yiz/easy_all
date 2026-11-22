@@ -26,8 +26,8 @@ sniffer:
         override-destination: true
       TLS:
         ports: [443, 8443]
-      # 刻意不嗅探 QUIC：UDP/443 稍后会由规则立即 REJECT 并要求应用回退 TCP，
-      # 先嗅探 QUIC 会让这次拒绝被握手解析拖住，Android 上表现为 Google Play 下载长期停在“等待中”。
+      # 不嗅探 QUIC：UDP/443 已直接放行，嗅探要解析握手，只会给 UDP 首包白加等待与内存开销。
+      # 没有域名信息的 QUIC 由 geoip 与 MATCH 按已有目标 IP 兜底分流。
 
 tun:
     enable: true
@@ -178,7 +178,7 @@ dns:
     proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://doh.pub/dns-query']
 
 rule-providers:
-    # 内嵌小集合同时供 DNS、QUIC 与路由使用，不下载额外外部规则文件。
+    # 内嵌小集合同时供 DNS 与路由使用，不下载额外外部规则文件。
     captive-portal:
       type: inline
       behavior: domain
@@ -380,29 +380,19 @@ rules:
   - RULE-SET,captive-portal,DIRECT
   # FCM 使用真实 IP 后可能没有域名信息；专用 TCP 推送端口仍经代理，优先于 CN IP 直连。
   - AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY
-  # Google 优先于国内集合，让 Play 接口与下载使用同一代理出口。
-  # 先拒绝 Google QUIC，保留 TCP 回退；VPS 出站地址族仍由服务端策略锁定。
-  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-google)),REJECT
+  # Google 优先于国内集合，让 Play 接口与下载使用同一代理出口；VPS 出站地址族仍由服务端策略锁定。
   - RULE-SET,geosite-google,PROXY
-  # 明确代理的 AI 及服务例外优先于 CN/微软直连，且不能绕过 QUIC 拒绝。
-  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-github)),REJECT
+  # 明确代理的 AI 及服务例外优先于 CN/微软直连。
   - RULE-SET,geosite-github,PROXY
-  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-openai)),REJECT
   - RULE-SET,geosite-openai,PROXY
-  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-anthropic)),REJECT
   - RULE-SET,geosite-anthropic,PROXY
-  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,proxy-services)),REJECT
   - RULE-SET,proxy-services,PROXY
   # 国内 CDN 与上方国内 DNS 策略对齐，保留直连下载及 QUIC。
   - RULE-SET,geosite-apple-cn,DIRECT
   - RULE-SET,geosite-microsoft-cn,DIRECT
   # 完整国内域名集合；Google、AI 与 .ms 例外已在上方优先处理。
-  # 国内 QUIC 例外只匹配已有目标 IP；未知域名不会仅为 GEOIP 判断额外解析。
   - RULE-SET,geosite-cn,DIRECT
   - RULE-SET,geosite-geolocation-cn,DIRECT
-  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geoip-cn,no-resolve)),DIRECT
-  # 其余 UDP/443 拒绝，避免 QUIC 经 Reality/XHTTP/WebSocket 的 TCP 型隧道传输。
-  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   - DOMAIN,clash.razord.top,DIRECT
   - DOMAIN,yacd.haishan.me,DIRECT
   # 其余 AI 分类保留在 CN 后，避免把 Kimi 等重叠服务无条件改成代理。

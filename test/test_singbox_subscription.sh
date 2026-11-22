@@ -176,6 +176,14 @@ for artifact in base64.txt mihomo.yaml mihomo-ios.yaml singbox.json \
     base64-all.txt mihomo-all.yaml mihomo-ios-all.yaml singbox-all.json; do
     [[ -s "${out}/subs/${artifact}" ]] || fail "缺少订阅产物：${artifact}"
 done
+# 桌面端开启并发建连；iOS 变体同时关闭 tcp-concurrent 并剔光 sniffer 段（后台内存红线）。
+grep -q '^tcp-concurrent: true$' "${out}/subs/mihomo.yaml" \
+    || fail "mihomo.yaml 未开启 tcp-concurrent"
+grep -q '^tcp-concurrent: false$' "${out}/subs/mihomo-ios.yaml" \
+    || fail "mihomo-ios.yaml 未关闭 tcp-concurrent"
+if grep -q 'sniffer:' "${out}/subs/mihomo-ios.yaml"; then
+    fail "mihomo-ios.yaml 仍保留 sniffer 段"
+fi
 assert_file_mode "sing-box 订阅权限" "-rw-------" "${default_json}"
 assert_file_mode "sing-box all 订阅权限" "-rw-------" "${all_json}"
 jq -e . "${default_json}" >/dev/null || fail "singbox.json 不是有效 JSON"
@@ -309,22 +317,18 @@ assert_equal "CGNAT 与链路本地直连规则排在 ip_is_private 之后" \
     "$(jq -c '[.route.rules[] | if .ip_is_private == true then "ip_is_private" elif (.ip_cidr // [] | index("100.64.0.0/10")) != null then .ip_cidr[] else empty end]' "${default_json}")"
 assert_equal "CGNAT 与链路本地规则出口" '["DIRECT"]' \
     "$(jq -c '[.route.rules[] | select(.ip_cidr != null and (.ip_cidr | index("100.64.0.0/10")) != null) | .outbound]' "${default_json}")"
-# 对齐官方客户端示例：只嗅探 TUN 的 TCP 的 HTTP/TLS，不嗅探 QUIC（UDP/443 要立即拒绝回退 TCP，Mihomo 同样刻意不嗅探）。
+# 对齐官方客户端示例：只嗅探 TUN 的 TCP 的 HTTP/TLS，不嗅探 QUIC（嗅探要解析握手，只会给 UDP 首包白加等待与内存开销）。
 # 不包含 mixed 入站：本地 127.0.0.1:1080 的域名已由 SOCKS5/HTTP CONNECT 给出，再嗅探只会给非 Web 协议白加 300ms。
 # 端口不设上限：核心只内置跳过邮件端口（25/465/587/143/993/110/995），其余服务端先发协议仍要等满 300ms。
 assert_equal "嗅探只作用于 TUN 且不限端口" \
     '{"inbound":["tun-in"],"network":["tcp"],"action":"sniff","sniffer":["http","tls"],"timeout":"300ms"}' \
     "$(jq -c '.route.rules[] | select(.action == "sniff")' "${default_json}")"
-# 代理集合与 Telegram 的 UDP/443 只由一条规则拒绝，且先于任何代理/直连规则；其余 UDP/443 仍由末尾兜底拒绝。
-assert_equal "UDP/443 拒绝合并为一条并先于代理规则" \
-    '[["proxy-services","geosite-google","telegram-fallback","geoip-telegram"],"proxy-services"]' \
-    "$(jq -c '[(.route.rules[] | select(.action == "reject" and .rule_set != null) | .rule_set), (.route.rules | map(select(.outbound == "PROXY" and .rule_set != null)) | .[0].rule_set[0])]' "${default_json}")"
-assert_equal "UDP/443 拒绝规则位置先于代理规则" 'true' \
-    "$(jq -r '(.route.rules | map(.action == "reject" and .rule_set != null) | index(true)) as $reject
-        | (.route.rules | map(.outbound == "PROXY" and .rule_set != null) | index(true)) as $proxy
-        | $reject != null and $proxy != null and $reject < $proxy' "${default_json}")"
-assert_equal "末尾仍有 UDP/443 兜底拒绝" '{"network":["udp"],"port":[443],"action":"reject"}' \
-    "$(jq -c '.route.rules[-1]' "${default_json}")"
+# 不再拦截 UDP/443：直连流量原生走 QUIC，代理流量由 xudp/UDP-over-TCP 承载。
+# 没有域名信息的 QUIC 靠 geoip 与 MATCH 按已有目标 IP 兜底，所以也不再有 UDP 拒绝子规则。
+assert_equal "route.rules 不再拦截 UDP/443" '0' \
+    "$(jq -r '[.route.rules[] | select(.action == "reject" and ((.port // []) | index(443)) != null)] | length' "${default_json}")"
+assert_equal "不再有 UDP/443 兜底拒绝" '["geoip-cn"]' \
+    "$(jq -c '.route.rules[-1].rule_set' "${default_json}")"
 # Clash API 只放行内置直连的两个面板域名（仅 https：明文 http 面板在局域网里可被中间人注入脚本，
 # 而这两个面板域名走直连，注入的脚本又能借 CORS 调本机 API）。
 assert_equal "Clash API 限定来源" \
