@@ -2048,8 +2048,18 @@ assert_contains "模式 5 默认删除直连 A 记录" "$(<"${entry_cf_dir}/curl
     "DELETE https://api.cloudflare.com/client/v4/zones/zone123/dns_records/rec-direct.example.com-A"
 assert_contains "模式 5 清单列出独立直连 A 记录" "${entry_cf_output}" \
     "直连 A 记录: direct.example.com -> 203.0.113.10"
-assert_contains "模式 5 收尾披露 ACM validation CNAME" "${entry_cf_output}" \
-    "若有 ACM validation CNAME 残留，需核实无其他证书使用后人工删除"
+assert_contains "模式 5 收尾披露 ACM validation CNAME 保留条件" "${entry_cf_output}" \
+    "若有 ACM validation CNAME 因被其他证书复用或归属保护而保留，需核实无其他证书使用后人工删除"
+assert_contains "模式 5 资源清单说明验证记录的清理条件" "${entry_cf_output}" \
+    "ACM validation CNAME: 仅在 ACM 证书成功删除、无同账号其他证书复用且通过归属校验时一并清理"
+assert_contains "模式 5 本机卸载先停服务与计量保护" "${entry_cf_output}" \
+    "正在停止本机服务与流量计量保护"
+assert_contains "模式 5 本机卸载清理证书与 hook" "${entry_cf_output}" \
+    "正在清理本机证书与 Certbot hook"
+assert_contains "模式 5 本机卸载恢复平台防护" "${entry_cf_output}" \
+    "正在恢复 SSH、UFW 防火墙、IPv6 与探测日志规则"
+assert_contains "模式 5 本机卸载移除程序与状态目录" "${entry_cf_output}" \
+    "正在移除本机程序与状态目录"
 assert_uninstall_entry_cleanup "模式 5" "${entry_cf_dir}"
 assert_contains "模式 5 拒绝删除宿主命令路径" "$(<"${entry_cf_dir}/refusals.log")" \
     "/usr/local/bin/easy_all"

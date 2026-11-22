@@ -654,6 +654,315 @@ assert_contains "A2(d) 删除后清理 ACM" "${normal_calls}" "acm delete-certif
 assert_contains "A2(d) 删除后清理 Cloudflare DNS" "${normal_dns}" "DELETE /zones/zoneid/dns_records/rec1"
 assert_contains "A2(d) 报告分发已删除" "$(<"${TMP_DIR}/aws-case-normal/out")" "CloudFront 分发已删除"
 
+# --- 3.3 A40：CloudFront 卸载的阶段进度与 ACM validation CNAME 安全清理 ------------------
+# 假 aws 回放真实服务形状：分发首轮 InProgress/Disabled → 次轮 Deployed/Disabled；ACM 首轮带
+# InUseBy → 次轮收敛；验证记录名/值带末尾点号（Cloudflare 上存的是去点后的值）。
+validation_bin="${TMP_DIR}/validation-bin"
+mkdir -p "${validation_bin}"
+cat >"${validation_bin}/aws" <<'FAKE_AWS_VALIDATION'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >>"${V_AWS_LOG}"
+args=("$@")
+service=""
+op=""
+arn=""
+for i in "${!args[@]}"; do
+    case "${args[$i]}" in
+    cloudfront | acm)
+        service=${args[$i]}
+        op=${args[$((i + 1))]:-}
+        break
+        ;;
+    esac
+done
+for i in "${!args[@]}"; do
+    [[ "${args[$i]}" != "--certificate-arn" ]] || arn=${args[$((i + 1))]:-}
+done
+record_json() { # $1=DomainName $2=ResourceRecord 名 $3=ResourceRecord 值
+    printf '{"DomainName":"%s","ResourceRecord":{"Name":"%s","Type":"CNAME","Value":"%s"}}' \
+        "$1" "$2" "$3"
+}
+case "${service} ${op}" in
+"cloudfront get-distribution-config")
+    printf '{"ETag":"ETAG-V1","DistributionConfig":{"Comment":"%s","Enabled":true,"Aliases":{"Quantity":2,"Items":["%s","%s"]},"Origins":{"Quantity":1,"Items":[{"Id":"o1","DomainName":"%s"}]}}}\n' \
+        "${V_DIST_COMMENT}" "${V_NODE_DOMAIN}" "${V_SUB_DOMAIN}" "${V_ORIGIN_DOMAIN}"
+    ;;
+"cloudfront update-distribution") printf '{}\n' ;;
+"cloudfront get-distribution")
+    n=$(cat "${V_STATE}/dist-calls" 2>/dev/null || printf '0')
+    n=$((n + 1))
+    printf '%s' "${n}" >"${V_STATE}/dist-calls"
+    # 首轮回放上一次部署值：只按 Status 判定的实现会拿过期配置去 delete。
+    if ((n == 1)); then
+        printf '{"Distribution":{"Status":"InProgress","DistributionConfig":{"Enabled":false}}}\n'
+    else
+        printf '{"Distribution":{"Status":"Deployed","DistributionConfig":{"Enabled":false}}}\n'
+    fi
+    ;;
+"cloudfront delete-distribution") printf '{}\n' ;;
+"acm list-certificates")
+    [[ "${V_OTHER}" != "list-fail" ]] \
+        || { printf 'AccessDenied: acm:ListCertificates\n' >&2; exit 254; }
+    printf '{"CertificateSummaryList":[{"CertificateArn":"%s"},{"CertificateArn":"%s"}]}\n' \
+        "${V_OWN_ARN}" "${V_OTHER_ARN}"
+    ;;
+"acm list-tags-for-certificate")
+    node=${V_NODE_DOMAIN}
+    [[ "${V_TAGS}" != "foreign" ]] || node="someone-else.example.com"
+    printf '{"Tags":[{"Key":"easy_all","Value":"managed"},{"Key":"easy_all-node","Value":"%s"}]}\n' \
+        "${node}"
+    ;;
+"acm describe-certificate")
+    if [[ "${arn}" == "${V_OWN_ARN}" ]]; then
+        m=$(cat "${V_STATE}/inuse-calls" 2>/dev/null || printf '0')
+        m=$((m + 1))
+        printf '%s' "${m}" >"${V_STATE}/inuse-calls"
+        inuse='["EDFDVBD6EXAMPLE"]'
+        if [[ "${V_INUSE}" == "settle" ]] && ((m >= 2)); then
+            inuse='[]'
+        fi
+        printf '{"Certificate":{"DomainName":"%s","Status":"ISSUED","CertificateArn":"%s","SubjectAlternativeNames":["%s"],"InUseBy":%s,"DomainValidationOptions":[%s,%s]}}\n' \
+            "${V_NODE_DOMAIN}" "${arn}" "${V_SUB_DOMAIN}" "${inuse}" \
+            "$(record_json "${V_NODE_DOMAIN}" "_x1.${V_NODE_DOMAIN}." "_v1.acm-validations.aws.")" \
+            "$(record_json "${V_SUB_DOMAIN}" "_x2.${V_SUB_DOMAIN}." "_v2.acm-validations.aws.")"
+    else
+        # 其他证书：reuse 时引用同一条 _x1 验证记录，否则是另一个域名的记录。
+        if [[ "${V_OTHER}" == "reuse" ]]; then
+            printf '{"Certificate":{"DomainName":"%s","Status":"ISSUED","CertificateArn":"%s","InUseBy":[],"DomainValidationOptions":[%s]}}\n' \
+                "${V_NODE_DOMAIN}" "${arn}" \
+                "$(record_json "${V_NODE_DOMAIN}" "_x1.${V_NODE_DOMAIN}." "_v1.acm-validations.aws.")"
+        else
+            printf '{"Certificate":{"DomainName":"other.example.com","Status":"ISSUED","CertificateArn":"%s","InUseBy":[],"DomainValidationOptions":[%s]}}\n' \
+                "${arn}" \
+                "$(record_json "other.example.com" "_x9.other.example.com." "_v9.acm-validations.aws.")"
+        fi
+    fi
+    ;;
+"acm delete-certificate")
+    [[ "${V_DELETE_FAIL}" != "1" ]] \
+        || { printf 'AccessDenied: acm:DeleteCertificate\n' >&2; exit 254; }
+    printf '{}\n'
+    ;;
+*)
+    printf 'fake aws: unexpected call: %s\n' "$*" >&2
+    exit 254
+    ;;
+esac
+FAKE_AWS_VALIDATION
+chmod +x "${validation_bin}/aws"
+
+# 调用方参数：$1=用例名 $2=其他证书(none|reuse|list-fail) $3=delete 失败(0|1)
+# $4=业务记录注释(managed|foreign) $5=验证记录被接管(0|1) $6=ACM 管理标记(managed|foreign)
+run_validation_purge_case() {
+    local name=$1 other=$2 delete_fail=$3 comment=$4 takeover=$5 tags=$6
+    local root="${TMP_DIR}/validation-${name}"
+    rm -rf -- "${root}"
+    mkdir -p "${root}/runtime" "${root}/state" "${root}/aws"
+    : >"${root}/aws.calls"
+    : >"${root}/dns.calls"
+    if [[ "${takeover}" == "1" ]]; then
+        printf '{"ts":"2025-01-01T00:00:00Z","host":"_x1.cf.example.com","old_comment":"foreign","old_content":"198.51.100.20","old_proxied":"false","old_ttl":"300"}\n' \
+            >"${root}/takeover.log"
+    fi
+    (
+        set -Eeuo pipefail
+        export PATH="${validation_bin}:${PATH}"
+        export V_AWS_LOG="${root}/aws.calls"
+        export V_STATE="${root}/aws"
+        export V_OTHER="${other}"
+        export V_DELETE_FAIL="${delete_fail}"
+        export V_TAGS="${tags}"
+        export V_INUSE="settle"
+        export RUNTIME_TMP="${root}/runtime"
+        export EASY_ALL_STATE_DIR_OVERRIDE="${root}/state"
+        export EASY_ALL_DNS_TAKEOVER_LOG_OVERRIDE="${root}/takeover.log"
+        source "${ROOT_DIR}/profiles/cloudfront.sh"
+        export V_OWN_ARN="arn:aws:acm:${AWS_CONTROL_REGION}:123456789012:certificate/C1"
+        export V_OTHER_ARN="arn:aws:acm:${AWS_CONTROL_REGION}:123456789012:certificate/C2"
+        export V_NODE_DOMAIN=cf.example.com
+        export V_SUB_DOMAIN=sub.cf.example.com
+        export V_ORIGIN_DOMAIN=origin.example.com
+        export V_DIST_COMMENT="easy_all-cloudfront-cf.example.com"
+        export CF_NODE_DOMAIN="${V_NODE_DOMAIN}"
+        export SUBSCRIPTION_DOMAIN="${V_SUB_DOMAIN}"
+        export CF_ORIGIN_DOMAIN="${V_ORIGIN_DOMAIN}"
+        export AWS_CLOUDFRONT_DOMAIN=d111111abcdef8.cloudfront.net
+        CLOUDFLARE_ZONE_ID=zoneid
+        CLOUDFLARE_API_TOKEN="fake-token-abcdefghijklmnop"
+        VPS_PUBLIC_IPV4=203.0.113.10
+        AWS_CLOUDFRONT_DISTRIBUTION_ID=D1
+        AWS_ACM_CERTIFICATE_ARN="${V_OWN_ARN}"
+        AWS_ACCESS_KEY_ID=AKIAVALIDATIONCNAME01
+        AWS_SECRET_ACCESS_KEY=validation-cname-secret
+        record_comment="easy_all cloudfront"
+        [[ "${comment}" != "foreign" ]] || record_comment="hand-managed"
+        # Cloudflare 上存的是去点号后的值；注释与内容都可按用例变化。
+        cloudflare_record_list() {
+            local type=$2 host=$3 content
+            case "${host}" in
+            _x1.cf.example.com) content=_v1.acm-validations.aws ;;
+            _x2.sub.cf.example.com) content=_v2.acm-validations.aws ;;
+            *)
+                if [[ "${type}" == "A" ]]; then
+                    content=203.0.113.10
+                else
+                    content=d111111abcdef8.cloudfront.net
+                fi
+                ;;
+            esac
+            printf '[{"id":"rec-%s-%s","type":"%s","name":"%s","content":"%s","proxied":false,"comment":"%s","ttl":300}]\n' \
+                "${host}" "${type}" "${type}" "${host}" "${content}" "${record_comment}"
+        }
+        cloudflare_api_request() {
+            local method=$1 path=$2
+            printf '%s %s\n' "${method}" "${path}" >>"${root}/dns.calls"
+            printf 'null\n'
+        }
+        sleep() { :; }
+        status=0
+        cdn_purge_aws_resources || status=$?
+        printf 'PURGE_STATUS=%s\n' "${status}"
+    ) </dev/null >"${root}/out" 2>"${root}/err" || true
+}
+
+purge_case_status() { # $1=用例名
+    sed -n 's/^PURGE_STATUS=//p' "${TMP_DIR}/validation-$1/out" | tail -n 1
+}
+
+# (a) 正常路径：分发禁用等待 + ACM 占用等待 + 证书删除 + 验证记录一并清理，全阶斵有进度。
+run_validation_purge_case clean none 0 managed 0 managed
+clean_out=$(<"${TMP_DIR}/validation-clean/out")
+clean_err=$(<"${TMP_DIR}/validation-clean/err")
+clean_aws=$(<"${TMP_DIR}/validation-clean/aws.calls")
+clean_dns=$(<"${TMP_DIR}/validation-clean/dns.calls")
+assert_equal "A40(a) 清理退出 0" "0" "$(purge_case_status clean)"
+assert_contains "A40(a) 输出分发校验进度" "${clean_out}" "正在校验 CloudFront 分发归属：D1"
+assert_contains "A40(a) 输出禁用进度" "${clean_out}" "正在禁用 CloudFront 分发：D1"
+assert_contains "A40(a) 输出分发状态轮询进度" "${clean_out}" \
+    "正在等待 CloudFront 分发状态收敛（目标 Enabled=false，当前 Status=InProgress"
+assert_contains "A40(a) 输出分发删除进度" "${clean_out}" "正在删除 CloudFront 分发：D1"
+assert_contains "A40(a) 输出分发删除结果" "${clean_out}" "CloudFront 分发已删除：D1"
+assert_contains "A40(a) 输出 ACM 校验进度" "${clean_out}" "正在校验 ACM 证书归属与占用状态"
+assert_contains "A40(a) 输出 ACM 删除进度" "${clean_out}" \
+    "正在删除 ACM 证书：arn:aws:acm:us-east-1:123456789012:certificate/C1"
+assert_contains "A40(a) ACM 删除结果点名 ARN" "${clean_out}" \
+    "ACM 证书已删除：arn:aws:acm:us-east-1:123456789012:certificate/C1"
+assert_contains "A40(a) 输出 DNS 清理入口" "${clean_out}" "正在清理 Cloudflare DNS 记录"
+assert_contains "A40(a) 每条删除有结果" "${clean_out}" \
+    "已删除 Cloudflare CNAME 记录：_x1.cf.example.com -> _v1.acm-validations.aws"
+assert_contains "A40(a) 无保留时汇总为完成" "${clean_out}" "Cloudflare DNS 清理完成"
+assert_contains "A40(a) 校验同账号其他证书" "${clean_aws}" "acm list-certificates"
+assert_contains "A40(a) 删除节点域名验证记录" "${clean_dns}" \
+    "DELETE /zones/zoneid/dns_records/rec-_x1.cf.example.com-CNAME"
+assert_contains "A40(a) 删除订阅域名验证记录" "${clean_dns}" \
+    "DELETE /zones/zoneid/dns_records/rec-_x2.sub.cf.example.com-CNAME"
+assert_not_contains "A40(a) 分发阶段进度仍走 stdout（日志契约不变）" "${clean_err}" "正在禁用 CloudFront 分发"
+
+# 等待 ACM 解除占用的进度必须走 stderr：该函数的 stdout 就是返回给调用方的 JSON。
+run_acm_settle_stdout_case() {
+    local root="${TMP_DIR}/validation-acm-stdout"
+    rm -rf -- "${root}"
+    mkdir -p "${root}/runtime" "${root}/state" "${root}/aws"
+    (
+        set -Eeuo pipefail
+        export PATH="${validation_bin}:${PATH}"
+        export V_AWS_LOG="${root}/aws.calls"
+        export V_STATE="${root}/aws"
+        export V_OTHER="none"
+        export V_DELETE_FAIL="0"
+        export V_TAGS="managed"
+        export V_INUSE="settle"
+        export RUNTIME_TMP="${root}/runtime"
+        export EASY_ALL_STATE_DIR_OVERRIDE="${root}/state"
+        source "${ROOT_DIR}/profiles/cloudfront.sh"
+        export V_OWN_ARN="arn:aws:acm:${AWS_CONTROL_REGION}:123456789012:certificate/C1"
+        export V_OTHER_ARN="arn:aws:acm:${AWS_CONTROL_REGION}:123456789012:certificate/C2"
+        export V_NODE_DOMAIN=cf.example.com
+        export V_SUB_DOMAIN=sub.cf.example.com
+        export V_ORIGIN_DOMAIN=origin.example.com
+        export V_DIST_COMMENT="easy_all-cloudfront-cf.example.com"
+        sleep() { :; }
+        describe_settled_acm_certificate "${V_OWN_ARN}"
+    ) </dev/null >"${root}/out" 2>"${root}/err" || true
+}
+run_acm_settle_stdout_case
+jq -e '.Certificate.DomainName == "cf.example.com"' "${TMP_DIR}/validation-acm-stdout/out" >/dev/null 2>&1 \
+    || fail "A40(b) 等待进度污染了 describe_settled_acm_certificate 的 JSON 返回值：$(<"${TMP_DIR}/validation-acm-stdout/out")"
+assert_contains "A40(b) ACM 占用等待进度走 stderr" \
+    "$(<"${TMP_DIR}/validation-acm-stdout/err")" "正在等待 ACM 证书解除分发占用"
+assert_not_contains "A40(b) ACM 占用等待进度不进 stdout" \
+    "$(<"${TMP_DIR}/validation-acm-stdout/out")" "正在等待"
+
+# (b) 同账号其他证书引用同一条验证记录：保留 _x1，仍清理 _x2，汇总不得误报为完成。
+run_validation_purge_case reuse reuse 0 managed 0 managed
+reuse_out=$(<"${TMP_DIR}/validation-reuse/out")
+reuse_dns=$(<"${TMP_DIR}/validation-reuse/dns.calls")
+assert_equal "A40(c) 复用保护下仍退出 0" "0" "$(purge_case_status reuse)"
+assert_not_contains "A40(c) 被其他证书引用的验证记录不得删除" "${reuse_dns}" \
+    "dns_records/rec-_x1.cf.example.com-CNAME"
+assert_contains "A40(c) 未被引用的验证记录仍然删除" "${reuse_dns}" \
+    "dns_records/rec-_x2.sub.cf.example.com-CNAME"
+assert_contains "A40(c) 点名引用该记录的证书 ARN" "${reuse_out}" \
+    "仍被同账号其他 ACM 证书引用（arn:aws:acm:us-east-1:123456789012:certificate/C2）；保留"
+assert_contains "A40(c) 有保留时汇总不得声称完成" "${reuse_out}" \
+    "Cloudflare DNS 清理结束（部分记录按归属或复用保护规则保留，见上方告警）"
+assert_not_contains "A40(c) 不得同时输出清理完成" "${reuse_out}" "Cloudflare DNS 清理完成"
+
+# (c) 枚举失败（权限不足）：保守保留全部验证记录，业务 DNS 照常清理。
+run_validation_purge_case list-fail list-fail 0 managed 0 managed
+list_fail_out=$(<"${TMP_DIR}/validation-list-fail/out")
+list_fail_dns=$(<"${TMP_DIR}/validation-list-fail/dns.calls")
+assert_equal "A40(d) 枚举失败不阻断卸载" "0" "$(purge_case_status list-fail)"
+assert_not_contains "A40(d) 枚举失败时保留 _x1 验证记录" "${list_fail_dns}" \
+    "rec-_x1.cf.example.com-CNAME"
+assert_not_contains "A40(d) 枚举失败时保留 _x2 验证记录" "${list_fail_dns}" \
+    "rec-_x2.sub.cf.example.com-CNAME"
+assert_contains "A40(d) 枚举失败要告警" "${list_fail_out}" \
+    "无法完整枚举同账号其他 ACM 证书（权限或接口失败）；保守保留 ACM validation CNAME"
+assert_contains "A40(d) 业务 DNS 仍被清理" "${list_fail_dns}" \
+    "DELETE /zones/zoneid/dns_records/rec-origin.example.com-A"
+assert_contains "A40(d) 保守保留时汇总不得声称完成" "${list_fail_out}" \
+    "Cloudflare DNS 清理结束（部分记录按归属或复用保护规则保留，见上方告警）"
+
+# (d) 删除证书失败：验证记录必须留存，且不必再去枚举其他证书。
+run_validation_purge_case delete-fail none 1 managed 0 managed
+delete_fail_out=$(<"${TMP_DIR}/validation-delete-fail/out")
+delete_fail_dns=$(<"${TMP_DIR}/validation-delete-fail/dns.calls")
+assert_equal "A40(e) 删除证书失败退出非零" "1" "$(purge_case_status delete-fail)"
+assert_contains "A40(e) 说明验证记录随证书保留" "${delete_fail_out}" \
+    "删除 ACM 证书失败：arn:aws:acm:us-east-1:123456789012:certificate/C1；保留其 ACM validation CNAME"
+assert_not_contains "A40(e) 不得删除验证记录" "${delete_fail_dns}" "acm-validations"
+assert_equal "A40(e) 证书未删时不做复用枚举" "0" \
+    "$(grep -c 'acm list-certificates' "${TMP_DIR}/validation-delete-fail/aws.calls" || true)"
+
+# (e) ACM 归属校验失败：不删证书，也不删验证记录。
+run_validation_purge_case tags-foreign none 0 managed 0 foreign
+tags_foreign_out=$(<"${TMP_DIR}/validation-tags-foreign/out")
+assert_equal "A40(f) 归属不符退出非零" "1" "$(purge_case_status tags-foreign)"
+assert_contains "A40(f) 归属不符要告警并声明保留验证记录" "${tags_foreign_out}" \
+    "跳过其 validation CNAME 清理"
+assert_not_contains "A40(f) 归属不符不删验证记录" \
+    "$(<"${TMP_DIR}/validation-tags-foreign/dns.calls")" "acm-validations"
+assert_equal "A40(f) 归属不符不调用删除证书" "0" \
+    "$(grep -c 'acm delete-certificate' "${TMP_DIR}/validation-tags-foreign/aws.calls" || true)"
+
+# (f) 验证记录来自强制接管：即使证书已删、归属匹配也保留。
+run_validation_purge_case takeover none 0 managed 1 managed
+takeover_dns=$(<"${TMP_DIR}/validation-takeover/dns.calls")
+assert_not_contains "A40(g) 接管来的验证记录不得删除" "${takeover_dns}" \
+    "rec-_x1.cf.example.com-CNAME"
+assert_contains "A40(g) 说明保留原因" "$(<"${TMP_DIR}/validation-takeover/out")" "来自强制接管"
+assert_contains "A40(g) 未接管的验证记录仍删除" "${takeover_dns}" \
+    "rec-_x2.sub.cf.example.com-CNAME"
+
+# (g) 注释不符：验证记录不是本工具写的，保留。
+run_validation_purge_case comment-foreign none 0 foreign 0 managed
+comment_dns=$(<"${TMP_DIR}/validation-comment-foreign/dns.calls")
+assert_not_contains "A40(h) 注释不符的验证记录不得删除" "${comment_dns}" "acm-validations"
+assert_contains "A40(h) 注释不符要点名保留" "$(<"${TMP_DIR}/validation-comment-foreign/out")" \
+    "不是本链路创建的"
+
 # --- 3.35 A8：marker 发现路径上的 PENDING_VALIDATION 必须放行（不得 die）-------------
 # find_existing_acm_certificate 是「无状态复用」路径：证书带本节点管理标记但还在等待签发，
 # 必须交下游「写验证记录 → 轮询签发」，而不是 die 掉（否则重装死锁永远解不开）。

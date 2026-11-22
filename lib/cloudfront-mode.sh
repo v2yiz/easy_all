@@ -409,12 +409,16 @@ cdn_describe_acm_certificate() {
 # 耗尽后返回最后一次读数，由调用方的归属校验按既有口径保留并失败（不放宽归属判定）。
 describe_settled_acm_certificate() {
     local arn=$1 attempt description
+    local max_wait=$((ACM_IN_USE_WAIT_ATTEMPTS * ACM_IN_USE_WAIT_SECONDS))
     for attempt in $(seq 1 "${ACM_IN_USE_WAIT_ATTEMPTS}"); do
         description=$(cdn_describe_acm_certificate "${arn}" || true)
         [[ -n "${description}" ]] || break
         [[ "$(jq '.Certificate.InUseBy // [] | length' <<<"${description}" 2>/dev/null || echo 1)" != "0" ]] \
             || break
         ((attempt < ACM_IN_USE_WAIT_ATTEMPTS)) || break
+        # 本函数的 stdout 就是返回给调用方的 JSON：进度只能走 stderr。
+        ((attempt % 3 != 1)) \
+            || info "正在等待 ACM 证书解除分发占用（已等待 $(((attempt - 1) * ACM_IN_USE_WAIT_SECONDS))s / 最长 ${max_wait}s）..." >&2
         sleep "${ACM_IN_USE_WAIT_SECONDS}"
     done
     printf '%s\n' "${description}"
@@ -747,6 +751,7 @@ cloudfront_find_existing_distribution() {
 # 配置去 update/delete-distribution 而被服务端拒绝。预期状态必须同时匹配 Status 与 Enabled。
 wait_for_cloudfront_distribution_state() {
     local id=$1 expected_enabled=$2 attempt description status enabled
+    local max_wait=$((CLOUDFRONT_DEPLOY_WAIT_ATTEMPTS * CLOUDFRONT_DEPLOY_WAIT_SECONDS))
     for attempt in $(seq 1 "${CLOUDFRONT_DEPLOY_WAIT_ATTEMPTS}"); do
         description=$(aws_cli cloudfront get-distribution --id "${id}" \
             --output json 2>/dev/null || true)
@@ -757,6 +762,8 @@ wait_for_cloudfront_distribution_state() {
         if [[ "${status}" == "Deployed" && "${enabled}" == "${expected_enabled}" ]]; then
             return 0
         fi
+        ((attempt % 3 != 1)) \
+            || info "正在等待 CloudFront 分发状态收敛（目标 Enabled=${expected_enabled}，当前 Status=${status:-未知}，Enabled=${enabled:-未知}，已等待 $(((attempt - 1) * CLOUDFRONT_DEPLOY_WAIT_SECONDS))s / 最长 ${max_wait}s）..."
         sleep "${CLOUDFRONT_DEPLOY_WAIT_SECONDS}"
     done
     return 1
@@ -1668,6 +1675,7 @@ renew_certificate() {
 }
 
 cdn_local_uninstall_common() {
+    info "正在停止本机服务与流量计量保护..."
     stop_maintenance_services || true
     remove_cdn_traffic_protection_timer || true
     stop_services
@@ -1675,8 +1683,10 @@ cdn_local_uninstall_common() {
     # 先停核心再回收计量；失败时不删除 state/命令，保留重试依据。
     cdn_traffic_counters_remove \
         || { warn "回收 mangle 计量规则失败；已保留本机状态与命令，修正后重试 uninstall"; return 1; }
+    info "正在清理本机证书与 Certbot hook..."
     remove_certbot_deploy_hook || true
     certificate_remove_lineage || true
+    info "正在恢复 SSH、UFW 防火墙、IPv6 与探测日志规则..."
     restore_platform_security_state || {
         warn "SSH 配置恢复失败；请通过服务商 Console 检查"
         return 1
@@ -1691,6 +1701,7 @@ cdn_local_uninstall_common() {
         warn "卸载未完成：移除 easy_all 定时重启任务失败，本机状态与命令已保留；修正 root crontab 后重试 uninstall"
         return 1
     fi
+    info "正在移除本机程序与状态目录..."
     rm -f -- "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" "$(dirname -- "${SUBSCRIPTION_DIR}")" \
@@ -1705,7 +1716,7 @@ uninstall_all() {
     [[ ! -f "${STATE_FILE}" ]] || load_state
     if [[ "${FORCE:-0}" != "1" ]]; then
         [[ -t 0 ]] || die "非交互卸载必须显式设置 FORCE=1"
-        read_bilingual '删除 easy_all 本机服务、状态和证书，以及本工具创建的 CloudFront 分发、ACM 证书与业务 DNS（ACM validation CNAME 保留）？[y/N]:' answer
+        read_bilingual '删除 easy_all 本机服务、状态和证书，以及本工具创建的 CloudFront 分发、ACM 证书、业务 DNS 及无其他证书复用的 ACM validation CNAME？[y/N]:' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
     stop_maintenance_services || true
@@ -1722,7 +1733,7 @@ uninstall_all() {
     fi
     cdn_local_uninstall_common || return 1
     success "easy_all 本机内容已卸载；云端清理结果见上方输出"
-    warn "若有 ACM validation CNAME 残留，需核实无其他证书使用后人工删除"
+    warn "若有 ACM validation CNAME 因被其他证书复用或归属保护而保留，需核实无其他证书使用后人工删除"
     ((cloud_failed == 0)) || return 1
 }
 
@@ -1862,14 +1873,19 @@ cdn_print_cloud_inventory() {
     dns_names=${CF_NODE_DOMAIN:-未知}
     [[ "${SUBSCRIPTION_DOMAIN:-}" == "${CF_NODE_DOMAIN:-}" ]] || dns_names+=",${SUBSCRIPTION_DOMAIN:-未知}"
     printf '  节点/订阅 CNAME: %s -> %s\n' "${dns_names}" "${AWS_CLOUDFRONT_DOMAIN:-未知}" >&2
-    printf '  ACM validation CNAME 默认保留（同一验证记录可能被其他证书复用，需核实后手工删除）\n' >&2
+    printf '  ACM validation CNAME: 仅在 ACM 证书成功删除、无同账号其他证书复用且通过归属校验时一并清理\n' >&2
 }
 
+# 第一参数标志「本函数之外已有验证记录按复用保护保留」（1=有），其余位置参数是待清理的
+# TYPE|HOST|VALUE 候选；汇总行必须在同一个地方决定，否则会同时报「完成」与「保留」。
 cdn_purge_cloudflare_dns() {
     local spec type host expected rest domain records count id comment current failed=0
+    local retained=${1:-0}
+    (($# == 0)) || shift
     local seen="|"
     local -a pairs=()
     cdn_ensure_zone_id || return 1
+    info "正在清理 Cloudflare DNS 记录..."
     pairs+=("A|${CF_ORIGIN_DOMAIN}|${VPS_PUBLIC_IPV4}")
     if [[ -n "${AWS_CLOUDFRONT_DOMAIN:-}" ]]; then
         pairs+=("CNAME|${CF_NODE_DOMAIN}|${AWS_CLOUDFRONT_DOMAIN}")
@@ -1882,6 +1898,8 @@ cdn_purge_cloudflare_dns() {
         [[ -n "${domain}" ]] || continue
         pairs+=("A|${domain}|${VPS_PUBLIC_IPV4}")
     done < <(cdn_direct_domains)
+    # 位置参数是 ACM validation CNAME（TYPE|HOST|VALUE），与业务 DNS 走同一套归属校验。
+    pairs+=("$@")
     for spec in "${pairs[@]}"; do
         type=${spec%%|*}
         rest=${spec#*|}
@@ -1898,6 +1916,7 @@ cdn_purge_cloudflare_dns() {
         if ((count > 1)); then
             warn "Cloudflare 存在 ${count} 条同名 ${type} 记录，无法判断归属：${host}"
             failed=1
+            retained=1
             continue
         fi
         id=$(jq -r '.[0].id' <<<"${records}")
@@ -1906,26 +1925,79 @@ cdn_purge_cloudflare_dns() {
         # 类型、注释、目标三者同时匹配才删；任一不符只告警保留。
         if [[ "${comment}" != "${CDN_RECORD_COMMENT}" ]]; then
             warn "Cloudflare ${host} 的 ${type} 记录不是本链路创建的（注释：${comment:-空}）；保留"
+            retained=1
             continue
         fi
         # 注释已在本工具安装时被改写：只有接管日志才能证明它原本属于第三方。
         if dns_record_taken_over "${host}"; then
             warn "Cloudflare ${host} 的 ${type} 记录来自强制接管（原注释/指向见 $(dns_takeover_log_file)）；保留，如需删除请手工处理"
+            retained=1
             continue
         fi
         if [[ "${current}" != "${expected}" ]]; then
             warn "Cloudflare ${host} 的 ${type} 记录目标已变化（${current:-空}）；保留"
+            retained=1
             continue
         fi
         (cloudflare_api_request DELETE "/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" >/dev/null) \
-            || { warn "删除 Cloudflare 记录失败：${host}"; failed=1; }
+            || { warn "删除 Cloudflare 记录失败：${host}"; failed=1; continue; }
+        success "已删除 Cloudflare ${type} 记录：${host} -> ${expected}"
     done
-    return "${failed}"
+    ((failed == 0)) || return 1
+    if ((retained != 0)); then
+        info "Cloudflare DNS 清理结束（部分记录按归属或复用保护规则保留，见上方告警）"
+    else
+        success "Cloudflare DNS 清理完成"
+    fi
+}
+
+# ACM 证书 JSON → validation 记录列表（TYPE|HOST|VALUE，去掉末尾点号，丢弃字段缺失的行）。
+# Cloudflare 上写入的 content 就是去掉末尾点号后的值（见 find_or_request_acm_certificate），
+# 两边同口径才能用字符串比对归属。
+acm_validation_record_specs() {
+    jq -r '.Certificate.DomainValidationOptions[]? | select(.ResourceRecord) |
+        [.ResourceRecord.Type, .ResourceRecord.Name, .ResourceRecord.Value]
+        | map((. // "") | sub("\\.$"; "")) as $fields
+        | select(all($fields[]; length > 0)) | $fields | join("|")' <<<"${1:-}"
+}
+
+# 同一账号同 FQDN 的多张 ACM 证书共享同一条 DNS 验证记录：删证书前必须确认没有别的证书还引用它，
+# 否则删掉记录会让他人的证书在重新验证/续期时失败。stdout 输出「TYPE|HOST|VALUE<TAB>证书 ARN」；
+# 任一 list/describe 调用失败即返回 1，由调用方保守保留全部候选（宁可不删）。
+acm_other_certificate_validation_records() {
+    local next="" page arns arn other specs spec pages=0
+    local seen="|"
+    while :; do
+        local -a page_args=(acm list-certificates --region "${AWS_CONTROL_REGION}" --output json)
+        [[ -z "${next}" ]] || page_args+=(--next-token "${next}")
+        page=$(aws_cli "${page_args[@]}" 2>/dev/null) || return 1
+        arns=$(jq -r '.CertificateSummaryList[]?.CertificateArn // empty' <<<"${page}" 2>/dev/null) \
+            || return 1
+        while IFS= read -r arn; do
+            [[ -n "${arn}" ]] || continue
+            [[ "${arn}" != "${AWS_ACM_CERTIFICATE_ARN:-}" ]] || continue
+            other=$(cdn_describe_acm_certificate "${arn}" || true)
+            [[ -n "${other}" ]] || return 1
+            specs=$(acm_validation_record_specs "${other}") || return 1
+            while IFS= read -r spec; do
+                [[ -n "${spec}" ]] || continue
+                printf '%s\t%s\n' "${spec}" "${arn}"
+            done <<<"${specs}"
+        done <<<"${arns}"
+        next=$(jq -r '.NextToken // empty' <<<"${page}" 2>/dev/null) || return 1
+        [[ -n "${next}" ]] || break
+        [[ "${seen}" != *"|${next}|"* ]] || return 1
+        seen="${seen}${next}|"
+        pages=$((pages + 1))
+        ((pages <= 200)) || return 1
+    done
 }
 
 cdn_purge_aws_resources() {
-    local config etag acm tags failed=0
+    local config etag acm tags failed=0 purge_status=0 other_status=0
     local distribution_present=1 distribution_read_status=0
+    local validation_text="" other_records="" other_arn="" spec host reuse_retained=0
+    local -a validation_specs=()
     local fetched="${RUNTIME_TMP}/cloudfront-purge-config.json"
     local owned="${RUNTIME_TMP}/cloudfront-purge-owned.json"
     [[ -n "${AWS_CLOUDFRONT_DISTRIBUTION_ID:-}" || -n "${AWS_ACM_CERTIFICATE_ARN:-}" ]] || return 0
@@ -1938,6 +2010,7 @@ cdn_purge_aws_resources() {
         # 只是被别人先删了，继续清理 ACM 与 DNS 才是用户要的结果。
         distribution_present=1
         distribution_read_status=0
+        info "正在校验 CloudFront 分发归属：${AWS_CLOUDFRONT_DISTRIBUTION_ID}..."
         cloudfront_read_owned_distribution "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" "${fetched}" \
             || distribution_read_status=$?
         if ((distribution_read_status == 2)); then
@@ -1962,6 +2035,7 @@ cdn_purge_aws_resources() {
                 rm -f -- "${fetched}" "${owned}" "${config}"
                 return 1
             fi
+            info "正在禁用 CloudFront 分发：${AWS_CLOUDFRONT_DISTRIBUTION_ID}（等待全球边缘节点同步，通常需数分钟）..."
             if ! aws_cli cloudfront update-distribution --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" \
                 --if-match "${etag}" --distribution-config "file://${config}" --output json >/dev/null 2>&1; then
                 warn "禁用 CloudFront 分发失败；保留 ${AWS_CLOUDFRONT_DISTRIBUTION_ID}，跳过 ACM 与 DNS 清理"
@@ -1991,6 +2065,7 @@ cdn_purge_aws_resources() {
         fi
         if ((distribution_present)); then
             etag=$(jq -r '.ETag // empty' "${owned}")
+            info "正在删除 CloudFront 分发：${AWS_CLOUDFRONT_DISTRIBUTION_ID}..."
             if [[ -z "${etag}" ]] \
                 || ! aws_cli cloudfront delete-distribution --id "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" \
                     --if-match "${etag}" >/dev/null 2>&1; then
@@ -2003,23 +2078,59 @@ cdn_purge_aws_resources() {
         rm -f -- "${fetched}" "${owned}"
     fi
     if [[ -n "${AWS_ACM_CERTIFICATE_ARN:-}" ]]; then
+        info "正在校验 ACM 证书归属与占用状态：${AWS_ACM_CERTIFICATE_ARN}..."
         acm=$(describe_settled_acm_certificate "${AWS_ACM_CERTIFICATE_ARN}")
         tags=$(aws_cli acm list-tags-for-certificate --region "${AWS_CONTROL_REGION}" \
             --certificate-arn "${AWS_ACM_CERTIFICATE_ARN}" --output json 2>/dev/null || true)
         if [[ -z "${acm}" ]]; then
-            warn "读取 ACM 证书失败；保留 ${AWS_ACM_CERTIFICATE_ARN}"
+            warn "读取 ACM 证书失败；保留 ${AWS_ACM_CERTIFICATE_ARN}，跳过其 validation CNAME 清理"
             failed=1
         elif ! acm_certificate_owned_by_easy_all "${acm}" "${tags}"; then
-            warn "ACM 证书未通过归属校验（管理标记/SAN/InUseBy/us-east-1 任一不符）；保留 ${AWS_ACM_CERTIFICATE_ARN}"
+            warn "ACM 证书未通过归属校验（管理标记/SAN/InUseBy/us-east-1 任一不符）；保留 ${AWS_ACM_CERTIFICATE_ARN}，跳过其 validation CNAME 清理"
             failed=1
         else
-            aws_cli acm delete-certificate --region "${AWS_CONTROL_REGION}" \
-                --certificate-arn "${AWS_ACM_CERTIFICATE_ARN}" >/dev/null 2>&1 \
-                || { warn "删除 ACM 证书失败：${AWS_ACM_CERTIFICATE_ARN}"; failed=1; }
+            # 证书删除后 describe 不再返回它：候选验证记录先在内存里取好。
+            validation_text=$(acm_validation_record_specs "${acm}") \
+                || { warn "无法解析 ACM 证书的 validation CNAME；保留验证记录，需核实后人工删除"; validation_text=""; reuse_retained=1; }
+            info "正在删除 ACM 证书：${AWS_ACM_CERTIFICATE_ARN}..."
+            if aws_cli acm delete-certificate --region "${AWS_CONTROL_REGION}" \
+                --certificate-arn "${AWS_ACM_CERTIFICATE_ARN}" >/dev/null 2>&1; then
+                success "ACM 证书已删除：${AWS_ACM_CERTIFICATE_ARN}"
+            else
+                warn "删除 ACM 证书失败：${AWS_ACM_CERTIFICATE_ARN}；保留其 ACM validation CNAME"
+                validation_text=""
+                failed=1
+            fi
+        fi
+    fi
+    if [[ -n "${validation_text}" ]]; then
+        # 复用检查失败（权限/接口）时保守保留全部候选：删错的代价是他人的证书续期失败。
+        other_records=$(acm_other_certificate_validation_records) || other_status=$?
+        if ((other_status != 0)); then
+            reuse_retained=1
+            warn "无法完整枚举同账号其他 ACM 证书（权限或接口失败）；保守保留 ACM validation CNAME，需核实后人工删除"
+        else
+            while IFS= read -r spec; do
+                [[ -n "${spec}" ]] || continue
+                other_arn=$(awk -F'\t' -v spec="${spec}" '$1 == spec {print $2; exit}' \
+                    <<<"${other_records}")
+                if [[ -n "${other_arn}" ]]; then
+                    host=${spec#*|}
+                    reuse_retained=1
+                    warn "Cloudflare ${host%%|*} 的 ACM validation CNAME 仍被同账号其他 ACM 证书引用（${other_arn}）；保留"
+                    continue
+                fi
+                validation_specs+=("${spec}")
+            done <<<"${validation_text}"
         fi
     fi
     # 分发已确认删除（或本就没有分发 ID）：ACM 失败不阻止 CNAME 清理。
-    (cdn_purge_cloudflare_dns) || { warn "Cloudflare DNS 清理未完成"; failed=1; }
+    if ((${#validation_specs[@]} > 0)); then
+        (cdn_purge_cloudflare_dns "${reuse_retained}" "${validation_specs[@]}") || purge_status=$?
+    else
+        (cdn_purge_cloudflare_dns "${reuse_retained}") || purge_status=$?
+    fi
+    ((purge_status == 0)) || { warn "Cloudflare DNS 清理未完成"; failed=1; }
     return "${failed}"
 }
 
