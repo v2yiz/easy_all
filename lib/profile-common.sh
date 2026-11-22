@@ -69,7 +69,7 @@ read_confirmation() {
 }
 
 # --- CDN 优选连接地址（cdnEdgeAddress）的安装交互 -------------------------------
-# 模式 4/5 拼 CloudFront 泛域名后缀，模式 2/3 拼 Cloudflare 泛域名后缀（由 WeTest 公布并解析）。
+# 模式 4/5/6 拼 CloudFront 泛域名后缀，模式 2/3 拼 Cloudflare 泛域名后缀（由 WeTest 公布并解析）。
 CDN_EDGE_CLOUDFRONT_SUFFIX="cloudfront.182682.xyz"
 CDN_EDGE_CLOUDFLARE_SUFFIX="cloudflare.182682.xyz"
 # 安装时生成的优选地址形态：10 位前缀 + 当前模式的泛域名后缀（首位字母，后九位字母或数字）。
@@ -79,7 +79,7 @@ CDN_EDGE_ALNUM="0123456789abcdefghijklmnopqrstuvwxyz"
 
 cdn_edge_mode_suffix() {
     case "${PROTOCOL:-}" in
-    cloudfront | combined-cloudfront) printf '%s' "${CDN_EDGE_CLOUDFRONT_SUFFIX}" ;;
+    cloudfront | combined-cloudfront | reality-self) printf '%s' "${CDN_EDGE_CLOUDFRONT_SUFFIX}" ;;
     cloudflare | combined-cloudflare) printf '%s' "${CDN_EDGE_CLOUDFLARE_SUFFIX}" ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
@@ -127,8 +127,10 @@ cdn_edge_store_answer() {
 # 安装顺序是「先优选前缀、后订阅配置」：前缀收完先暂存，配置落定后无条件写入。
 # 安装这一屏粘贴的 JSON 只含 allowedTokens 与 nodes，不存在需要保留的自定义优选域名。
 apply_cdn_edge_prefix() {
+    local suffix
     [[ -n "${CDN_EDGE_PREFIX:-}" ]] || return 0
-    SUBSCRIPTION_CONFIG=$(jq -c --arg a "${CDN_EDGE_PREFIX}.$(cdn_edge_mode_suffix)" \
+    suffix=$(cdn_edge_mode_suffix) || die "无法解析 ${PROTOCOL:-空} 的 CDN 优选后缀"
+    SUBSCRIPTION_CONFIG=$(jq -c --arg a "${CDN_EDGE_PREFIX}.${suffix}" \
         '.cdnEdgeAddress=$a' <<<"${SUBSCRIPTION_CONFIG}") || die "更新订阅配置失败"
 }
 
@@ -148,7 +150,7 @@ cdn_edge_interactive() {
     [[ -t 0 ]]
 }
 
-# 安装收集器（模式 2-5）：先问优选前缀（安装顺序上它排在订阅配置之前），
+# 安装收集器（模式 2-6）：先问优选前缀（安装顺序上它排在订阅配置之前），
 # 随后由 apply_cdn_edge_prefix 写进配置，再由调用方的 cdn_apply_subscription_config 强校验。
 # 此刻订阅配置还没问：续装时身份里有旧的前缀可沿用，首装则生成新的。
 collect_cdn_edge_address() {

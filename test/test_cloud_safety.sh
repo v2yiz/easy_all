@@ -1223,6 +1223,9 @@ apply_prefix_case() { # $1=初始订阅配置 $2=暂存前缀 $3=PROTOCOL -> 最
 assert_contains "前缀写入不含 cdnEdgeAddress 的配置" \
     "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[]}' k7m2qp4x9d combined-cloudfront)" \
     '"cdnEdgeAddress":"k7m2qp4x9d.cloudfront.182682.xyz"'
+assert_contains "前缀写入 reality-self 配置" \
+    "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[]}' k7m2qp4x9d reality-self)" \
+    '"cdnEdgeAddress":"k7m2qp4x9d.cloudfront.182682.xyz"'
 assert_contains "前缀覆盖安装生成的旧前缀" \
     "$(apply_prefix_case '{"allowedTokens":{"owner":"t"},"nodes":[],"cdnEdgeAddress":"aa11bb22cc.cloudflare.182682.xyz"}' k7m2qp4x9d combined-cloudflare)" \
     '"cdnEdgeAddress":"k7m2qp4x9d.cloudflare.182682.xyz"'
@@ -1258,6 +1261,29 @@ bad_apply=$(bash -c '
 ' _ "${ROOT_DIR}" 2>&1) || true
 assert_contains "订阅配置不可解析时报错而不是静默退出" "${bad_apply}" "更新订阅配置失败"
 assert_not_contains "订阅配置不可解析时不继续执行" "${bad_apply}" "SHOULD-NOT-REACH"
+# 另一半失败语义：PROTOCOL 无 CDN 后缀时不静默返回 1，而是报错点名后缀；配置逐字节不变。
+bogus_config='{"allowedTokens":{"owner":"t"},"nodes":[]}'
+if bogus_apply=$(bash -c '
+    source "$1/lib/log.sh"
+    source "$1/lib/profile-common.sh"
+    show_config() { printf "CONFIG=%s\n" "${SUBSCRIPTION_CONFIG}"; }
+    trap show_config EXIT
+    PROTOCOL=bogus
+    SUBSCRIPTION_CONFIG=$2
+    CDN_EDGE_PREFIX=k7m2qp4x9d
+    apply_cdn_edge_prefix
+    printf "SHOULD-NOT-REACH\n"
+' _ "${ROOT_DIR}" "${bogus_config}" 2>&1); then
+    bogus_apply_status=0
+else
+    bogus_apply_status=$?
+fi
+assert_equal "不支持的 PROTOCOL 下写入退出非零" "1" "${bogus_apply_status}"
+assert_contains "不支持的 PROTOCOL 下报错点名后缀" "${bogus_apply}" \
+    "无法解析 bogus 的 CDN 优选后缀"
+assert_equal "不支持的 PROTOCOL 下订阅配置逐字节不变" "${bogus_config}" \
+    "$(sed -n 's/^CONFIG=//p' <<<"${bogus_apply}")"
+assert_not_contains "不支持的 PROTOCOL 下不继续执行" "${bogus_apply}" "SHOULD-NOT-REACH"
 
 # 模式 1 只有一个节点名：域名与节点名仍是连续两条。
 anytls_order=$(run_prompt_order anytls)
@@ -2036,7 +2062,7 @@ done
 # --- 9. CDN 优选连接地址（cdnEdgeAddress）：安装交互与订阅事务顺序 ---------------
 # design §2 条 1/2/4/6、§11 第 8-12 项。
 
-# 9a. 四个 CDN 模式的安装入口都调用收集器并拼出该模式的后缀；模式 1 不调用。
+# 9a. 五个 CDN 模式的安装入口都调用收集器并拼出该模式的后缀；模式 1 不调用。
 run_edge_collector_case() { # $1=profile -> stdout: 收集器被调用时记录的 "<模式后缀>"
     local out="${TMP_DIR}/edge-inputs-$1"
     mkdir -p "${out}/state/certs" "${out}/runtime" "${out}/subs"
@@ -2069,6 +2095,7 @@ while read -r edge_profile edge_suffix; do
 done <<'EDGE_PROFILES'
 cloudfront cloudfront.182682.xyz
 combined cloudfront.182682.xyz
+reality-self cloudfront.182682.xyz
 cloudflare cloudflare.182682.xyz
 combined-cloudflare cloudflare.182682.xyz
 EDGE_PROFILES
@@ -2245,6 +2272,38 @@ assert_equal "off 不再关闭而是重填" "2" \
 assert_equal "off 后的重新输入被记住" "k2v8nq4zt6" "$(prefix_of "${edge_loop_off}")"
 edge_loop_enter=$(edge_case "${edge_cfg_none}" 0 cdn_edge_prompt_loop k7m2qp4x9d "" "")
 assert_equal "空输入采用默认值" "k7m2qp4x9d" "$(prefix_of "${edge_loop_enter}")"
+
+# 9d-2. 串联：模式 6 的收集器按 cloudfront 后缀落盘，并经形状校验原样通过。
+edge_chain_case() { # $1=订阅配置 -> stdout: CONFIG=<写后配置> / EDGE=<校验后 cdnEdgeAddress>
+    local dir
+    dir=$(mktemp -d "${TMP_DIR}/edge-chain.XXXXXX")
+    mkdir -p "${dir}/state/certs" "${dir}/runtime"
+    RUNTIME_TMP="${dir}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${dir}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${dir}/state/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${dir}/subs" \
+        bash -c '
+            source "$1/profiles/reality-self.sh"
+            SUBSCRIPTION_CONFIG=$2
+            # 模拟交互终端：回车采用默认前缀（同 9c 的 stub 手法）。
+            cdn_edge_interactive() { return 0; }
+            read_bilingual() { printf -v "$2" "%s" ""; }
+            collect_cdn_edge_address
+            apply_cdn_edge_prefix
+            normalized=$(normalize_subscription_config "${SUBSCRIPTION_CONFIG}" "[]")
+            printf "CONFIG=%s\nEDGE=%s\n" "${SUBSCRIPTION_CONFIG}" \
+                "$(jq -r .cdnEdgeAddress <<<"${normalized}")"
+        ' _ "${ROOT_DIR}" "$1" 2>&1
+}
+edge_chain_cfg='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}'
+edge_chain=$(edge_chain_case "${edge_chain_cfg}") \
+    || fail "reality-self 串联收集/写入/校验失败：${edge_chain}"
+edge_chain_addr=$(sed -n 's/^EDGE=//p' <<<"${edge_chain}")
+edge_chain_shape=no
+[[ "${edge_chain_addr}" =~ ^[a-z][a-z0-9]{9}\.cloudfront\.182682\.xyz$ ]] && edge_chain_shape=yes
+assert_equal "reality-self 串联后的优选地址形状：<${edge_chain_addr}>" "yes" "${edge_chain_shape}"
+assert_contains "reality-self 串联把地址写进订阅配置" \
+    "$(sed -n 's/^CONFIG=//p' <<<"${edge_chain}")" "\"cdnEdgeAddress\":\"${edge_chain_addr}\""
 
 # 9e. 结构断言：每个「定义 update_subscription 且渲染订阅」的模式库，
 # 都必须在快照与写运行配置之前校验订阅配置（验收条件 4 结构证据）。

@@ -117,7 +117,7 @@ sudo easy_all renew-cert
 sudo easy_all edit-sub
 ```
 - **配置结构**：接收包含 `allowedTokens`（用户 Token 字典）与 `nodes`（外部聚合节点数组）的 JSON 配置，省略项即被移除。
-- **CDN 优选地址配置**（模式 2–5）：顶层添加可选字段 `"cdnEdgeAddress": "优选域名"`（如 `"cdnEdgeAddress": "m3q8a1w7zr.cloudfront.182682.xyz"`），保存后订阅产物即刻更新生效，无需 `apply-cloud`。删除该字段则恢复为默认连接节点域名。
+- **CDN 优选地址配置**（模式 2–6）：顶层添加可选字段 `"cdnEdgeAddress": "优选域名"`（如 `"cdnEdgeAddress": "m3q8a1w7zr.cloudfront.182682.xyz"`），保存后订阅产物即刻更新生效，无需 `apply-cloud`。删除该字段则恢复为默认连接节点域名。
 - **路径与鉴权**：Caddy 仅精准匹配 `/subscribe` 与 `/sub`，其余路径一律 `404`；带非法或重复 Token 的请求均返回 `403`。
 - **熔断时修复**：若在流量熔断期间执行 `edit-sub`，脚本将自动在保持 CDN 阻断的状态下更新订阅，保障服务安全。
 
