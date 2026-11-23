@@ -241,7 +241,8 @@ assert_equal "只有境外 DoH 带 detour" '["dns-proxy","dns-proxy-2"]' \
 assert_equal "境外 DoH detour 指向 PROXY" '["PROXY","PROXY"]' \
     "$(jq -c '[.dns.servers[] | select(.tag == "dns-proxy" or .tag == "dns-proxy-2") | .detour]' "${default_json}")"
 # 对齐 Mihomo 的双源 nameserver：国内 AliDNS（IP 直连）+ DNSPod（域名），境外 1.1.1.1 + 8.8.8.8。
-assert_equal "国内/境外 DoH 各有两个源" '["223.5.5.5","doh.pub","1.1.1.1","8.8.8.8"]' \
+# 另有纯 IP DNSPod DoH（1.12.12.12）专作 default_domain_resolver，不参与双源竞速。
+assert_equal "国内/境外 DoH 各有两个源" '["223.5.5.5","doh.pub","1.12.12.12","1.1.1.1","8.8.8.8"]' \
     "$(jq -c '[.dns.servers[] | select(.type == "https") | .server]' "${default_json}")"
 # 先剥掉可选的 :port 再判 IP：带端口的 DoH 域名（如 doh.pub:443）不是 IP，同样必须带引导解析器。
 assert_equal "域名型 DoH 带引导解析器" '[["doh.pub","dns-bootstrap"]]' \
@@ -257,8 +258,9 @@ assert_equal "TUN 与 mixed 入口" '["mixed-in","tun-in"]' \
 # sing-box 的传输级解析不经过 dns.rules，用引导解析器查局域网域名只会得到 NXDOMAIN。
 assert_equal "DIRECT 出口使用本地解析" '"dns-local"' \
     "$(jq -c '.outbounds[] | select(.tag == "DIRECT") | .domain_resolver' "${default_json}")"
-# 节点出口用国内 DoH（纯 IP，自身不需要解析器）引导：蜂窝网络下明文 UDP 53 易被拦截或返回 SERVFAIL。
-assert_equal "节点出口沿用引导解析器" '"dns-cn"' \
+# 节点出口用腾讯云 DNSPod 纯 IP DoH 引导（自身不需要解析器）：阿里云 223.5.5.5 对部分节点域名返回 SERVFAIL，
+# 蜂窝网络下明文 UDP 53 也易被拦截或返回 SERVFAIL。
+assert_equal "节点出口沿用引导解析器" '"dns-dnspod"' \
     "$(jq -c '.route.default_domain_resolver' "${default_json}")"
 # DNS 规则顺序（对齐 Mihomo nameserver-policy）：私有/本地 → 模式覆盖 → 代理集合 → 国内集合（含 Fake-IP 例外）→ Fake-IP。
 # 每个分组是两路并行查询（evaluate）加竞速应答（race respond）：任一源先返回成功即采用，
