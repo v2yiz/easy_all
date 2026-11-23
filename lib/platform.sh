@@ -3,8 +3,11 @@
 # Shared host preflight and SSH boot-safety checks.
 
 EASY_ALL_SSH_PORT_CONFIG="${EASY_ALL_SSH_PORT_CONFIG:-/etc/ssh/sshd_config.d/00-easy-all-ports.conf}"
-# 安装收尾把 SSH 端口迁移到 EASY_ALL_TARGET_SSH_PORT（写 sshd_config.d 片段，重启后生效）。
-EASY_ALL_TARGET_SSH_PORT="${EASY_ALL_TARGET_SSH_PORT:-22222}"
+# 安装收尾把 SSH 端口迁移到目标端口（写 sshd_config.d 片段，重启后生效）。未预设时为空：
+# 交互安装会询问（默认 22222），非交互与测试可用环境变量直接指定。
+EASY_ALL_TARGET_SSH_PORT="${EASY_ALL_TARGET_SSH_PORT:-}"
+# sshd 的权限分离目录：容器与精简镜像里常常不存在，sshd -t/-T 会直接失败。
+EASY_ALL_SSHD_PRIVSEP_DIR="${EASY_ALL_SSHD_PRIVSEP_DIR:-/run/sshd}"
 EASY_ALL_SSHD_CONFIG="${EASY_ALL_SSHD_CONFIG:-/etc/ssh/sshd_config}"
 EASY_ALL_SSHD_CONFIG_DIR="${EASY_ALL_SSHD_CONFIG_DIR:-/etc/ssh/sshd_config.d}"
 EASY_ALL_FAIL2BAN_CONFIG="${EASY_ALL_FAIL2BAN_CONFIG:-/etc/fail2ban/jail.d/99-easy-all-sshd.local}"
@@ -281,7 +284,8 @@ restore_platform_security_state() {
     sshd_bin=$(command -v sshd 2>/dev/null || true)
     [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
     local expected_listeners="" ssh_restored=0 attempt
-    if ((ssh_config_restored == 1)) && [[ -n "${sshd_bin}" ]] && "${sshd_bin}" -t >/dev/null 2>&1; then
+    if ((ssh_config_restored == 1)) && [[ -n "${sshd_bin}" ]] \
+        && run_sshd_check "${sshd_bin}" -t >/dev/null 2>&1; then
         expected_listeners=$(ssh_effective_listeners "${sshd_bin}") || expected_listeners=""
         for unit in ssh.service sshd.service; do
             systemctl cat "${unit}" >/dev/null 2>&1 || continue
@@ -312,6 +316,174 @@ restore_platform_security_state() {
     # 封禁规则与运行状态。
 }
 
+# --- sshd 调用与 /run/sshd 兜底 ------------------------------------------------
+
+# 容器与精简镜像常常没有 /run/sshd，sshd -t/-T 会直接报
+# 「Missing privilege separation directory」；目录缺失时按 sshd 的要求补齐。
+ensure_sshd_privsep_dir() {
+    local privsep_dir=${1:-${EASY_ALL_SSHD_PRIVSEP_DIR:-/run/sshd}} parent
+    [[ -n "${privsep_dir}" && ! -d "${privsep_dir}" ]] || return 0
+    parent=$(dirname -- "${privsep_dir}")
+    [[ -d "${parent}" && -w "${parent}" ]] || return 0
+    install -d -m 0755 "${privsep_dir}" >/dev/null 2>&1 || true
+}
+
+# 统一的 sshd -t/-T 调用：成功才透传 stdout；最终失败把捕获的 stderr 交回调用方，
+# 由调用方决定 die 还是 return 1。privsep 目录缺失时补齐后重试一次。
+run_sshd_check() {
+    local sshd_bin=$1 mode=$2 attempt dir="${EASY_ALL_SSHD_PRIVSEP_DIR:-/run/sshd}"
+    local output="" stderr_log="" errtext=""
+    stderr_log=$(mktemp "${RUNTIME_TMP:-${TMPDIR:-/tmp}}/easy-all-sshd-check.XXXXXX" 2>/dev/null || true)
+    [[ -n "${stderr_log}" ]] || stderr_log="${TMPDIR:-/tmp}/easy-all-sshd-check.$$"
+    for attempt in 1 2; do
+        ensure_sshd_privsep_dir "${dir}"
+        if output=$("${sshd_bin}" "${mode}" 2>"${stderr_log}"); then
+            rm -f -- "${stderr_log}"
+            printf '%s' "${output}"
+            return 0
+        fi
+        [[ "${attempt}" == "1" ]] || break
+        errtext=$(<"${stderr_log}")
+        [[ "${errtext}" =~ Missing\ privilege\ separation\ directory:[[:space:]]*([^[:space:]]+) ]] || break
+        dir=${BASH_REMATCH[1]}
+    done
+    cat -- "${stderr_log}" >&2 2>/dev/null || true
+    rm -f -- "${stderr_log}"
+    return 1
+}
+
+# 当前登录会话的服务端端口：sudo 会清空 SSH_*，因此保留进程树 + established 连接的回退。
+detect_current_ssh_login_port() {
+    local port="" pid="${PPID:-}" comm="" endpoint=""
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+        read -r _ _ _ port <<<"${SSH_CONNECTION}"
+    fi
+    if [[ -z "${port}" && -n "${SSH_CLIENT:-}" ]]; then
+        read -r _ _ port <<<"${SSH_CLIENT}"
+    fi
+    if [[ -z "${port}" ]]; then
+        while [[ -n "${pid}" && "${pid}" != "0" && "${pid}" != "1" ]]; do
+            comm=$(ps -o comm= -p "${pid}" 2>/dev/null || true)
+            comm=${comm//[[:space:]]/}
+            [[ "${comm}" != sshd* ]] || break
+            pid=$(ps -o ppid= -p "${pid}" 2>/dev/null || true)
+            pid=${pid//[[:space:]]/}
+        done
+        if [[ "${comm:-}" == sshd* ]]; then
+            # $4 是本端地址:端口（ss -tn 的输出为 State Recv-Q Send-Q Local Peer）。
+            endpoint=$(ss -H -tnp state established 2>/dev/null \
+                | awk -v owner="pid=${pid}," 'index($0, owner) {print $4; exit}')
+            port=${endpoint##*:}
+        fi
+    fi
+    [[ "${port}" =~ ^[0-9]{1,5}$ ]] || return 1
+    ((10#${port} >= 1 && 10#${port} <= 65535)) || return 1
+    printf '%s' "${port}"
+}
+
+# 交互终端判定：生产只认 stdin 终端；自动化测试通过覆盖本函数模拟交互终端。
+ssh_port_migration_interactive() {
+    [[ -t 0 ]]
+}
+
+# 目标端口的业务冲突校验：命中时打印原因并返回 0（供提示循环复用），否则返回 1。
+ssh_target_port_conflicts() {
+    local port=$1 business="" endpoint=""
+    for endpoint in 80 443 8443; do
+        [[ "${port}" != "${endpoint}" ]] || { printf '与业务入口端口 %s 冲突' "${port}"; return 0; }
+    done
+    if declare -F runtime_public_tcp_ports >/dev/null 2>&1; then
+        business=$(runtime_public_tcp_ports 2>/dev/null || true)
+    fi
+    if declare -F runtime_cloudflare_only_port >/dev/null 2>&1; then
+        business+=" $(runtime_cloudflare_only_port 2>/dev/null || true)"
+    fi
+    for endpoint in ${business}; do
+        [[ "${port}" != "${endpoint}" ]] || { printf '与业务端口 %s 冲突' "${port}"; return 0; }
+    done
+    # 已被其他进程监听的端口不可用；sshd/systemd 的既有监听不算冲突（迁移前就是它们占着旧端口）。
+    if ss -H -ltnp "sport = :${port}" 2>/dev/null \
+        | awk -v p=":${port}" '/users:/ && $4 ~ (p "$") && $0 !~ /users:.*\("(sshd|systemd)"/ {found = 1} END {exit !found}'; then
+        printf '端口 %s 已被其他进程监听' "${port}"
+        return 0
+    fi
+    return 1
+}
+
+# 交互询问目标端口：三选一菜单（不变更 / 默认 22222 / 自定义）。
+# 结果直接写入指定变量（终端读不能放进 $( ) 子 shell）；「不变更」写入空字符串。
+prompt_target_ssh_port() {
+    local variable=$1 choice="" port="" reason=""
+    while :; do
+        printf '%s\n' "当前检测到的 SSH 端口：${SSH_PORTS:-未知}" \
+            "请选择 SSH 端口变更方式：" \
+            "  1. 不变更（保持当前 SSH 端口）" \
+            "  2. 修改为 22222（默认）" \
+            "  3. 自定义端口" >&2
+        read_prompt '请选择 [2]（直接回车默认 2）: ' choice
+        choice=${choice//[[:space:]]/}
+        case "${choice:-2}" in
+        1)
+            printf -v "${variable}" '%s' ""
+            return 0
+            ;;
+        2)
+            if reason=$(ssh_target_port_conflicts 22222); then
+                warn "端口不可用：${reason}"
+                continue
+            fi
+            printf -v "${variable}" '%s' 22222
+            return 0
+            ;;
+        3) ;;
+        *)
+            warn "无效选项：请输入 1、2 或 3"
+            continue
+            ;;
+        esac
+        while :; do
+            read_prompt '请输入迁移后的 SSH 端口: ' port
+            port=${port//[[:space:]]/}
+            if [[ -z "${port}" || ! "${port}" =~ ^[1-9][0-9]{0,4}$ ]] \
+                || ((10#${port} > 65535)); then
+                warn "端口无效：请输入 1..65535 之间的十进制端口（不接受前导零）"
+                continue
+            fi
+            if reason=$(ssh_target_port_conflicts "${port}"); then
+                warn "端口不可用：${reason}"
+                continue
+            fi
+            printf -v "${variable}" '%s' "${port}"
+            return 0
+        done
+    done
+}
+
+# 迁移后的有效端口必须只有目标端口：显式 ListenAddress 携带的旧端口只出现在
+# listenaddress 行里，因此 port 与 IPv4 listenaddress 都要比较。
+sshd_t_has_only_port() {
+    awk -v target="${2:-}" '
+        $1 == "port" {p = $2}
+        $1 == "listenaddress" && $2 !~ /\[/ {p = $2; sub(/.*:/, "", p)}
+        p != "" {
+            if (p != target) bad = 1
+            else found = 1
+            p = ""
+        }
+        END {exit !(found && !bad)}
+    ' <<<"${1:-}"
+}
+
+# 受管片段里记录的迁移目标端口：apply 等新进程靠它识别「已迁移未重启」窗口。
+ssh_managed_target_port() {
+    local port=""
+    [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]] || return 1
+    grep -Fqx '# Managed by easy_all' "${EASY_ALL_SSH_PORT_CONFIG}" 2>/dev/null || return 1
+    port=$(awk '$1 == "Port" {print $2; exit}' "${EASY_ALL_SSH_PORT_CONFIG}")
+    [[ "${port}" =~ ^[0-9]{1,5}$ ]] || return 1
+    printf '%s' "${port}"
+}
+
 append_ssh_port() {
     local port=$1
     [[ "${port}" =~ ^[0-9]+$ ]] || return 0
@@ -326,12 +498,15 @@ append_ssh_port() {
 }
 
 detect_ssh_ports() {
-    local strict=${1:-} current_port sshd_bin config output="" actual="" effective=""
+    local strict=${1:-} current_port sshd_bin config output="" actual="" effective="" login_port=""
+    local endpoint fallback=""
     SSH_PORTS=""
     sshd_bin=$(command -v sshd 2>/dev/null || true)
     [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
+    login_port=$(detect_current_ssh_login_port 2>/dev/null || true)
     if [[ -n "${sshd_bin}" ]]; then
-        output=$("${sshd_bin}" -T 2>/dev/null) || {
+        output=$(run_sshd_check "${sshd_bin}" -T) || {
+            output=""
             [[ "${strict}" != strict ]] || die "无法读取有效 SSH 配置；保留现有防火墙"
         }
         effective=$(awk '$1 == "listenaddress" && $2 !~ /\[/ {print $2}' <<<"${output}")
@@ -339,22 +514,36 @@ detect_ssh_ports() {
     actual=$(ssh_actual_listeners sshd) || {
         [[ "${strict}" != strict ]] || die "无法读取实际 SSH 监听；保留现有防火墙"
     }
+    # ssh.socket 激活态：监听套接字由 systemd 持有，sshd 进程自己没有监听，
+    # 此时只接受与有效配置端口或当前登录端口一致的 systemd 监听项。
+    if [[ -z "${actual}" ]]; then
+        local effective_ports=""
+        for endpoint in ${effective}; do
+            effective_ports+=" ${endpoint##*:}"
+        done
+        while read -r endpoint; do
+            current_port=${endpoint##*:}
+            [[ "${current_port}" =~ ^[0-9]+$ ]] || continue
+            if [[ "${effective_ports} " == *" ${current_port} "* \
+                || "${current_port}" == "${login_port}" ]]; then
+                fallback+="${fallback:+$'\n'}${endpoint}"
+            fi
+        done < <(ssh_actual_listeners 2>/dev/null || true)
+        actual="${fallback}"
+    fi
     if [[ "${strict}" == strict && ( -z "${effective}" || -z "${actual}" ) ]]; then
         die "无法确定有效 IPv4 SSH 监听集合；保留现有防火墙"
     fi
     for current_port in ${effective} ${actual}; do
         append_ssh_port "${current_port##*:}"
     done
-    if [[ -n "${SSH_CONNECTION:-}" ]]; then
-        read -r _ _ _ current_port <<<"${SSH_CONNECTION}"
-        append_ssh_port "${current_port}"
-    fi
+    append_ssh_port "${login_port}"
     if [[ -n "${output}" ]]; then
         while read -r current_port; do
             append_ssh_port "${current_port}"
         done < <(awk '$1 == "port" {print $2}' <<<"${output}")
     fi
-    for config in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+    for config in "${EASY_ALL_SSHD_CONFIG}" "${EASY_ALL_SSHD_CONFIG_DIR}"/*.conf; do
         [[ -f "${config}" ]] || continue
         while read -r current_port; do
             append_ssh_port "${current_port}"
@@ -375,7 +564,7 @@ detect_ssh_ports() {
 # sshd legitimately binds both 0.0.0.0 and [::] on its port.
 ssh_effective_listeners() {
     local output
-    output=$("$1" -T 2>/dev/null) || return 1
+    output=$(run_sshd_check "$1" -T) || return 1
     awk '$1 == "listenaddress" && $2 !~ /\[/ {print $2}' <<<"${output}" | sort -u
 }
 
@@ -426,7 +615,7 @@ restore_managed_ssh_port_config() {
     else
         rm -f -- "${EASY_ALL_SSH_PORT_CONFIG}" || return 1
     fi
-    "${sshd_bin}" -t >/dev/null 2>&1 && systemctl reload "${unit}" >/dev/null 2>&1
+    run_sshd_check "${sshd_bin}" -t >/dev/null 2>&1 && systemctl reload "${unit}" >/dev/null 2>&1
 }
 
 install_fail2ban_dependencies() {
@@ -740,7 +929,8 @@ ensure_ssh_boot_service() {
     sshd_bin=$(command -v sshd 2>/dev/null || true)
     [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
     [[ -n "${sshd_bin}" ]] || die "未找到 sshd；无法保证重启后 SSH 可用"
-    "${sshd_bin}" -t || die "sshd 配置校验失败；无法保证重启后 SSH 可用，已中止"
+    run_sshd_check "${sshd_bin}" -t \
+        || die "sshd 配置校验失败；无法保证重启后 SSH 可用，已中止"
 
     for unit in ssh.service sshd.service; do
         systemctl cat "${unit}" >/dev/null 2>&1 || continue
@@ -758,13 +948,8 @@ ensure_ssh_boot_service() {
 }
 
 # --- 安装收尾的 SSH 端口迁移 ------------------------------------------------
-# 只写 sshd_config.d 片段并注释原有 Port 行，再 daemon-reload；绝不重启 sshd /
-# ssh.socket，当前安装会话靠已建立的 TCP 连接维持，新端口在下次开机生效。
-
-# sshd -T 的 port 行必须按字段比较：子串匹配会让 `port 22` 命中 `port 22222`。
-sshd_t_has_exact_port() {
-    awk -v p="${2:-}" '$1 == "port" && $2 == p {found=1} END {exit !found}' <<<"${1:-}"
-}
+# 只写 sshd_config.d 片段并按需改写 Port / ListenAddress 端口，再 daemon-reload；
+# 绝不重启 sshd / ssh.socket，当前安装会话靠已建立的 TCP 连接维持，新端口下次开机生效。
 
 # ssh.socket 的 ListenStream 由 generator 从 sshd_config 生成，需要 daemon-reload 重新生成。
 reload_ssh_socket_generator() {
@@ -815,24 +1000,58 @@ rollback_post_install_ssh_config() {
 
 # 「已迁移到 target_port 但尚未重启」的判定：配置文件与 sshd -T 都已经只认新端口。
 ssh_post_install_port_migrated() {
-    local target_port=${1:-${EASY_ALL_TARGET_SSH_PORT}} sshd_bin output
+    local target_port=${1:-} sshd_bin output
+    [[ -n "${target_port}" ]] || target_port=${EASY_ALL_TARGET_SSH_PORT:-}
+    [[ -n "${target_port}" ]] || target_port=$(ssh_managed_target_port || printf '22222')
     [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]] || return 1
     grep -Fq "Managed by easy_all" "${EASY_ALL_SSH_PORT_CONFIG}" 2>/dev/null || return 1
     grep -qx "Port ${target_port}" "${EASY_ALL_SSH_PORT_CONFIG}" 2>/dev/null || return 1
     sshd_bin=$(command -v sshd 2>/dev/null || true)
     [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
     [[ -n "${sshd_bin}" ]] || return 1
-    output=$("${sshd_bin}" -T 2>/dev/null) || return 1
-    sshd_t_has_exact_port "${output}" "${target_port}" || return 1
-    ! sshd_t_has_exact_port "${output}" 22
+    output=$(run_sshd_check "${sshd_bin}" -T 2>/dev/null) || return 1
+    sshd_t_has_only_port "${output}" "${target_port}"
 }
 
 configure_post_install_ssh_port() {
-    local target_port=${1:-${EASY_ALL_TARGET_SSH_PORT}}
+    local target_port=${1:-}
     local sshd_bin sshd_t_out config candidate backup_dir backup_file listen_out mode
+    local old_ports="" old_port reason=""
+    local -a pending_denies=()
     sshd_bin=$(command -v sshd 2>/dev/null || true)
     [[ -n "${sshd_bin}" || ! -x /usr/sbin/sshd ]] || sshd_bin=/usr/sbin/sshd
     [[ -n "${sshd_bin}" ]] || die "未找到 sshd；无法迁移 SSH 端口"
+
+    # 顺序固定：先采集旧端口（交互提示要展示、UFW 禁用与迁移校验都依赖它），再解析目标端口。
+    detect_ssh_ports
+    old_ports=${SSH_PORTS}
+    EASY_ALL_MIGRATED_FROM_SSH_PORTS="${old_ports}"
+    # 收尾的 prompt_kernel_reboot 靠它区分「已迁移」与「选了不变更」，故必须对同进程可见（不用 local）。
+    EASY_ALL_SSH_PORT_CHANGED=1
+    if [[ -z "${target_port}" ]]; then
+        target_port=${EASY_ALL_TARGET_SSH_PORT:-}
+    fi
+    if [[ -n "${target_port}" ]]; then
+        if [[ ! "${target_port}" =~ ^[1-9][0-9]{0,4}$ ]] || ((10#${target_port} > 65535)); then
+            die "SSH 目标端口无效：${target_port}（需为 1..65535 的十进制端口）"
+        fi
+        if reason=$(ssh_target_port_conflicts "${target_port}"); then
+            die "SSH 目标端口不可用：${reason}"
+        fi
+    elif ssh_port_migration_interactive; then
+        prompt_target_ssh_port target_port
+        # 菜单返回空字符串表示「1. 不变更」：sshd 配置、受管片段与 UFW 全部保持原样。
+        if [[ -z "${target_port}" ]]; then
+            EASY_ALL_SSH_PORT_CHANGED=0
+            EASY_ALL_TARGET_SSH_PORT=""
+            info "已保留当前 SSH 端口（${old_ports}），不做变更"
+            return 0
+        fi
+    else
+        target_port=22222
+    fi
+    EASY_ALL_TARGET_SSH_PORT="${target_port}"
+
     # 只读预检先行：第三方 UFW 已阻断新端口时直接中止，此时尚未改动任何文件。
     verify_ssh_ufw_no_unmanaged_block "${target_port}"
 
@@ -856,6 +1075,15 @@ configure_post_install_ssh_port() {
             tolower($1) == "port" && $2 != target {
                 printf "# easy_all-disabled-port: %s\n", $0
                 next
+            }
+            tolower($1) == "listenaddress" {
+                # 只动显式带端口的形态（host:port、[v6]:port、:port）；裸 IPv6 地址不动。
+                addr = $2
+                if ((addr ~ /^[^:]+:[0-9]+$/ || addr ~ /\]:[0-9]+$/ || addr ~ /^:[0-9]+$/) \
+                    && addr !~ (":" target "$")) {
+                    # 只换地址字段里的端口，保留缩进、关键词与行尾注释。
+                    sub(/:[0-9]+/, ":" target)
+                }
             }
             {print}
         ' "${config}" >"${candidate}"; then
@@ -883,20 +1111,19 @@ configure_post_install_ssh_port() {
         if ! install -m "${mode}" "${candidate}" "${config}"; then
             rm -f -- "${candidate}"
             rollback_post_install_ssh_config
-            die "注释 ${config} 中的旧 Port 行失败；已恢复原 SSH 配置"
+            die "注释 ${config} 中的旧 Port/ListenAddress 端口失败；已恢复原 SSH 配置"
         fi
         rm -f -- "${candidate}"
     done
 
-    if ! "${sshd_bin}" -t >/dev/null 2>&1; then
+    if ! run_sshd_check "${sshd_bin}" -t >/dev/null; then
         rollback_post_install_ssh_config
         die "SSH 端口迁移后 sshd 配置校验失败；已恢复原配置"
     fi
-    sshd_t_out=$("${sshd_bin}" -T 2>/dev/null) || sshd_t_out=""
-    if ! sshd_t_has_exact_port "${sshd_t_out}" "${target_port}" \
-        || sshd_t_has_exact_port "${sshd_t_out}" 22; then
+    sshd_t_out=$(run_sshd_check "${sshd_bin}" -T 2>/dev/null) || sshd_t_out=""
+    if ! sshd_t_has_only_port "${sshd_t_out}" "${target_port}"; then
         rollback_post_install_ssh_config
-        die "SSH 端口迁移后有效端口不是 ${target_port}（或仍包含 22）；已恢复原配置"
+        die "SSH 端口迁移后有效端口不是 ${target_port}（或仍包含其他端口）；已恢复原配置"
     fi
     if systemctl is-enabled --quiet ssh.socket >/dev/null 2>&1 \
         || systemctl is-active --quiet ssh.socket >/dev/null 2>&1; then
@@ -907,10 +1134,22 @@ configure_post_install_ssh_port() {
             die "ssh.socket 未按 ${target_port} 生成监听端口；已恢复原配置"
         fi
     fi
+    # 记录本次才需要新增的受管 deny：失败时只撤销这些，不误删旧安装留下的规则。
+    for old_port in ${old_ports}; do
+        [[ "${old_port}" != "${target_port}" ]] || continue
+        ufw_managed_ssh_deny_exists "${old_port}" && continue
+        pending_denies+=("${old_port}")
+    done
     # UFW 与 Fail2ban 内部用 die 退出：放进子 shell 才能捕获失败并先回滚 sshd 配置。
-    if ! ( apply_post_install_ssh_ufw_policy "${target_port}" \
+    if ! ( apply_post_install_ssh_ufw_policy "${target_port}" "${old_ports}" \
         && SSH_PORTS="${target_port}" \
         && ensure_ssh_fail2ban ); then
+        for old_port in ${pending_denies[@]+"${pending_denies[@]}"}; do
+            ufw --force delete deny "${old_port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null 2>&1 || true
+        done
+        if ((${#pending_denies[@]} > 0)); then
+            ufw reload >/dev/null 2>&1 || true
+        fi
         rollback_post_install_ssh_config
         die "SSH 端口迁移后更新 UFW 或 Fail2ban 失败；已恢复原 SSH 配置"
     fi

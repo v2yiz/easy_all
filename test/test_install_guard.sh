@@ -2296,15 +2296,37 @@ mkdir -p "${ssh_mig_root}/bin"
 cat >"${ssh_mig_root}/bin/sshd" <<'FAKE_SSHD'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+# 权限分离目录缺失：真实 sshd 会在 -t/-T 时直接拒绕，替身复现同一报错。
+# FAKE_SSHD_PRIVSEP_REPORT 可让报错点名另一个路径（用于覆盖「按报错路径补目录再重试」）。
+if [[ "${FAKE_SSHD_PRIVSEP_REQUIRED:-0}" == "1" ]]; then
+    privsep_needed="${FAKE_SSHD_PRIVSEP_REPORT:-${EASY_ALL_SSHD_PRIVSEP_DIR:-/run/sshd}}"
+    if [[ ! -d "${privsep_needed}" ]]; then
+        printf 'Missing privilege separation directory: %s\n' "${privsep_needed}" >&2
+        exit 1
+    fi
+fi
+dump_field() { # $1=关键字段（小写）：按真实 sshd -T 口径汇总所有生效片段
+    local file
+    for file in "${EASY_ALL_SSHD_CONFIG}" "${EASY_ALL_SSHD_CONFIG_DIR}"/*.conf; do
+        [[ -f "${file}" ]] || continue
+        awk -v key="$1" '
+            /^[[:space:]]*#/ {next}
+            tolower($1) == key {print $2}
+        ' "${file}"
+    done
+}
 case "${1:-}" in
 -t) exit "${FAKE_SSHD_T_STATUS:-0}" ;;
 -T)
     [[ "${FAKE_SSHD_T_STATUS:-0}" == "0" ]] || exit 1
-    if [[ -f "${EASY_ALL_SSH_PORT_CONFIG}" ]] \
-        && grep -qx 'Port 22222' "${EASY_ALL_SSH_PORT_CONFIG}" 2>/dev/null; then
-        printf 'port 22222\nlistenaddress 0.0.0.0:22222\n'
+    ports=$(dump_field port | sort -u)
+    addrs=$(dump_field listenaddress | awk '/:[0-9]+$/ {print}' | sort -u)
+    [[ -n "${ports}" ]] || ports=22
+    for port in ${ports}; do printf 'port %s\n' "${port}"; done
+    if [[ -n "${addrs}" ]]; then
+        for addr in ${addrs}; do printf 'listenaddress %s\n' "${addr}"; done
     else
-        printf 'port 22\nlistenaddress 0.0.0.0:22\n'
+        for port in ${ports}; do printf 'listenaddress 0.0.0.0:%s\n' "${port}"; done
     fi
     ;;
 esac
@@ -2312,8 +2334,9 @@ FAKE_SSHD
 cat >"${ssh_mig_root}/bin/ss" <<'FAKE_SS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-printf 'LISTEN 0 128 0.0.0.0:%s 0.0.0.0:* users:(("sshd",pid=42,fd=3))\n' \
-    "${FAKE_SSH_LISTEN_PORT:-22}"
+# 监听归属可切换：ssh.socket 激活态下由 systemd 持有套接字。
+printf 'LISTEN 0 128 0.0.0.0:%s 0.0.0.0:* users:(("%s",pid=%s,fd=3))\n' \
+    "${FAKE_SSH_LISTEN_PORT:-22}" "${FAKE_SSH_LISTEN_OWNER:-sshd}" "${FAKE_SS_PID:-42}"
 FAKE_SS
 cat >"${ssh_mig_root}/bin/ufw" <<'FAKE_UFW'
 #!/usr/bin/env bash
@@ -2391,7 +2414,8 @@ is-enabled | is-active)
     ;;
 show)
     if [[ " $* " == *' ssh.socket '* && "${FAKE_SSH_SOCKET:-disabled}" == "ok" ]]; then
-        printf 'Listen=[::]:22222 (Stream)\n'
+        socket_port=$(awk '$1 == "Port" {print $2; exit}' "${EASY_ALL_SSH_PORT_CONFIG}" 2>/dev/null || true)
+        printf 'Listen=[::]:%s (Stream)\n' "${socket_port:-22}"
     elif [[ " $* " == *' ssh.socket '* ]]; then
         printf 'Listen=[::]:22 (Stream)\n'
     fi
@@ -2401,6 +2425,8 @@ esac
 FAKE_SYSTEMCTL
 cat >"${ssh_mig_root}/bin/fail2ban-client" <<'FAKE_F2B'
 #!/usr/bin/env bash
+# 让迁移尾段的 Fail2ban 校验失败，用来覆盖「先撤销本次 deny 再回滚 sshd」路径。
+[[ "${FAKE_FAIL2BAN_FAIL:-0}" != "1" ]] || exit 1
 exit 0
 FAKE_F2B
 cat >"${ssh_mig_root}/bin/dpkg-query" <<'FAKE_DPKG'
@@ -2420,17 +2446,18 @@ source "$1/lib/firewall.sh"
 '
 ssh_mig_case() {
     local dir="${ssh_mig_root}/$1"
+    local main_config=${2:-'Include /etc/ssh/sshd_config.d/*.conf\nPort 22\nPasswordAuthentication no\n'}
     rm -rf -- "${dir}"
     mkdir -p "${dir}/backups" "${dir}/ssh/sshd_config.d" "${dir}/runtime" "${dir}/state"
-    printf 'Include /etc/ssh/sshd_config.d/*.conf\nPort 22\nPasswordAuthentication no\n' \
-        >"${dir}/ssh/sshd_config"
+    printf '%b' "${main_config}" >"${dir}/ssh/sshd_config"
     printf 'PasswordAuthentication no\n' >"${dir}/ssh/sshd_config.d/50-cloud-init.conf"
     : >"${dir}/ufw.rules"
     : >"${dir}/systemctl.log"
 }
-ssh_mig_run() {
+ssh_mig_run() { # $1=目录 $2=snippet [额外 VAR=值 ...]
     local dir=$1 snippet=$2
-    PATH="${ssh_mig_root}/bin:${PATH}" \
+    shift 2
+    env PATH="${ssh_mig_root}/bin:${PATH}" \
     BACKUP_DIR="${dir}/backups" \
     RUNTIME_TMP="${dir}/runtime" \
     EASY_ALL_STATE_DIR_OVERRIDE="${dir}/state" \
@@ -2445,14 +2472,21 @@ ssh_mig_run() {
     FAKE_UFW_RULES="${dir}/ufw.rules" \
     FAKE_SYSTEMCTL_LOG="${dir}/systemctl.log" \
     FAKE_SSH_LISTEN_PORT="${FAKE_SSH_LISTEN_PORT:-22}" \
+    FAKE_SSH_LISTEN_OWNER="${FAKE_SSH_LISTEN_OWNER:-sshd}" \
     FAKE_SSHD_T_STATUS="${FAKE_SSHD_T_STATUS:-0}" \
     FAKE_UFW_FAIL="${FAKE_UFW_FAIL:-}" \
     FAKE_SSH_SOCKET="${FAKE_SSH_SOCKET:-disabled}" \
     UFW_DEFAULT_CONFIG="${dir}/ufw-default" \
+    "$@" \
     bash -c "${SSH_MIG_PRELUDE}${snippet}" _ "${ROOT_DIR}" 2>&1
 }
 mig_status=0
-mig_out() { mig_status=0; mig_value=$(ssh_mig_run "$1" "$2") || mig_status=$?; }
+mig_out() { # 与 ssh_mig_run 同参；结果写入 mig_value / mig_status
+    local dir=$1 snippet=$2
+    shift 2
+    mig_status=0
+    mig_value=$(ssh_mig_run "${dir}" "${snippet}" "$@") || mig_status=$?
+}
 
 # 1. 迁移成功：写片段、注释旧 Port、UFW 放行新端口并 insert 1 deny 22、Fail2ban 跟随
 case1="${ssh_mig_root}/migration"
@@ -2563,11 +2597,221 @@ assert_equal "ssh.socket 未跟随时删除受管片段" "0" \
 assert_not_contains "ssh.socket 未跟随时恢复原 Port 行" \
     "$(<"${case10}/ssh/sshd_config")" "easy_all-disabled-port"
 
-# 8. 精确端口匹配：port 22 不得命中 port 22222
-assert_equal "精确端口匹配接受 port 22222" "0" \
-    "$(bash -c "source '${ROOT_DIR}/lib/platform.sh'; sshd_t_has_exact_port 'port 22222' 22222" >/dev/null 2>&1 && printf 0 || printf 1)"
-assert_equal "精确端口匹配不误配 22" "1" \
-    "$(bash -c "source '${ROOT_DIR}/lib/platform.sh'; sshd_t_has_exact_port 'port 22222' 22" >/dev/null 2>&1 && printf 0 || printf 1)"
+# 11. /run/sshd 缺失：sshd 报 Missing privilege separation directory → 自动创建后重试通过
+case11="${ssh_mig_root}/privsep"
+ssh_mig_case privsep
+mkdir -p "${case11}/run"
+privsep_dir="${case11}/run/sshd"
+mig_out "${case11}" 'detect_ssh_ports strict; printf "PORTS=%s\n" "${SSH_PORTS}"' \
+    FAKE_SSHD_PRIVSEP_REQUIRED=1 EASY_ALL_SSHD_PRIVSEP_DIR="${privsep_dir}"
+assert_equal "privsep 目录缺失时 strict 检测自愈并退出 0" "0" "${mig_status}"
+assert_equal "privsep 目录被自动创建" "1" \
+    "$([[ -d "${privsep_dir}" ]] && printf 1 || printf 0)"
+assert_contains "privsep 自愈后仍采到 22" "${mig_value}" "PORTS=22"
+mig_out "${case11}" 'configure_post_install_ssh_port' \
+    FAKE_SSHD_PRIVSEP_REQUIRED=1 EASY_ALL_SSHD_PRIVSEP_DIR="${privsep_dir}"
+assert_equal "privsep 自愈后端口迁移通过" "0" "${mig_status}"
+# 目录预建只能盖住「默认目录缺失」：报错点名另一个路径时必须按报错补目录再重试。
+ssh_mig_case privsep-retry
+mkdir -p "${ssh_mig_root}/privsep-retry/run"
+mig_out "${ssh_mig_root}/privsep-retry" \
+    'detect_ssh_ports strict; printf "PORTS=%s\n" "${SSH_PORTS}"' \
+    FAKE_SSHD_PRIVSEP_REQUIRED=1 \
+    EASY_ALL_SSHD_PRIVSEP_DIR="${ssh_mig_root}/privsep-retry/unused" \
+    FAKE_SSHD_PRIVSEP_REPORT="${ssh_mig_root}/privsep-retry/run/sshd"
+assert_equal "报错路径缺失时重试成功" "0" "${mig_status}"
+assert_equal "按 sshd 报错路径创建 privsep 目录" "1" \
+    "$([[ -d "${ssh_mig_root}/privsep-retry/run/sshd" ]] && printf 1 || printf 0)"
+assert_contains "重试后仍采到 22" "${mig_value}" "PORTS=22"
+
+# 12. 非 22 初始端口 + ssh.socket（systemd 持有套接字）：登录端口与回退检测
+case12="${ssh_mig_root}/port-2200"
+ssh_mig_case port-2200 'Include /etc/ssh/sshd_config.d/*.conf\nPort 2200\nPasswordAuthentication no\n'
+mig_out "${case12}" 'detect_ssh_ports strict; printf "PORTS=%s\n" "${SSH_PORTS}"' \
+    SSH_CONNECTION='203.0.113.9 51234 203.0.113.10 2200' \
+    FAKE_SSH_LISTEN_PORT=2200 FAKE_SSH_LISTEN_OWNER=systemd FAKE_SSH_SOCKET=ok
+assert_equal "systemd 持有监听时 strict 检测通过" "0" "${mig_status}"
+assert_contains "systemd 监听与非 22 端口被采到" "${mig_value}" "PORTS=2200"
+mig_out "${case12}" 'detect_ssh_ports strict; printf "PORTS=%s\n" "${SSH_PORTS}"' \
+    SSH_CONNECTION='' SSH_CLIENT='' \
+    FAKE_SSH_LISTEN_PORT=2200 FAKE_SSH_LISTEN_OWNER=systemd FAKE_SSH_SOCKET=ok
+assert_equal "无 SSH_CONNECTION 时 systemd 监听仍可按 effective 端口通过" "0" "${mig_status}"
+assert_contains "无 SSH_CONNECTION 时仍采到 2200" "${mig_value}" "PORTS=2200"
+
+# 13. 同一主机迁移到自定义端口 23456：UFW deny 2200 / allow 23456、Fail2ban 跟随
+printf '2200/tcp ALLOW IN Anywhere # easy_all-managed\n' >"${case12}/ufw.rules"
+mig_out "${case12}" 'configure_post_install_ssh_port' \
+    SSH_CONNECTION='203.0.113.9 51234 203.0.113.10 2200' \
+    FAKE_SSH_LISTEN_PORT=2200 FAKE_SSH_LISTEN_OWNER=systemd FAKE_SSH_SOCKET=ok \
+    EASY_ALL_TARGET_SSH_PORT=23456
+assert_equal "非 22 端口迁移到自定义端口退出 0" "0" "${mig_status}"
+assert_contains "受管片段写 23456" \
+    "$(<"${case12}/ssh/sshd_config.d/00-easy-all-ports.conf")" "Port 23456"
+assert_contains "旧 2200 行被注释" "$(<"${case12}/ssh/sshd_config")" \
+    "# easy_all-disabled-port: Port 2200"
+assert_equal "首条 UFW 规则是受管 deny 2200/tcp" "2200/tcp DENY IN Anywhere # easy_all-managed" \
+    "$(head -n 1 "${case12}/ufw.rules")"
+assert_contains "放行 23456/tcp" "$(<"${case12}/ufw.rules")" \
+    "23456/tcp ALLOW IN Anywhere # easy_all-managed"
+assert_contains "Fail2ban 跟随 23456" \
+    "$(<"${case12}/fail2ban/99-easy-all-sshd.local")" "port = 23456"
+
+# 14. 窗口期（新进程拿不到目标端口）：从受管片段读回 23456 并照常放行
+case13="${ssh_mig_root}/apply-window-23456"
+ssh_mig_case apply-window-23456 'Include /etc/ssh/sshd_config.d/*.conf\n# easy_all-disabled-port: Port 2200\n'
+printf '# Managed by easy_all\nPort 23456\n' >"${case13}/ssh/sshd_config.d/00-easy-all-ports.conf"
+printf '2200/tcp DENY IN Anywhere # easy_all-managed\n2200/tcp ALLOW IN Anywhere # easy_all-managed\n' \
+    >"${case13}/ufw.rules"
+mig_out "${case13}" '
+source "$1/lib/runtime-core.sh"
+snapshot_ufw_state() { :; }
+ensure_ssh_boot_service() { :; }
+configure_ufw_ip_family() { :; }
+runtime_public_tcp_ports() { printf 443; }
+runtime_cloudflare_only_port() { printf ""; }
+ensure_ssh_fail2ban() { :; }
+configure_runtime_ufw
+printf "PORTS=%s\n" "${SSH_PORTS}"
+' EASY_ALL_TARGET_SSH_PORT= FAKE_SSH_LISTEN_PORT=2200
+assert_equal "无环境变量时窗口期 apply 仍通过" "0" "${mig_status}"
+assert_contains "窗口期从受管片段解析出 23456" "${mig_value}" "PORTS=23456"
+assert_contains "窗口期放行 23456/tcp" "$(<"${case13}/ufw.rules")" \
+    "23456/tcp ALLOW IN Anywhere # easy_all-managed"
+
+# 15. 卸载恢复：受管 deny 在迁移端口上，恢复后的 2200 必须重新放行
+case14="${ssh_mig_root}/uninstall-2200"
+ssh_mig_case uninstall-2200 'Include /etc/ssh/sshd_config.d/*.conf\nPort 2200\n'
+printf '2200/tcp DENY IN Anywhere # easy_all-managed\n23456/tcp ALLOW IN Anywhere # easy_all-managed\n2200/tcp ALLOW IN Anywhere # easy_all-managed\n' \
+    >"${case14}/ufw.rules"
+mig_out "${case14}" 'source "$1/lib/runtime-core.sh"; restore_preinstall_firewall' \
+    FAKE_SSH_LISTEN_PORT=2200
+assert_equal "非 22 端口卸载恢复退出 0" "0" "${mig_status}"
+assert_not_contains "卸载移除受管 deny 2200/tcp" "$(<"${case14}/ufw.rules")" "2200/tcp DENY IN"
+assert_contains "卸载保留恢复后的 2200 放行" "$(<"${case14}/ufw.rules")" \
+    "2200/tcp ALLOW IN Anywhere # easy_all-managed"
+
+# 16. Fail2ban 失败：先撤销本次插入的受管 deny，再回滚 sshd 配置
+case15="${ssh_mig_root}/rollback-deny"
+ssh_mig_case rollback-deny 'Include /etc/ssh/sshd_config.d/*.conf\nPort 2200\n'
+printf '2200/tcp ALLOW IN Anywhere # easy_all-managed\n' >"${case15}/ufw.rules"
+mig_out "${case15}" 'configure_post_install_ssh_port' \
+    FAKE_SSH_LISTEN_PORT=2200 EASY_ALL_TARGET_SSH_PORT=23456 FAKE_FAIL2BAN_FAIL=1
+assert_equal "Fail2ban 失败时非零退出" "1" "${mig_status}"
+assert_contains "Fail2ban 失败提示已恢复" "${mig_value}" "已恢复原 SSH 配置"
+assert_equal "失败时撤销本次插入的受管 deny" "0" \
+    "$(grep -c 'DENY IN' "${case15}/ufw.rules" || true)"
+assert_equal "失败时还原生效的 Port 2200" "1" \
+    "$(grep -cx 'Port 2200' "${case15}/ssh/sshd_config" || true)"
+assert_equal "失败时删除受管片段" "0" \
+    "$(test -e "${case15}/ssh/sshd_config.d/00-easy-all-ports.conf" && printf 1 || printf 0)"
+
+# 17. 显式 ListenAddress 带端口：就地换端口（保留绑定地址），不注释放宽
+case16="${ssh_mig_root}/listen-address"
+ssh_mig_case listen-address 'Include /etc/ssh/sshd_config.d/*.conf\nListenAddress 203.0.113.10:2200\n'
+mig_out "${case16}" 'configure_post_install_ssh_port' \
+    FAKE_SSH_LISTEN_PORT=2200 EASY_ALL_TARGET_SSH_PORT=23456
+assert_equal "ListenAddress 带端口时迁移退出 0" "0" "${mig_status}"
+assert_contains "ListenAddress 保留绑定地址并换成 23456" \
+    "$(<"${case16}/ssh/sshd_config")" "ListenAddress 203.0.113.10:23456"
+assert_not_contains "旧端口 2200 不再监听" "$(<"${case16}/ssh/sshd_config")" ":2200"
+assert_contains "旧 2200 端口被受管 deny 覆盖" "$(<"${case16}/ufw.rules")" \
+    "2200/tcp DENY IN Anywhere # easy_all-managed"
+ssh_mig_case listen-address-rollback 'Include /etc/ssh/sshd_config.d/*.conf\nListenAddress 203.0.113.10:2200\n'
+mig_out "${ssh_mig_root}/listen-address-rollback" 'configure_post_install_ssh_port' \
+    FAKE_SSH_LISTEN_PORT=2200 EASY_ALL_TARGET_SSH_PORT=23456 FAKE_FAIL2BAN_FAIL=1
+assert_equal "ListenAddress 回滚时还原原端口" "1" \
+    "$(grep -cx 'ListenAddress 203.0.113.10:2200' "${ssh_mig_root}/listen-address-rollback/ssh/sshd_config" || true)"
+
+# 18. 交互询问目标端口：三选一菜单（不变更 / 默认 22222 / 自定义 / 非法重输）
+case18="${ssh_mig_root}/prompt"
+ssh_mig_case prompt
+prompt_snippet='ssh_port_migration_interactive() { return 0; }; configure_post_install_ssh_port; printf "CHANGED=%s\n" "${EASY_ALL_SSH_PORT_CHANGED}"'
+mig_status=0
+mig_value=$(printf '\n' | ssh_mig_run "${case18}" "${prompt_snippet}" EASY_ALL_TARGET_SSH_PORT=) || mig_status=$?
+assert_equal "菜单直接回车采用默认 22222" "0" "${mig_status}"
+assert_contains "默认路径标记端口已变更" "${mig_value}" "CHANGED=1"
+assert_contains "默认端口写入受管片段" \
+    "$(<"${case18}/ssh/sshd_config.d/00-easy-all-ports.conf")" "Port 22222"
+# 首尾空白也按默认项处理（read_prompt 不裁剪空白，裁剪在 prompt_target_ssh_port 内）。
+ssh_mig_case prompt-blank
+mig_status=0
+mig_value=$(printf ' 2 \n' | ssh_mig_run "${ssh_mig_root}/prompt-blank" "${prompt_snippet}" EASY_ALL_TARGET_SSH_PORT=) \
+    || mig_status=$?
+assert_equal "带空白的 2 也走默认项" "0" "${mig_status}"
+assert_contains "带空白默认项仍迁移为 22222" \
+    "$(<"${ssh_mig_root}/prompt-blank/ssh/sshd_config.d/00-easy-all-ports.conf")" "Port 22222"
+# 1. 不变更：不改 sshd、不写受管片段、不插 UFW deny，并标记端口未变更。
+ssh_mig_case prompt-keep 'Include /etc/ssh/sshd_config.d/*.conf\nPort 2200\nPasswordAuthentication no\n'
+printf '2200/tcp ALLOW IN Anywhere # easy_all-managed\n' >"${ssh_mig_root}/prompt-keep/ufw.rules"
+mig_status=0
+mig_value=$(printf '1\n' | ssh_mig_run "${ssh_mig_root}/prompt-keep" "${prompt_snippet}" \
+    EASY_ALL_TARGET_SSH_PORT= FAKE_SSH_LISTEN_PORT=2200) || mig_status=$?
+assert_equal "不变更退出 0" "0" "${mig_status}"
+assert_contains "不变更标记端口未变更" "${mig_value}" "CHANGED=0"
+assert_contains "不变更提示保留原端口" "${mig_value}" "已保留当前 SSH 端口（2200）"
+assert_equal "不变更不生成受管片段" "0" \
+    "$(test -e "${ssh_mig_root}/prompt-keep/ssh/sshd_config.d/00-easy-all-ports.conf" && printf 1 || printf 0)"
+assert_equal "不变更保持生效的 Port 2200" "1" \
+    "$(grep -cx 'Port 2200' "${ssh_mig_root}/prompt-keep/ssh/sshd_config" || true)"
+assert_not_contains "不变更不注释旧 Port 行" \
+    "$(<"${ssh_mig_root}/prompt-keep/ssh/sshd_config")" "easy_all-disabled-port"
+assert_not_contains "不变更不插入 UFW deny" \
+    "$(<"${ssh_mig_root}/prompt-keep/ufw.rules")" "DENY IN"
+ssh_mig_case prompt-custom
+mig_status=0
+mig_value=$(printf '3\n23456\n' | ssh_mig_run "${ssh_mig_root}/prompt-custom" "${prompt_snippet}" EASY_ALL_TARGET_SSH_PORT=) \
+    || mig_status=$?
+assert_equal "菜单 3 + 合法端口迁移通过" "0" "${mig_status}"
+assert_contains "自定义端口写入受管片段" \
+    "$(<"${ssh_mig_root}/prompt-custom/ssh/sshd_config.d/00-easy-all-ports.conf")" "Port 23456"
+ssh_mig_case prompt-invalid
+mig_status=0
+mig_value=$(printf '9\n3\n0\n70000\n443\nabc\n23456\n' \
+    | ssh_mig_run "${ssh_mig_root}/prompt-invalid" "${prompt_snippet}" EASY_ALL_TARGET_SSH_PORT=) \
+    || mig_status=$?
+assert_equal "非法菜单项与非法端口重输后迁移通过" "0" "${mig_status}"
+assert_contains "非法菜单项给出提示" "${mig_value}" "无效选项：请输入 1、2 或 3"
+assert_contains "越界端口给出无效提示" "${mig_value}" "端口无效"
+assert_contains "业务端口给出冲突提示" "${mig_value}" "与业务入口端口 443 冲突"
+assert_contains "重输后采用合法端口" \
+    "$(<"${ssh_mig_root}/prompt-invalid/ssh/sshd_config.d/00-easy-all-ports.conf")" "Port 23456"
+# 端口被第三方进程占用时必须提示重输（sshd/systemd 占用不算，已被上面的默认路径覆盖）。
+ssh_mig_case prompt-conflict
+mig_status=0
+mig_value=$(printf '3\n23456\n23457\n' \
+    | ssh_mig_run "${ssh_mig_root}/prompt-conflict" "${prompt_snippet}" \
+        EASY_ALL_TARGET_SSH_PORT= FAKE_SSH_LISTEN_PORT=23456 FAKE_SSH_LISTEN_OWNER=nginx) \
+    || mig_status=$?
+assert_equal "第三方占用重输后迁移通过" "0" "${mig_status}"
+assert_contains "第三方占用给出提示" "${mig_value}" "端口 23456 已被其他进程监听"
+assert_contains "避开占用端口后采用下一个端口" \
+    "$(<"${ssh_mig_root}/prompt-conflict/ssh/sshd_config.d/00-easy-all-ports.conf")" "Port 23457"
+
+# 19. 登录端口检测：SSH_CONNECTION 优先，SSH_CLIENT 回退，非法值不得当端口用
+assert_equal "登录端口优先取 SSH_CONNECTION" "2200" \
+    "$(SSH_CONNECTION='203.0.113.9 51234 203.0.113.10 2200' SSH_CLIENT='203.0.113.9 51234 2200' \
+        bash -c "source '${ROOT_DIR}/lib/platform.sh'; detect_current_ssh_login_port" 2>/dev/null)"
+assert_equal "SSH_CONNECTION 缺失时用 SSH_CLIENT" "2200" \
+    "$(SSH_CONNECTION= SSH_CLIENT='203.0.113.9 51234 2200' \
+        bash -c "source '${ROOT_DIR}/lib/platform.sh'; detect_current_ssh_login_port" 2>/dev/null)"
+assert_equal "超范围端口返回 1" "1" \
+    "$(SSH_CONNECTION='203.0.113.9 51234 203.0.113.10 99999' SSH_CLIENT= \
+        bash -c "source '${ROOT_DIR}/lib/platform.sh'; detect_current_ssh_login_port" >/dev/null 2>&1 && printf 0 || printf 1)"
+
+# 8. 有效端口集合：按字段精确比较，且不得漏掉多出来的端口或 listenaddress 端口
+assert_equal "有效端口集合接受单一 port 目标" "0" \
+    "$(bash -c "source '${ROOT_DIR}/lib/platform.sh'; sshd_t_has_only_port 'port 22222' 22222" >/dev/null 2>&1 && printf 0 || printf 1)"
+assert_equal "有效端口集合不误配 22" "1" \
+    "$(bash -c "source '${ROOT_DIR}/lib/platform.sh'; sshd_t_has_only_port 'port 22222' 22" >/dev/null 2>&1 && printf 0 || printf 1)"
+assert_equal "有效端口集合拒绝多出的旧端口" "1" \
+    "$(bash -c "source '${ROOT_DIR}/lib/platform.sh'; sshd_t_has_only_port 'port 22222
+port 22' 22222" >/dev/null 2>&1 && printf 0 || printf 1)"
+assert_equal "有效端口集合拒绝 listenaddress 里的旧端口" "1" \
+    "$(bash -c "source '${ROOT_DIR}/lib/platform.sh'; sshd_t_has_only_port 'port 22222
+listenaddress 0.0.0.0:2200' 22222" >/dev/null 2>&1 && printf 0 || printf 1)"
+assert_equal "有效端口集合忽略 IPv6 listenaddress" "0" \
+    "$(bash -c "source '${ROOT_DIR}/lib/platform.sh'; sshd_t_has_only_port 'port 22222
+listenaddress [::]:22222' 22222" >/dev/null 2>&1 && printf 0 || printf 1)"
 
 # 9. 三个 install_all 入口的锚点：迁移在 INSTALL_ROLLBACK_ON_EXIT=0 之前，收尾传 ssh-port
 for mode_file in anytls-mode cloudflare-mode cloudfront-mode; do

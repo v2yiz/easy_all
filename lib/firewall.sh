@@ -238,8 +238,9 @@ ufw_ssh_port_has_unmanaged_block() {
             DENY|REJECT)
                 # 按来源封禁（如 Fail2ban 封单 IP）不阻断其他客户端的 SSH。
                 [[ "${source}" == "Anywhere" || "${source}" == "Any" ]] || continue
-                if [[ "${port}" == "22" && "${endpoint}" == "22/tcp" \
-                    && "${comment}" == "${UFW_RULE_COMMENT}" ]]; then
+                # 受管 deny 可能是本工具禁用的旧 SSH 端口（端口已可配置）：
+                # 同端点同注释的 DENY 是自己的规则，不算第三方阻断。
+                if [[ "${endpoint}" == "${port}/tcp" && "${comment}" == "${UFW_RULE_COMMENT}" ]]; then
                     continue
                 fi
                 return 0
@@ -288,8 +289,7 @@ ufw_ssh_port_has_unmanaged_block() {
         ufw_endpoint_matches_tcp_port "${endpoint}" "${port}" || continue
         case "${action}" in
         deny|reject)
-            if [[ "${port}" == "22" && "${endpoint}" == "22/tcp" \
-                && "${comment}" == "${UFW_RULE_COMMENT}" ]]; then
+            if [[ "${endpoint}" == "${port}/tcp" && "${comment}" == "${UFW_RULE_COMMENT}" ]]; then
                 continue
             fi
             return 0
@@ -417,24 +417,31 @@ apply_ssh_ufw_policy() {
     apply_managed_ufw_tcp_ports "${desired_ports}" "${ssh_ports}"
 }
 
-# 安装收尾专用：放行新 SSH 端口并在第 1 条禁用旧 22 端口。
-# 保留原有 `allow 22/tcp`（被首条 deny 覆盖），卸载时删掉 deny 即可自动恢复放行。
+# 安装收尾专用：放行新 SSH 端口、清除目标端口上的历史受管 deny，并在第 1 条禁用所有旧端口。
+# 保留原有旧端口 `allow`（被首条 deny 覆盖），卸载时删掉 deny 即可自动恢复放行。
 apply_post_install_ssh_ufw_policy() {
-    local target_port=${1:-22222}
+    local target_port=${1:-22222} old_ports=${2:-22} old_port
     verify_ssh_ufw_no_unmanaged_block "${target_port}"
     if ! ufw_tcp_port_has_unmanaged_anywhere_allow "${target_port}"; then
         ufw allow "${target_port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null \
             || die "添加受管 UFW 规则失败：TCP ${target_port}"
     fi
     ufw --force enable >/dev/null || die "启用 UFW 失败"
+    # 上次安装失败可能留下受管 `deny <目标端口>`：先删掉，否则新端口会被自己的旧规则挡住。
+    if ufw_managed_ssh_deny_exists "${target_port}"; then
+        ufw --force delete deny "${target_port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null \
+            || die "移除受管 UFW deny ${target_port}/tcp 失败"
+    fi
     ufw reload >/dev/null || die "重载 UFW 失败"
     ufw_ssh_port_is_allowed "${target_port}" \
         || die "UFW 未按规则顺序有效放行 SSH ${target_port}"
-    # 插到第 1 条：UFW 按顺序匹配，即使保留着 allow 22/tcp 也会被这条 deny 覆盖。
-    if ! ufw_managed_ssh_deny_exists 22; then
-        ufw insert 1 deny 22/tcp comment "${UFW_RULE_COMMENT}" >/dev/null \
-            || die "插入受管 UFW deny 22/tcp 失败"
-    fi
+    # 插到第 1 条：UFW 按顺序匹配，即使保留着旧端口的 allow 也会被这条 deny 覆盖。
+    for old_port in ${old_ports}; do
+        [[ "${old_port}" != "${target_port}" ]] || continue
+        ufw_managed_ssh_deny_exists "${old_port}" && continue
+        ufw insert 1 deny "${old_port}/tcp" comment "${UFW_RULE_COMMENT}" >/dev/null \
+            || die "插入受管 UFW deny ${old_port}/tcp 失败"
+    done
     ufw reload >/dev/null || die "重载 UFW 失败"
     ufw_ssh_port_is_allowed "${target_port}" \
         || die "UFW 未按规则顺序有效放行 SSH ${target_port}"

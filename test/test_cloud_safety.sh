@@ -327,17 +327,22 @@ PY
     cat "${log}"
 }
 
-retry_pass_log=$(run_interactive_ws_retry_case on)
-assert_contains "交互重试后变为 on：成功结束" "${retry_pass_log}" "STATUS=0"
-assert_contains "交互重试后变为 on：继续创建 DNS" "${retry_pass_log}" "DNS cf.example.com"
-assert_equal "交互重试后变为 on：恰查询 2 次 WebSockets" "2" \
-    "$(grep -c 'settings/websockets' <<<"${retry_pass_log}")"
+# 无 pty 的环境（容器、受限沙箱）无法驱交互重试：记未验证项，不静默当作通过。
+if python3 -c 'import pty; pty.openpty()' >/dev/null 2>&1; then
+    retry_pass_log=$(run_interactive_ws_retry_case on)
+    assert_contains "交互重试后变为 on：成功结束" "${retry_pass_log}" "STATUS=0"
+    assert_contains "交互重试后变为 on：继续创建 DNS" "${retry_pass_log}" "DNS cf.example.com"
+    assert_equal "交互重试后变为 on：恰查询 2 次 WebSockets" "2" \
+        "$(grep -c 'settings/websockets' <<<"${retry_pass_log}")"
 
-retry_fail_log=$(run_interactive_ws_retry_case off)
-assert_not_contains "交互重试后仍 off：非零阻断" "${retry_fail_log}" "STATUS=0"
-assert_not_contains "交互重试后仍 off：不创建 DNS" "${retry_fail_log}" "DNS "
-assert_equal "交互重试后仍 off：恰查询 2 次 WebSockets（仅 1 次重试机会）" "2" \
-    "$(grep -c 'settings/websockets' <<<"${retry_fail_log}")"
+    retry_fail_log=$(run_interactive_ws_retry_case off)
+    assert_not_contains "交互重试后仍 off：非零阻断" "${retry_fail_log}" "STATUS=0"
+    assert_not_contains "交互重试后仍 off：不创建 DNS" "${retry_fail_log}" "DNS "
+    assert_equal "交互重试后仍 off：恰查询 2 次 WebSockets（仅 1 次重试机会）" "2" \
+        "$(grep -c 'settings/websockets' <<<"${retry_fail_log}")"
+else
+    skip_case "WebSockets 交互重试（on/off）" "当前环境没有可用 pty（pty.openpty 失败）"
+fi
 
 # --- 3. 模式 1 的 DNS 归属常量：创建、复用与 purge 使用同一契约 -----------------
 run_dns_case() { # $1=create|reuse|purge|purge-takeover|foreign
@@ -2673,17 +2678,19 @@ assert_not_contains "迁移提示无 EASY_ALL_NO_REBOOT 跳过分支" \
 assert_not_contains "迁移提示无 PARAMS_LOADED 跳过分支" "${reboot_prompt_body}" "PARAMS_LOADED"
 assert_not_contains "迁移提示无非交互 else 分支" "${reboot_prompt_body}" '[[ -t 0 ]]'
 assert_contains "迁移提示红字告知端口已迁移" "${reboot_prompt_body}" \
-    "ssh端口已经修改为22222，原22端口禁用"
+    'ssh端口已经修改为${target_port}，原${old_ports}端口禁用'
 assert_contains "迁移提示告知会话风险" "${reboot_prompt_body}" "一旦断开"
 printf '#!/usr/bin/env bash\nprintf "REBOOT-CALLED\\n"\n' >"${TMP_DIR}/fake-reboot"
 chmod +x "${TMP_DIR}/fake-reboot"
 mkdir -p "${TMP_DIR}/prompt-state"
 : >"${TMP_DIR}/prompt-state/kernel-reboot-required"
-prompt_ssh_case() { # $1=用户输入 $2=running_kernel_supported 返回值
+prompt_ssh_case() { # $1=用户输入 $2=running_kernel_supported 返回值 [额外 VAR=值 ...]
     local answer=$1 kernel_ok=$2
-    ANSWER="${answer}" KERNEL_OK="${kernel_ok}" \
+    shift 2
+    env ANSWER="${answer}" KERNEL_OK="${kernel_ok}" \
         STATE_DIR="${TMP_DIR}/prompt-state" \
         REBOOT_COMMAND="${TMP_DIR}/fake-reboot" \
+        "$@" \
         bash -c '
             set -Eeuo pipefail
             source "$1/lib/log.sh"
@@ -2709,6 +2716,14 @@ prompt_kernel_out=$(prompt_ssh_case n 0)
 assert_contains "需载入新内核时同一提示框合并" "${prompt_kernel_out}" "Skyline"
 assert_equal "迁移提示与内核提示合并为一次询问" "1" \
     "$(grep -c 'ssh端口已经修改为22222' <<<"${prompt_kernel_out}")"
+# 自定义迁移端口：提示文案、登录命令与安全组提醒都必须跟着目标端口走。
+prompt_custom_out=$(prompt_ssh_case n 0 \
+    EASY_ALL_TARGET_SSH_PORT=23456 EASY_ALL_MIGRATED_FROM_SSH_PORTS=2200)
+assert_contains "自定义端口的迁移提示" "${prompt_custom_out}" \
+    "ssh端口已经修改为23456，原2200端口禁用"
+assert_contains "自定义端口的登录命令" "${prompt_custom_out}" "ssh -p 23456 root@<服务器 IP>"
+assert_contains "自定义端口的云安全组提醒" "${prompt_custom_out}" "请先放行 TCP 23456"
+assert_not_contains "自定义端口时不再提 22222" "${prompt_custom_out}" "22222"
 prompt_noop_out=$(STATE_DIR="${TMP_DIR}/prompt-state" bash -c '
     set -Eeuo pipefail
     source "$1/lib/log.sh"
@@ -2717,6 +2732,21 @@ prompt_noop_out=$(STATE_DIR="${TMP_DIR}/prompt-state" bash -c '
     prompt_kernel_reboot
 ' _ "${ROOT_DIR}" 2>&1)
 assert_equal "无内核需求且无参数时直接返回" "" "${prompt_noop_out}"
+
+# 安装收尾选了「1. 不变更」：收尾降级为内核模式，不得出现任何 SSH 端口警示。
+# prompt_ssh_case 的第二参数是 running_kernel_supported 的返回值：1=内核已兼容（无需重启）、0=待换内核。
+prompt_unchanged_out=$(prompt_ssh_case n 1 EASY_ALL_SSH_PORT_CHANGED=0)
+assert_equal "不变更且无需换内核时收尾无输出" "" "${prompt_unchanged_out}"
+prompt_unchanged_kernel_out=$(prompt_ssh_case n 0 EASY_ALL_SSH_PORT_CHANGED=0)
+assert_contains "不变更时仍提示载入新内核" "${prompt_unchanged_kernel_out}" "Skyline"
+assert_contains "不变更且需换内核时走内核提示框" "${prompt_unchanged_kernel_out}" "载入新内核"
+assert_not_contains "不变更时不提 SSH 端口已改" "${prompt_unchanged_kernel_out}" "ssh端口已经修改为"
+assert_not_contains "不变更时不出现默认端口 22222" "${prompt_unchanged_kernel_out}" "22222"
+assert_not_contains "不变更时不提示 ssh -p 登录" "${prompt_unchanged_kernel_out}" "ssh -p"
+assert_not_contains "不变更时不提示安全组放行新端口" "${prompt_unchanged_kernel_out}" "放行 TCP"
+assert_not_contains "不变更且拒绝重启时不提端口生效" "${prompt_unchanged_kernel_out}" \
+    "端口与新配置才会生效"
+assert_contains "不变更且拒绝重启时用通用提示" "${prompt_unchanged_kernel_out}" "sudo reboot"
 
 # 部署事务用例不依赖真实 TLS：无条件先跑，TLS 门只影响真实握手那一段。
 run_certificate_deploy_cases

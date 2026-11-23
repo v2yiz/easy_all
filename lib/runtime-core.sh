@@ -963,15 +963,17 @@ snapshot_ufw_state() {
 
 # 按模式放行公网端口；模式 1 的 443 与橙云回源（模式 4/6）的 8443 只允许 Cloudflare 官方 IPv4 段。
 configure_runtime_ufw() {
-    local public_ports cf_port desired_ports
+    local public_ports cf_port desired_ports window_target_port
     snapshot_ufw_state
     snapshot_platform_security_state
     ensure_ssh_boot_service
     detect_ssh_ports strict
     # 装完未重启的窗口期：sshd -T 已只认新端口，内核监听仍是旧端口。此时只按新端口
-    # 放行与校验，否则已插入的受管 deny 22/tcp 会让次序校验失败。
+    # 放行与校验，否则已插入的受管 deny 旧端口会让次序校验失败。
+    # 新进程（apply）拿不到 EASY_ALL_TARGET_SSH_PORT，只能从受管片段里读回目标端口。
+    window_target_port=${EASY_ALL_TARGET_SSH_PORT:-$(ssh_managed_target_port || printf '22222')}
     if ssh_post_install_port_migrated "${EASY_ALL_TARGET_SSH_PORT}"; then
-        SSH_PORTS="${EASY_ALL_TARGET_SSH_PORT}"
+        SSH_PORTS="${window_target_port}"
     fi
     verify_ssh_ufw_no_unmanaged_block "${SSH_PORTS}"
     configure_ufw_ip_family
@@ -1922,17 +1924,39 @@ restore_ufw_ssh_allow_after_port_restore() {
     ufw reload >/dev/null 2>&1 || true
 }
 
+# 卸载恢复：受管 SSH DENY 的端口不确定（可能已被迁移端口替换），按规则规格扫描删除。
+remove_managed_ssh_deny_rules() {
+    local status line endpoint action direction source comment
+    command -v ufw >/dev/null 2>&1 || return 0
+    status=$(LC_ALL=C ufw status numbered 2>/dev/null) || return 0
+    [[ "${status}" == *'Status: active'* ]] || return 0
+    while IFS= read -r line; do
+        [[ "${line}" == *'(v6)'* ]] && continue
+        [[ "${line}" =~ ^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]*(.*)$ ]] || continue
+        line=${BASH_REMATCH[1]}
+        comment=""
+        if [[ "${line}" == *' # '* ]]; then
+            comment=${line#*' # '}
+            line=${line%%' # '*}
+        fi
+        read -r endpoint action direction source <<<"${line}"
+        [[ "${action}" == 'DENY' && "${direction}" == 'IN' ]] || continue
+        [[ "${comment}" == "${UFW_RULE_COMMENT}" ]] || continue
+        [[ "${endpoint}" == */tcp ]] || continue
+        [[ "${source}" == 'Anywhere' || "${source}" == 'Any' ]] || continue
+        ufw --force delete deny "${endpoint}" comment "${UFW_RULE_COMMENT}" >/dev/null 2>&1 \
+            || warn "移除受管 UFW deny ${endpoint} 规则失败；请人工核对 ufw status"
+    done <<<"${status}"
+}
+
 # 卸载与安装失败回滚都只回收业务端口：保留 UFW 启用状态、默认策略与 SSH 放行。
 restore_preinstall_firewall() {
     [[ ! -f "${BACKUP_DIR}/pre-install-ufw-default" ]] \
         || install -m 0644 "${BACKUP_DIR}/pre-install-ufw-default" "${UFW_DEFAULT_CONFIG}" \
             || warn "恢复 ${UFW_DEFAULT_CONFIG} 失败"
     if command -v ufw >/dev/null 2>&1; then
-        # 必须先解除受管 deny 22/tcp，否则 22 的放行会被它继续挡住。
-        if ufw_managed_ssh_deny_exists 22; then
-            ufw --force delete deny 22/tcp comment "${UFW_RULE_COMMENT}" >/dev/null 2>&1 \
-                || warn "移除受管 UFW deny 22/tcp 规则失败；请人工核对 ufw status"
-        fi
+        # 必须先解除受管 deny：否则恢复后的旧端口放行会被它继续挡住。
+        remove_managed_ssh_deny_rules
         restore_ufw_ssh_allow_after_port_restore \
             || warn "恢复 SSH 端口 UFW 放行未完成；请人工核对 ufw status"
     fi

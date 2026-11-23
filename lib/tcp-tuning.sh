@@ -769,6 +769,12 @@ EOF_SERVICE
 # 安装收尾提示：mode=ssh-port 时必弹（安装入口已强制交互终端），mode=kernel 保持原条件返回。
 prompt_kernel_reboot() {
     local mode=${1:-kernel} choice="" kernel_pending=0
+    local target_port="${EASY_ALL_TARGET_SSH_PORT:-22222}"
+    local old_ports="${EASY_ALL_MIGRATED_FROM_SSH_PORTS:-22}"
+    # 安装收尾选了「不变更」时端口没动：SSH 端口文案与强制询问都不成立，降级为内核提示。
+    if [[ "${mode}" == "ssh-port" && "${EASY_ALL_SSH_PORT_CHANGED:-1}" == "0" ]]; then
+        mode=kernel
+    fi
     if [[ -f "${KERNEL_REBOOT_MARKER}" ]] && ! running_kernel_supported; then
         kernel_pending=1
     fi
@@ -778,10 +784,10 @@ prompt_kernel_reboot() {
     printf '\n'
     printf '%b%s%b\n' "${RED}" "================================================================" "${RESET}"
     if [[ "${mode}" == "ssh-port" ]]; then
-        printf '%b%s%b\n' "${RED}" "【重要提示：ssh端口已经修改为22222，原22端口禁用（重启后生效）】" "${RESET}"
-        printf '%s\n' "重启后请使用 22222 端口连接 SSH：ssh -p 22222 root@<服务器 IP>"
-        printf '%s\n' "如使用云厂商安全组，请先放行 TCP 22222，否则重启后将无法连接"
-        printf '%s\n' "当前会话靠已建立的连接维持；一旦断开，必须完成重启才能从 22222 端口重新连接"
+        printf '%b%s%b\n' "${RED}" "【重要提示：ssh端口已经修改为${target_port}，原${old_ports}端口禁用（重启后生效）】" "${RESET}"
+        printf '%s\n' "重启后请使用 ${target_port} 端口连接 SSH：ssh -p ${target_port} root@<服务器 IP>"
+        printf '%s\n' "如使用云厂商安全组，请先放行 TCP ${target_port}，否则重启后将无法连接"
+        printf '%s\n' "当前会话靠已建立的连接维持；一旦断开，必须完成重启才能从 ${target_port} 端口重新连接"
     fi
     if ((kernel_pending == 1)); then
         printf '%s\n' "【重要提示：请重启服务器以加载 Skyline Speeder 所需的兼容内核】"
@@ -805,7 +811,7 @@ prompt_kernel_reboot() {
     *)
         if [[ "${mode}" == "ssh-port" ]]; then
             printf '%b%s%b\n' "${RED}" \
-                "已跳过自动重启；必须手动执行 sudo reboot 后，22222 端口与新配置才会生效。" "${RESET}"
+                "已跳过自动重启；必须手动执行 sudo reboot 后，${target_port} 端口与新配置才会生效。" "${RESET}"
         else
             warn "已跳过自动重启，请在保存配置后手动执行: sudo reboot"
         fi

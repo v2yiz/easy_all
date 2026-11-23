@@ -161,16 +161,18 @@
 ### 2.1 SSH 端口迁移与保护
 
 > [!CAUTION]
-> **所有模式安装成功后，SSH 端口已修改为 `22222`，原 `22` 端口已禁用（重启后生效）**。安装收尾不重启 `sshd`/`ssh.socket`，**请务必在安装完成后选择重启服务器**（AWS / GCP 等外部安全组请先放行 **TCP `22222`**），后续使用 `22222` 端口登录。
+> **所有模式安装成功后，可选把 SSH 端口迁移到安装收尾选定的新端口（默认 `22222`）：迁移后原端口被禁用（重启后生效），选「不变更」则配置与防火墙全部保持原样**。安装收尾不重启 `sshd`/`ssh.socket`；迁移后**请务必在提示确认时选择重启服务器**（AWS / GCP 等外部安全组请先放行 **TCP 新端口**，默认 `22222`），后续用新端口登录。
 
 - **端口迁移与防火墙策略**：
-  - 安装成功后（六种模式、三个 `install_all` 入口）自动把 SSH 端口迁移为 `22222`：写入受管片段 `/etc/ssh/sshd_config.d/00-easy-all-ports.conf`（`Port 22222`），并把其他未注释的 `Port` 行注释为 `# easy_all-disabled-port: <原行>`。
-  - **不重启 `sshd` / `ssh.socket`**，当前安装会话不会断连；`sshd -t`、`sshd -T` 精确端口字段与 `ssh.socket` 的 `Listen` 校验通过后只执行 `systemctl daemon-reload`，新端口**重启后生效**。
-  - UFW 同步放行 `22222/tcp`，并在第 1 条插入受管 `deny 22/tcp`（原有 `allow 22/tcp` 保留但被首条 deny 覆盖）；Fail2ban 的 `sshd` jail 同步改为 `port = 22222`。
+  - 安装成功后（六种模式、三个 `install_all` 入口）先采集当前真正在用的 SSH 端口（有效配置、实际监听、当前登录端口与 `ssh.socket`），再以三选一菜单询问变更方式：`1. 不变更`（保持采集到的端口，不改 `sshd` 配置、不写受管片段、不动 UFW）、`2. 修改为 22222`（直接回车即选它）、`3. 自定义端口`（可输入 `1..65535`）；非交互环境可用 `EASY_ALL_TARGET_SSH_PORT` 预设。非法值（非 `1..65535`、与 `80`/`443`/`8443` 或其他业务端口冲突、已被第三方进程监听）会提示后重输。
+  - 写入受管片段 `/etc/ssh/sshd_config.d/00-easy-all-ports.conf`（`Port <目标端口>`），把其他未注释的 `Port` 行注释为 `# easy_all-disabled-port: <原行>`；显式带端口的 `ListenAddress 203.0.113.10:2200` 则就地替换端口为 `ListenAddress 203.0.113.10:<目标端口>`，保留原绑定地址而不注释放宽监听范围。
+  - **不重启 `sshd` / `ssh.socket`**，当前安装会话不会断连；`sshd -t`、`sshd -T` 端口集合（`port` 与 IPv4 `listenaddress`）与 `ssh.socket` 的 `Listen` 校验通过后只执行 `systemctl daemon-reload`，新端口**重启后生效**。
+  - `sshd -t`/`sshd -T` 报 `Missing privilege separation directory: /run/sshd`（容器与精简镜像常见）时，自动 `install -d -m 0755` 建立该目录（可用 `EASY_ALL_SSHD_PRIVSEP_DIR` 覆盖）后重试一次。
+  - UFW 同步放行目标端口，并在第 1 条插入受管 `deny <旧端口>/tcp`（所有采集到的旧端口，而不是只算 `22`），原有旧端口 `allow` 保留但被首条 deny 覆盖；Fail2ban 的 `sshd` jail 同步改为 `port = <目标端口>`。
   - UFW 设置默认入站拒绝、默认转发拒绝，仅放行必要端口，未放行端口由默认策略阻断。
-  - Fail2ban 自动配置 sshd jail 实时监控保护迁移后的 SSH 端口。
-  - 收尾以红字提示「ssh端口已经修改为22222，原22端口禁用」，提醒云厂商安全组先放行 TCP `22222`，再用纯交互确认是否重启（重启前关闭当前会话将无法再从 `22` 连接）。
-- **维护与卸载**：`apply` / `apply-cloud` / `edit-sub` 不删除受管 `00-easy-all-ports.conf`；在「已迁移未重启」窗口内按新的 SSH 端口校验放行，不会因 `22` 已被禁用而失败。`uninstall` 删除受管 `deny 22/tcp`、还原迁移前的 `sshd` 配置，并确保恢复后的 SSH 端口（如 `22`）在 UFW 中仍有有效放行。
+  - Fail2ban 自动配置 sshd jail 实时监控保护安装收尾选定的 SSH 端口（选「不变更」时即当前端口）。
+  - 收尾以红字提示「ssh端口已经修改为<目标端口>，原<旧端口>端口禁用」，提醒云厂商安全组先放行 TCP 目标端口，再用纯交互确认是否重启（重启前关闭当前会话将无法再从旧端口连接）；选「不变更」时该 SSH 提醒与强制询问整体跳过，仅在内核待切换时提示重启。
+- **维护与卸载**：`apply` / `apply-cloud` / `edit-sub` 不删除受管 `00-easy-all-ports.conf`；在「已迁移未重启」窗口内按受管片段里的目标端口校验放行（新进程拿不到 `EASY_ALL_TARGET_SSH_PORT` 也成立），不会因旧端口已被禁用而失败。`uninstall` 按规则规格扫描删除所有受管 `deny <旧端口>/tcp`、还原迁移前的 `sshd` 配置，并确保恢复后的 SSH 端口（如 `22`）在 UFW 中仍有有效放行。
 - **常驻安全基线归初始化**：`scripts/debian-init.sh` 负责激活 UFW（SSH 端口、ICMP 回显与出站放行）并配置 Fail2ban；easy_all 安装只在此基础上追加业务端口。
 - **规则规格删除防编号漂移**：业务端口与 Cloudflare 回源白名单的清理升级为规则规格删除（通过 `stale_ufw_rule_delete_specs` 生成规格并执行 `ufw delete`），替代易受并发插桩干扰的行号逆序删除，彻底规避了 Fail2ban 动态插入规则导致的编号漂移与误删。
 - **卸载与回滚只回收业务端口**：各模式 `uninstall` 与安装失败回滚一律只删除自己注入的 `443`/`8443` 放行与 Cloudflare 回源白名单，保留 UFW 启用状态、默认策略、SSH 放行与 Fail2ban 配置，不再执行 `ufw disable`。
@@ -182,7 +184,7 @@
 
 | 模式 | UFW 公网放行 | 仅 Cloudflare 回源 IPv4 放行 | 本机回环监听 |
 | :--- | :--- | :--- | :--- |
-| 初始化（debian-init） | SSH 实际监听端口（安装收尾迁移为 `22222`，`22` 被受管 `deny 22/tcp` 覆盖） | — | — |
+| 初始化（debian-init） | SSH 实际监听端口（安装收尾可选迁移到目标端口，默认 `22222`；迁移后旧端口被受管 `deny <旧端口>/tcp` 覆盖，选「不变更」则保持原端口与原放行） | — | — |
 | 1 纯 CloudFlare（单域名） | — | TCP `443` | `127.0.0.1:10086`（VLESS WebSocket） |
 | 2 纯 CloudFront | TCP `443` | — | `127.0.0.1:10086`（VLESS WebSocket） |
 | 3 Reality + CloudFront | TCP `443`、`8443` | — | `127.0.0.1:10086`（VLESS WebSocket）、`127.0.0.1:9443`（伪装站） |
