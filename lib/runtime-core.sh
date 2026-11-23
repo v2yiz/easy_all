@@ -309,11 +309,11 @@ subscription_link_domain() {
 runtime_protocol_label() {
     case "${PROTOCOL:-}" in
     reality-cloudfront) printf 'Reality（direct TCP 443）+ VLESS WebSocket over AWS CloudFront' ;;
-    reality-cloudflare) printf 'Reality（direct TCP 443）+ VLESS WebSocket over Cloudflare 橙云' ;;
+    reality-cloudflare) printf 'Reality（direct TCP 443）+ VLESS HTTPUpgrade over Cloudflare 橙云' ;;
     cloudfront) printf 'VLESS WebSocket over AWS CloudFront' ;;
-    cloudflare) printf 'VLESS WebSocket over Cloudflare 橙云' ;;
+    cloudflare) printf 'VLESS HTTPUpgrade over Cloudflare 橙云' ;;
     combined-cloudfront) printf 'AnyTLS（direct TCP 443）+ VLESS WebSocket over AWS CloudFront' ;;
-    combined-cloudflare) printf 'AnyTLS（direct TCP 443）+ VLESS WebSocket over Cloudflare 橙云' ;;
+    combined-cloudflare) printf 'AnyTLS（direct TCP 443）+ VLESS HTTPUpgrade over Cloudflare 橙云' ;;
     *) printf '%s\n' "${PROTOCOL:-未知}" ;;
     esac
 }
@@ -1547,14 +1547,18 @@ runtime_ports_listening() {
 runtime_base64_markers() {
     runtime_has_anytls_entry && printf 'anytls://\n'
     runtime_has_reality_entry && printf 'security=reality\n'
-    runtime_has_cdn_entry && printf 'type=ws\n'
+    runtime_has_cdn_entry && printf 'type=%s\n' "$(singbox_cdn_transport_type)"
     return 0
 }
 
 runtime_mihomo_markers() {
     runtime_has_anytls_entry && printf 'type: anytls\n'
     runtime_has_reality_entry && printf 'reality-opts:\n'
-    runtime_has_cdn_entry && printf 'network: ws\n'
+    if runtime_has_cdn_entry; then
+        printf 'network: ws\n'
+        [[ "$(singbox_cdn_transport_type)" != "httpupgrade" ]] \
+            || printf 'v2ray-http-upgrade: true\n'
+    fi
     return 0
 }
 

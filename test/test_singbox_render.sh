@@ -122,7 +122,9 @@ assert_equal "回环 CDN 入站不启用 TLS" "null" \
     "$(jq -c '.inbounds[0].tls' <<<"${cloudfront_json}")"
 
 cloudflare_json=$(render cloudflare 0)
-assert_equal "模式 1 与模式 2 的本机入站一致" "${cloudfront_json}" "${cloudflare_json}"
+assert_equal "模式 1 回环 CDN 入站用 httpupgrade" \
+    "vless-cdn-in 127.0.0.1 10086 httpupgrade" \
+    "$(jq -r '.inbounds[0] | "\(.tag) \(.listen) \(.listen_port) \(.transport.type)"' <<<"${cloudflare_json}")"
 
 combined_json=$(render combined-cloudfront 0)
 assert_equal "模式 5 同时有 AnyTLS 与 VLESS" "anytls-in,vless-cdn-in" \
@@ -144,6 +146,8 @@ assert_equal "模式 6 AnyTLS 监听 443" "443" \
     "$(jq -r '.inbounds[] | select(.tag == "anytls-in") | .listen_port' <<<"${combined_cf_json}")"
 assert_equal "模式 6 回环 CDN 入站 10086" "127.0.0.1 10086" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | "\(.listen) \(.listen_port)"' <<<"${combined_cf_json}")"
+assert_equal "模式 6 回环 CDN 入站用 httpupgrade" "httpupgrade" \
+    "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | .transport.type' <<<"${combined_cf_json}")"
 
 # blocked 只省略 CDN 入站；模式 5 保留 AnyTLS。
 for proto in cloudfront cloudflare; do
@@ -168,6 +172,8 @@ assert_equal "模式 4 Reality 用户为 xtls-rprx-vision" "xtls-rprx-vision" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-reality-in") | .users[0].flow' <<<"${reality_cf_json}")"
 assert_equal "模式 4 回环 CDN 入站 10086" "127.0.0.1 10086" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | "\(.listen) \(.listen_port)"' <<<"${reality_cf_json}")"
+assert_equal "模式 4 回环 CDN 入站用 httpupgrade" "httpupgrade" \
+    "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | .transport.type' <<<"${reality_cf_json}")"
 assert_equal "模式 4 blocked 只保留 Reality 直连" "vless-reality-in" \
     "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render reality-cloudflare 1)")"
 
@@ -275,6 +281,22 @@ assert_equal "sing-box 节点不写 early data" "null null" \
     "$(build_singbox_ws_outbound \
         | jq -r '.transport.max_early_data, .transport.early_data_header_name' | paste -sd' ' -)"
 
+# 橙云模式（1/4/6）：三端产物同步切到 httpupgrade + http/1.1 ALPN。
+cloudflare_link=$(PROTOCOL=cloudflare build_vless_ws_link)
+assert_contains "模式 1 VLESS 链接用 httpupgrade" "${cloudflare_link}" \
+    "security=tls&type=httpupgrade&alpn=http%2F1.1&sni=cf.example.com&"
+cloudflare_node=$(PROTOCOL=cloudflare build_mihomo_ws_node)
+assert_contains "模式 1 Mihomo 仍是 network: ws" "${cloudflare_node}" "network: ws"
+assert_contains "模式 1 Mihomo 锁 ALPN http/1.1" "${cloudflare_node}" $'    alpn:\n      - http/1.1'
+assert_contains "模式 1 Mihomo 开启 v2ray-http-upgrade" "${cloudflare_node}" \
+    $'      v2ray-http-upgrade: true'
+assert_equal "模式 1 sing-box outbound 传输契约" \
+    "httpupgrade cf.example.com /vless-abcdef123456 cf.example.com [\"http/1.1\"]" \
+    "$(PROTOCOL=cloudflare build_singbox_ws_outbound \
+        | jq -r '"\(.transport.type) \(.server) \(.transport.path) \(.transport.host) \(.tls.alpn)"')"
+assert_not_contains "模式 1 sing-box outbound 不写 ws headers" \
+    "$(PROTOCOL=cloudflare build_singbox_ws_outbound)" '"headers"'
+
 if (PROTOCOL=cloudfront; CF_NODE_DOMAIN=""; build_vless_ws_link) >/dev/null 2>&1; then
     fail "缺少 CF_NODE_DOMAIN 必须失败"
 fi
@@ -296,6 +318,10 @@ assert_equal "优选地址只替换 sing-box server" \
     "edge.example-cdn.com cf.example.com cf.example.com" \
     "$(CF_EDGE_ADDRESS="edge.example-cdn.com" build_singbox_ws_outbound \
         | jq -r '"\(.server) \(.tls.server_name) \(.transport.headers.Host)"')"
+assert_equal "优选地址不改 httpupgrade transport.host" \
+    "edge.example-cdn.com cf.example.com cf.example.com" \
+    "$(PROTOCOL=cloudflare CF_EDGE_ADDRESS="edge.example-cdn.com" build_singbox_ws_outbound \
+        | jq -r '"\(.server) \(.tls.server_name) \(.transport.host)"')"
 # 空值与未设置都必须回落到节点域名：无字段的既有部署产物逐字节不变（验收条件 5）。
 assert_equal "空优选地址不改变 VLESS 链接" "$(build_vless_ws_link)" \
     "$(CF_EDGE_ADDRESS="" build_vless_ws_link)"

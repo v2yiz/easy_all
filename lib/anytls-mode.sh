@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Mode 6: AnyTLS 直连入口（TCP 443）+ 橙云节点域名（Caddy 8443 回源，同时提供
-#         VLESS WebSocket 与订阅）。
+#         VLESS HTTPUpgrade 与订阅）。
 # Mode 4: 直连入口换成 VLESS Reality（回环 9443 伪装回落）+ 同模式 6 的橙云入口。
 #
 # Profile 契约（由 profiles/combined-cloudflare.sh、profiles/reality-cloudflare.sh
@@ -11,7 +11,7 @@
 # 与 CloudFront 模式相同的命令契约（install/apply/apply-cloud/edit-sub/renew-cert/
 # show/status/uninstall/cleanup-partial），但没有任何 AWS 资源与 985GB 熔断。
 #
-# 两个模式固定 deploy：CF_NODE_DOMAIN 同时是回环 VLESS WebSocket 的站点、订阅域名与
+# 两个模式固定 deploy：CF_NODE_DOMAIN 同时是回环 VLESS HTTPUpgrade 的站点、订阅域名与
 # 证书名，直连与橙云两个节点都进入订阅。
 
 # 公网验收重试次数/间隔；测试可经 *_OVERRIDE 缩短，生产默认不变。
@@ -23,7 +23,7 @@ readonly CDN_PUBLIC_ACCEPT_SECONDS="${CDN_PUBLIC_ACCEPT_SECONDS_OVERRIDE:-10}"
 cdn_derive_runtime_fields() {
     [[ -n "${DIRECT_DOMAIN:-}" ]] || return 1
     BACKEND=sing-box
-    # 橙云节点域名同时是 WebSocket Host、订阅域名与证书名；固定 deploy。
+    # 橙云节点域名同时是 transport Host、订阅域名与证书名；固定 deploy。
     [[ -n "${CF_NODE_DOMAIN:-}" ]] || return 1
     SUBSCRIPTION_MODE=deploy
     SUBSCRIPTION_DOMAIN=${CF_NODE_DOMAIN}
@@ -92,11 +92,11 @@ collect_anytls_install_inputs() {
     fi
 }
 
-# 模式 4/6：节点域名同时承载 WebSocket 节点与订阅，必须是 Zone 的一级子域名（默认边缘证书覆盖范围）。
+# 模式 4/6：节点域名同时承载 HTTPUpgrade 节点与订阅，必须是 Zone 的一级子域名（默认边缘证书覆盖范围）。
 # 域名与节点名分两步：域名先问（紧跟直连域名），节点名与直连节点名排在一起。
 collect_combined_cloudflare_cdn_domain() {
     CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value \
-        'CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
+        'CDN 节点域名（橙云代理，同时提供 HTTPUpgrade 节点与订阅）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
     validate_domain "${CF_NODE_DOMAIN}" || die "节点域名无效：${CF_NODE_DOMAIN}"
     [[ "${CF_NODE_DOMAIN}" == *".${CF_ZONE}" ]] \
         || die "节点域名必须属于 ${CF_ZONE}：${CF_NODE_DOMAIN}"
@@ -403,7 +403,7 @@ show_status() {
         printf '直连域名: %s（AnyTLS，TCP 443 公网）\n' "${DIRECT_DOMAIN}"
     fi
     if subscription_enabled; then
-        printf '节点/订阅域名: %s（橙云 A，Caddy 8443 仅 Cloudflare 回源段，同时提供 WebSocket 节点与订阅）\n' \
+        printf '节点/订阅域名: %s（橙云 A，Caddy 8443 仅 Cloudflare 回源段，同时提供 HTTPUpgrade 节点与订阅）\n' \
             "${SUBSCRIPTION_DOMAIN}"
         printf 'Origin Rule: ruleset %s / rule %s\n' \
             "${CLOUDFLARE_ORIGIN_RULESET_ID:-未知}" "${CLOUDFLARE_ORIGIN_RULE_ID:-未知}"
@@ -469,7 +469,7 @@ apply_cloud_phase() {
     anytls_ensure_zone_id
     if subscription_enabled; then
         cloudflare_ensure_zone_ssl_strict
-        # 模式 4/6 的橙云节点走 WebSocket：Zone 关闭 WebSockets 时链路必失败。
+        # 模式 4/6 的橙云节点走 HTTPUpgrade（握手仍发 Upgrade: websocket）：Zone 关闭 WebSockets 时链路必失败。
         cloudflare_ensure_zone_websockets_on
     fi
     anytls_ensure_dns

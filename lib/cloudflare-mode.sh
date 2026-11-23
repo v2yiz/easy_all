@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Cloudflare orange-cloud core for mode 2 (single proxied domain serving both the
-# VLESS WebSocket node and the Token-protected subscription).
+# VLESS HTTPUpgrade node and the Token-protected subscription).
 #
 # Profile contract provided before this file is sourced:
 #   CDN_PROFILE_KEY          install marker / profile key (cloudflare)
@@ -17,7 +17,7 @@
 #   cdn_validate_direct_runtime no-op: mode 2 has no direct entry
 #
 # Cloudflare API/DNS/Origin CA/origin-firewall helpers come from lib/cf-dns.sh.
-# 这一层只承载橙云单域名链路（一个域名同时提供 WebSocket 节点与订阅），没有优选 IP、
+# 这一层只承载橙云单域名链路（一个域名同时提供 HTTPUpgrade 节点与订阅），没有优选 IP、
 # 没有测速/兜底分组、没有 Globalping 与 CloudFront/AWS/流量熔断语义。
 
 # 公网验收重试次数/间隔；测试可经 *_OVERRIDE 缩短，生产默认不变。
@@ -45,7 +45,7 @@ CDN_SUBSCRIPTION_CORRUPT=0
 # --- State contract -----------------------------------------------------------
 
 # 运行时派生字段（不落盘）：load_state 与首装输入都必须派生，首装不经过 load_state。
-# 单域名链路里 CF_NODE_DOMAIN 同时是 WebSocket Host、订阅域名与 Origin CA 的唯一名字。
+# 单域名链路里 CF_NODE_DOMAIN 同时是 transport Host、订阅域名与 Origin CA 的唯一名字。
 
 # 云端已签发新证书但后续本机/公网验收失败：证书按设计保留，必须在退出前点名，
 # 否则下一次卸载只知道旧 ID，长期有效的孤儿证书无人知晓。
@@ -106,7 +106,7 @@ collect_cloudflare_install_inputs() {
     CF_ZONE=$(normalize_domain "$(prompt_value 'Cloudflare 根 Zone（如 example.com）' "${CF_ZONE:-}")")
     validate_domain "${CF_ZONE}" || die "Cloudflare Zone 无效：${CF_ZONE}"
 
-    CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value 'CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
+    CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value 'CDN 节点域名（橙云代理，同时提供 HTTPUpgrade 节点与订阅）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
     cdn_validate_install_domains
     # 首装不经过 load_state：订阅渲染前必须在输入校验处派生运行时字段。
     cdn_derive_runtime_fields || die "运行时字段派生失败：缺少节点域名"
@@ -159,7 +159,7 @@ cdn_ensure_zone_id() {
     fi
 }
 
-# 橙云节点域名一条 A 记录同时承载 WebSocket 节点与订阅。
+# 橙云节点域名一条 A 记录同时承载 HTTPUpgrade 节点与订阅。
 cdn_ensure_dns() {
     local domain
     cdn_ensure_zone_id
@@ -329,11 +329,11 @@ cdn_public_subscription_ok() {
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         "https://${CF_NODE_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
-    [[ "${decoded}" == *"type=ws"* ]] || return 1
+    [[ "${decoded}" == *"type=httpupgrade"* ]] || return 1
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' \
         "https://${CF_NODE_DOMAIN}/subscribe") || return 1
-    [[ "${body}" == *"network: ws"* ]]
+    [[ "${body}" == *"network: ws"* && "${body}" == *"v2ray-http-upgrade: true"* ]]
 }
 
 cdn_public_token_rejection_ok() {
@@ -452,7 +452,7 @@ apply_cloud_phase() {
     # 只读查询 Zone ID 必须先于 strict 校验（design §9）：创建任何资源前完成。
     cdn_ensure_zone_id
     cloudflare_ensure_zone_ssl_strict
-    # 橙云 VLESS 节点走 WebSocket：Zone 关闭 WebSockets 时链路必失败。
+    # 橙云 VLESS 节点走 HTTPUpgrade（握手仍发 Upgrade: websocket）：Zone 关闭 WebSockets 时链路必失败。
     cloudflare_ensure_zone_websockets_on
     cdn_ensure_dns
     cdn_issue_certificate

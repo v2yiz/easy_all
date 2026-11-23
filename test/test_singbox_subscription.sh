@@ -395,6 +395,27 @@ while IFS='|' read -r profile expected_default has_direct; do
     fi
     assert_not_contains "${profile} 默认订阅不含 optional 节点" "$(tags "${mode_json}")" "R-可用"
     assert_contains "${profile} all 订阅包含 optional 节点" "$(tags "${mode_out}/subs/singbox-all.json")" "R-可用"
+    # CDN 传输按 CDN 家族分流：橙云（1/4/6）httpupgrade + http/1.1 ALPN，CloudFront 保持 ws。
+    case "${profile}" in
+    cloudflare | reality-cloudflare | combined-cloudflare) mode_transport=httpupgrade ;;
+    *) mode_transport=ws ;;
+    esac
+    assert_equal "${profile} 本机 CDN 节点传输" "${mode_transport} cf.example.com" \
+        "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
+            "\(.transport.type) \(.transport.host // .transport.headers.Host)"' "${mode_json}")"
+    if [[ "${mode_transport}" == "httpupgrade" ]]; then
+        assert_equal "${profile} 本机 CDN 节点锁 ALPN http/1.1" '["http/1.1"]' \
+            "$(jq -c '.outbounds[] | select(.tag == "🇺🇸CF") | .tls.alpn' "${mode_json}")"
+        assert_contains "${profile} Mihomo 开启 v2ray-http-upgrade" \
+            "$(<"${mode_out}/subs/mihomo.yaml")" "v2ray-http-upgrade: true"
+    else
+        assert_equal "${profile} 本机 CDN 节点不限 ALPN" "null" \
+            "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") | .tls.alpn // null' "${mode_json}")"
+        assert_not_contains "${profile} Mihomo 不写 v2ray-http-upgrade" \
+            "$(<"${mode_out}/subs/mihomo.yaml")" "v2ray-http-upgrade"
+    fi
+    assert_contains "${profile} Base64 本机 CDN 传输" \
+        "$(openssl base64 -d -A <<<"$(<"${mode_out}/subs/base64.txt")")" "type=${mode_transport}"
 done <<'PROFILES'
 reality-cloudfront|🇺🇸直连|yes
 reality-cloudflare|🇺🇸直连|yes
@@ -443,9 +464,9 @@ assert_equal "模式 4 本机 Reality 节点字段" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸直连") |
         "\(.type) \(.server) \(.server_port) \(.uuid) \(.flow) \(.tls.server_name) \(.tls.reality.public_key) \(.tls.reality.short_id) \(.tls.utls.fingerprint) \(.packet_encoding)"' "${reality_cf_json}")"
 assert_equal "模式 4 本机橙云节点字段" \
-    "vless cf.example.com 443 ${VLESS_UUID} ws cf.example.com ${VLESS_PATH} xudp" \
+    "vless cf.example.com 443 ${VLESS_UUID} httpupgrade cf.example.com ${VLESS_PATH} cf.example.com [\"http/1.1\"] xudp" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
-        "\(.type) \(.server) \(.server_port) \(.uuid) \(.transport.type) \(.tls.server_name) \(.transport.path) \(.packet_encoding)"' "${reality_cf_json}")"
+        "\(.type) \(.server) \(.server_port) \(.uuid) \(.transport.type) \(.tls.server_name) \(.transport.path) \(.transport.host) \(.tls.alpn) \(.packet_encoding)"' "${reality_cf_json}")"
 assert_equal "模式 4 两个本机节点按 Reality → 橙云 顺序" \
     '["🇺🇸直连","🇺🇸CF"]' \
     "$(jq -c '[.outbounds[] | select(.tag == "🇺🇸直连" or .tag == "🇺🇸CF") | .tag]' "${reality_cf_json}")"
@@ -456,8 +477,10 @@ assert_equal "模式 4 PROXY 默认选择 Reality 节点" '"🇺🇸直连"' \
     "$(jq -c '.outbounds[] | select(.tag == "PROXY") | .default' "${reality_cf_json}")"
 assert_not_contains "模式 4 Mihomo 不含 anytls 节点" "$(<"${reality_cf_out}/subs/mihomo.yaml")" "type: anytls"
 reality_cf_b64=$(openssl base64 -d -A <<<"$(<"${reality_cf_out}/subs/base64.txt")")
-assert_contains "模式 4 Base64 同时含 Reality 与 ws" "${reality_cf_b64}" "security=reality"
-assert_contains "模式 4 Base64 含橙云 ws 节点" "${reality_cf_b64}" "type=ws"
+assert_contains "模式 4 Base64 同时含 Reality 与 httpupgrade" "${reality_cf_b64}" "security=reality"
+assert_contains "模式 4 Base64 含橙云 httpupgrade 节点" "${reality_cf_b64}" "type=httpupgrade"
+assert_contains "模式 4 Mihomo 开启 v2ray-http-upgrade" \
+    "$(<"${reality_cf_out}/subs/mihomo.yaml")" "v2ray-http-upgrade: true"
 
 # --- 候选校验拒绝错误配置 -----------------------------------------------------
 validate_with_lib() {

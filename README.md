@@ -1,6 +1,6 @@
 # easy_all
 
-当前版本：[5.4.2](CHANGELOG.md#542-更新说明2026-11-23)
+当前版本：[5.5.0](CHANGELOG.md#550-更新说明2026-11-23)
 
 `easy_all` 是专为全新 **Debian 12/13 及 Ubuntu 22.04/24.04/26.04 LTS**（amd64 / arm64）设计的单节点代理一键安装工具。通过控制台交互引导，一键打通 sing-box、Caddy 订阅分发、UFW 防火墙、Fail2ban 及 Skyline Speeder TCP 加速（基于 Zabbly 6.12+ LTS 内核）。
 
@@ -72,7 +72,7 @@ $\textcolor{red}{\textbf{线路好+无可用信用卡，选模式 4 模式6(更�
 > **核心约定**：
 > - **域名规划**：全模式只需 **1 个根域名**（托管于同一 Cloudflare Zone），安装器会自动创建对应数量的一级子域名。
 > - **端口规范**：客户端统一连接 `443`，全模式不开放 `80`。回源端口在模式 1（`443`）与模式 4/6（`8443`）仅对 Cloudflare 官方回源 IP 放行；模式 2 的源站 `443` 与模式 3/5 的源站 `8443` 对公网可达，由 `X-Easy-All-Origin-Key` 密钥精确校验。
-> - **协议与证书**：CDN 节点均为 **VLESS WebSocket**；模式 3/4 直连为 **VLESS Reality**（`xtls-rprx-vision`），非 Reality 握手透明回落到本机 `127.0.0.1:9443` 的伪装登录站。模式 2/3/4/5/6 的直连与源站使用 Let's Encrypt（DNS-01 自动签发），CloudFront 客户端证书由 AWS ACM 托管，模式 1 回源使用 Cloudflare Origin CA（客户端连接 CF 边缘证书）。
+> - **协议与证书**：CDN 节点传输按 CDN 家族区分：模式 1/4/6（橙云）为 **VLESS HTTPUpgrade**（HTTP/1.1 ALPN），模式 2/3/5（CloudFront）为 **VLESS WebSocket**；模式 3/4 直连为 **VLESS Reality**（`xtls-rprx-vision`），非 Reality 握手透明回落到本机 `127.0.0.1:9443` 的伪装登录站。模式 2/3/4/5/6 的直连与源站使用 Let's Encrypt（DNS-01 自动签发），CloudFront 客户端证书由 AWS ACM 托管，模式 1 回源使用 Cloudflare Origin CA（客户端连接 CF 边缘证书）。
 > - **Cloudflare SSL**：模式 1/4/6 要求目标 Zone 的 SSL/TLS 必须为 **Full (strict)**。
 > - **升级提示**：不支持从 4.x 直接升级，请先执行旧版 `sudo easy_all uninstall` 后重新安装。
 

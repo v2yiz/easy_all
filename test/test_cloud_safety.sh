@@ -1483,7 +1483,7 @@ combined_cf_order=$(run_prompt_order combined-cloudflare)
 assert_equal "模式 6 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \
     "$(printf '%s\n' "${combined_cf_order}" | sed -n 2p)"
 assert_equal "模式 6 域名先问完，第 3 条才是 CDN 节点域名" \
-    "CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）" \
+    "CDN 节点域名（橙云代理，同时提供 HTTPUpgrade 节点与订阅）" \
     "$(printf '%s\n' "${combined_cf_order}" | sed -n 3p)"
 assert_equal "模式 6 两个节点名相邻（直连后紧接 CDN）" \
     "CDN 节点名（完整单节点名）" \
@@ -1492,7 +1492,7 @@ reality_cf_order=$(run_prompt_order reality-cloudflare)
 assert_equal "模式 4 第 2 条是直连域名" "直连节点域名（灰云 A 记录指向本机）" \
     "$(printf '%s\n' "${reality_cf_order}" | sed -n 2p)"
 assert_equal "模式 4 域名先问完，第 3 条才是 CDN 节点域名" \
-    "CDN 节点域名（橙云代理，同时提供 WebSocket 节点与订阅）" \
+    "CDN 节点域名（橙云代理，同时提供 HTTPUpgrade 节点与订阅）" \
     "$(printf '%s\n' "${reality_cf_order}" | sed -n 3p)"
 assert_equal "模式 4 两个节点名相邻（直连后紧接 CDN）" "CDN 节点名（完整单节点名）" \
     "$(printf '%s\n' "${reality_cf_order}" | sed -n 5p)"

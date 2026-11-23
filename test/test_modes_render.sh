@@ -93,6 +93,9 @@ render_mode() {
         build_mihomo_nodes >"${out_dir}/nodes.yaml"
         build_mihomo_proxy_groups >"${out_dir}/groups.yaml"
         build_mihomo_proxy_names >"${out_dir}/names.yaml"
+        printf '%s\n' "$(runtime_protocol_label)" >"${out_dir}/label.txt"
+        runtime_base64_markers >"${out_dir}/markers-base64.txt"
+        runtime_mihomo_markers >"${out_dir}/markers-mihomo.txt"
     ) || fail "${profile} 渲染失败"
 }
 
@@ -137,6 +140,16 @@ assert_contains "模式 1 站点是节点域名 443" "${out}/Caddyfile" 'https:/
 assert_contains "模式 1 有订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
 assert_not_contains "模式 1 没有 CloudFront 守卫" "${out}/Caddyfile" 'X-Easy-All-Origin-Key'
 assert_contains "模式 1 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
+assert_contains "模式 1 回环入站用 httpupgrade" "${out}/config.json" '"type": "httpupgrade"'
+assert_not_contains "模式 1 入站不再是 ws" "${out}/config.json" '"type": "ws"'
+assert_contains "模式 1 节点用 httpupgrade 与 http/1.1 ALPN" "${out}/links.txt" \
+    'type=httpupgrade&alpn=http%2F1.1&'
+assert_contains "模式 1 Mihomo 开启 v2ray-http-upgrade" "${out}/nodes.yaml" \
+    'v2ray-http-upgrade: true'
+assert_contains "模式 1 协议标签是 HTTPUpgrade" "${out}/label.txt" 'VLESS HTTPUpgrade over Cloudflare'
+assert_equal "模式 1 Base64 标记" "type=httpupgrade" "$(<"${out}/markers-base64.txt")"
+assert_equal "模式 1 Mihomo 标记" $'network: ws\nv2ray-http-upgrade: true' \
+    "$(<"${out}/markers-mihomo.txt")"
 assert_contains "模式 1 订阅域名由节点域名派生" "${out}/links.txt" 'host=cf.example.com&'
 [[ ! -s "${out}/groups.yaml" ]] || fail "模式 1 不应生成额外代理组"
 assert_equal "模式 1 PROXY 成员只有 CDN 节点" $'        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
@@ -158,6 +171,11 @@ assert_equal "模式 5 PROXY 成员顺序" \
 assert_not_contains "模式 5 PROXY 不含 AUTO" "${out}/names.yaml" "AUTO"
 assert_not_contains "模式 5 PROXY 不含 CDN-FALLBACK" "${out}/names.yaml" "CDN-FALLBACK"
 assert_not_contains "模式 5 不使用 httpupgrade" "${out}/config.json" 'httpupgrade'
+assert_contains "模式 5 回环入站保持 ws" "${out}/config.json" '"type": "ws"'
+assert_not_contains "模式 5 Mihomo 不写 v2ray-http-upgrade" "${out}/nodes.yaml" 'v2ray-http-upgrade'
+assert_contains "模式 5 协议标签保持 WebSocket" "${out}/label.txt" 'VLESS WebSocket over AWS CloudFront'
+assert_equal "模式 5 Base64 标记" $'anytls://\ntype=ws' "$(<"${out}/markers-base64.txt")"
+assert_equal "模式 5 Mihomo 标记" $'type: anytls\nnetwork: ws' "$(<"${out}/markers-mihomo.txt")"
 
 # 节点名推荐默认值：必须在交互提示里出现（加载运行时库前由 Profile 赋值），
 # 否则会被 singbox-runtime.sh 的 AnyTLS / VLESS-WS 兜底值覆盖。
@@ -195,9 +213,14 @@ assert_contains "模式 6 有订阅入口" "${out}/Caddyfile" '@easy_all_sub pat
 assert_contains "模式 6 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
 assert_not_contains "模式 6 没有 Caddy 源站守卫" "${out}/Caddyfile" 'X-Easy-All-Origin-Key'
 assert_contains "模式 6 节点含直连" "${out}/links.txt" 'anytls://'
-assert_contains "模式 6 节点含橙云 CDN" "${out}/links.txt" 'type=ws'
+assert_contains "模式 6 节点含橙云 CDN" "${out}/links.txt" 'type=httpupgrade&alpn=http%2F1.1&'
+assert_contains "模式 6 回环入站用 httpupgrade" "${out}/config.json" '"type": "httpupgrade"'
 assert_contains "模式 6 Mihomo 含 AnyTLS" "${out}/nodes.yaml" 'type: anytls'
-assert_contains "模式 6 Mihomo 含 ws" "${out}/nodes.yaml" 'network: ws'
+assert_contains "模式 6 Mihomo 含 ws 传输" "${out}/nodes.yaml" 'network: ws'
+assert_contains "模式 6 Mihomo 开启 v2ray-http-upgrade" "${out}/nodes.yaml" \
+    'v2ray-http-upgrade: true'
+assert_contains "模式 6 协议标签是 HTTPUpgrade" "${out}/label.txt" 'VLESS HTTPUpgrade over Cloudflare'
+assert_equal "模式 6 Base64 标记" $'anytls://\ntype=httpupgrade' "$(<"${out}/markers-base64.txt")"
 assert_not_contains "模式 6 无 Reality 参数" "${out}/links.txt" 'security=reality'
 assert_equal "模式 6 PROXY 成员顺序" \
     $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
@@ -317,6 +340,9 @@ assert_contains "模式 3 节点含 VLESS ws" "${out}/links.txt" 'type=ws'
 assert_not_contains "模式 3 节点不是 AnyTLS" "${out}/links.txt" 'anytls://'
 assert_contains "模式 3 Mihomo reality-opts" "${out}/nodes.yaml" 'reality-opts:'
 assert_contains "模式 3 Mihomo ws 节点" "${out}/nodes.yaml" 'network: ws'
+assert_contains "模式 3 回环入站保持 ws" "${out}/config.json" '"type": "ws"'
+assert_not_contains "模式 3 Mihomo 不写 v2ray-http-upgrade" "${out}/nodes.yaml" 'v2ray-http-upgrade'
+assert_equal "模式 3 Base64 标记" $'security=reality\ntype=ws' "$(<"${out}/markers-base64.txt")"
 assert_not_contains "模式 3 Mihomo 不写 PQ 开关" "${out}/nodes.yaml" 'support-x25519mlkem768'
 assert_equal "模式 3 PROXY 成员是 Reality + CDN" \
     $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
@@ -347,10 +373,16 @@ if grep -Fq '@easy_all_sub' <<<"${camo_block}"; then
     fail "模式 4 伪装站不得暴露订阅入口"
 fi
 assert_contains "模式 4 节点是 Reality" "${out}/links.txt" 'security=reality'
-assert_contains "模式 4 节点含 VLESS ws" "${out}/links.txt" 'type=ws'
+assert_contains "模式 4 节点含 VLESS httpupgrade" "${out}/links.txt" \
+    'type=httpupgrade&alpn=http%2F1.1&'
 assert_not_contains "模式 4 节点不是 AnyTLS" "${out}/links.txt" 'anytls://'
 assert_contains "模式 4 Mihomo reality-opts" "${out}/nodes.yaml" 'reality-opts:'
-assert_contains "模式 4 Mihomo ws 节点" "${out}/nodes.yaml" 'network: ws'
+assert_contains "模式 4 Mihomo ws 传输" "${out}/nodes.yaml" 'network: ws'
+assert_contains "模式 4 Mihomo 开启 v2ray-http-upgrade" "${out}/nodes.yaml" \
+    'v2ray-http-upgrade: true'
+assert_contains "模式 4 回环入站用 httpupgrade" "${out}/config.json" '"type": "httpupgrade"'
+assert_contains "模式 4 协议标签是 HTTPUpgrade" "${out}/label.txt" 'VLESS HTTPUpgrade over Cloudflare'
+assert_equal "模式 4 Base64 标记" $'security=reality\ntype=httpupgrade' "$(<"${out}/markers-base64.txt")"
 assert_not_contains "模式 4 不带 AnyTLS 节点" "${out}/nodes.yaml" 'type: anytls'
 assert_equal "模式 4 PROXY 成员是 Reality + 橙云" \
     $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"

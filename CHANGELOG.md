@@ -1,3 +1,14 @@
+## 5.5.0 更新说明（2026-11-23）
+
+### 增强与变更
+
+- **Cloudflare 模式（1 / 4 / 6）CDN 传输升级至 `HTTPUpgrade`**（`lib/singbox-runtime.sh`、`lib/runtime-core.sh`、`lib/cloudflare-mode.sh`、`lib/anytls-mode.sh`）：
+  - 新增 `singbox_cdn_transport_type()` 按 CDN 家族分流：模式 1 / 4 / 6（Cloudflare 橙云）服务端 `vless-cdn-in` 与三端订阅输出统一切换为 `httpupgrade`；模式 2 / 3 / 5（AWS CloudFront）因 CloudFront 会改写 `Connection` 并剥离非完整 WebSocket 握手的 `Upgrade` 头，保持 `WebSocket` 不变。
+  - **三端订阅同步**：VLESS URI 输出 `type=httpupgrade&alpn=http%2F1.1`；Mihomo YAML 保留 `network: ws` 并新增 `alpn: [http/1.1]` 与 `ws-opts.v2ray-http-upgrade: true`；`sing-box` JSON 订阅配置 `tls.alpn: ["http/1.1"]` 与 `transport: {type: "httpupgrade", path, host}`。
+  - **升级提示**：模式 1 / 4 / 6 存量节点执行 `easy_all apply` 升级后，已导入旧 `ws` 节点的客户端需重新拉取订阅；如需回退，可切回 tag `20261123` 后执行 `easy_all apply`。
+
+---
+
 ## 5.4.2 更新说明（2026-11-23）
 
 ### 增强与修复

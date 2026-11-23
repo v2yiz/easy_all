@@ -21,7 +21,7 @@
 
 - **状态 schema 固定为 `1`**（`STATE_VERSION=1`）：`PROTOCOL` 同时是模式选择、安装进度 marker、安装身份与 Profile 路由的唯一键。schema `0`（4.x）不被接管也不自动迁移，必须先由旧版本 `uninstall`（需要时加 `--purge-cloud`）再用本版本重装。
 - **本机节点与全部订阅入口统一 443**：AnyTLS/Reality 入站 443、CloudFront viewer 443、橙云边缘 443。回源端口监听 `8443` 的是：模式 4/6（橙云回源，仅 Cloudflare 官方回源段放行）、模式 3/5（CloudFront 源站，公网可达但由 `X-Easy-All-Origin-Key` 精确校验）；模式 2 的源站监听 `443`（同样由源站头校验），模式 1 的 `443` 仅放行 Cloudflare 官方回源段。模式 3/4 的伪装站只听 `127.0.0.1:9443`，永远不开放公网。
-- **唯一的 CDN 传输是 WebSocket**（sing-box `transport: {type: "ws"}`）；`httpupgrade` 不提供安装选项，也不在验收范围内。
+- **CDN 传输按 CDN 家族区分**：模式 1/4/6（橙云）用 `httpupgrade`（服务端 `transport: {type: "httpupgrade", path}`，客户端 `alpn: ["http/1.1"]`）；模式 2/3/5（CloudFront）保持 `ws`（`transport: {type: "ws"}`）——CloudFront 会把 `Connection` 改写为 `Keep-Alive` 并剔除非完整 WebSocket 握手的 `Upgrade`，只透传带 `Sec-WebSocket-Key` 的真实 WebSocket 握手。
 - 用户订阅 JSON 里的外部聚合节点保留原有 `host/port/portRange`，不强制改写为 443。
 
 ### 1.1 模式 1：Cloudflare 橙云（单域名）
@@ -33,7 +33,7 @@
                                        │ https-only 回源（Full strict），SNI/Host=cf.<zone>
                                        ▼
 公网 443（仅 Cloudflare 官方回源 IPv4 段）Caddy（Origin CA 证书）
-  ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS WebSocket）
+  ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS HTTPUpgrade）
   ├─ = /subscribe、= /sub  → Token 鉴权的八产物订阅
   ├─ = /easy_all-health    → 固定 easy_all ok
   └─ 其他路径              → 404
@@ -41,10 +41,10 @@
 
 - **DNS**：节点域名一条 `proxied=true` 的 `A` 记录（→ VPS 公网 IPv4），订阅域名由节点域名派生，不需要第二个名字。
 - **证书**：只用 Cloudflare Origin CA（ECDSA P-256、5475 天、CN 与唯一 SAN 都是节点域名），本机不运行 Certbot、不开放 `80`；复用前除有效期/SAN/公私钥外还必须通过 `openssl verify` 链验证。
-- **`Full (strict)` 门禁**：安装与 `apply-cloud` 在创建任何 DNS/证书资源前只读读取 Zone SSL 设置，只接受 `strict`；`full`/`flexible`/`off` 与 403 权限不足都在创建资源前停止，工具不会自动修改全区设置。同一阶段还会只读校验 `Network -> WebSockets` 必须为 `on`（WebSocket 链路依赖该开关），`off` 与读取失败同样在创建资源前停止。
+- **`Full (strict)` 门禁**：安装与 `apply-cloud` 在创建任何 DNS/证书资源前只读读取 Zone SSL 设置，只接受 `strict`；`full`/`flexible`/`off` 与 403 权限不足都在创建资源前停止，工具不会自动修改全区设置。同一阶段还会只读校验 `Network -> WebSockets` 必须为 `on`（Upgrade 链路依赖该开关：HTTPUpgrade 握手同样发送 `Upgrade: websocket`），`off` 与读取失败同样在创建资源前停止。
 - **回源白名单**：VPS `443` 只对 Cloudflare 官方回源 IPv4 段放行（UFW 注释 `easy_all-cf-origin-443`）。这是公共回源网段，不是账户级鉴权。
 - **无源站头、无熔断**：橙云链路没有 `X-Easy-All-Origin-Key`，也没有 mangle 计量与 985 GB 额度（这些只属于模式 2/3/5）。
-- **订阅**：本机节点只有一个橙云 CDN 节点（默认名 `🇺🇸CF`，安装时可改），没有聚合优选 IP 列表或测速组；连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名（`*.cloudflare.182682.xyz`），TLS SNI 与 WebSocket `Host` 仍是节点域名。
+- **订阅**：本机节点只有一个橙云 CDN 节点（默认名 `🇺🇸CF`，安装时可改），没有聚合优选 IP 列表或测速组；连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名（`*.cloudflare.182682.xyz`），TLS SNI 与 transport `Host` 仍是节点域名。
 - **`apply` 的外部访问**：只读取公开的 Cloudflare 回源 IPv4 段与 Origin CA 根证书，不需要账号凭据、不修改云端。
 
 ### 1.2 模式 2：纯 CloudFront
@@ -106,7 +106,7 @@
                非 Reality 握手 → 127.0.0.1:9443 Caddy 伪装站
 回环 9443  Caddy 伪装站（与模式 3 相同：登录页/401/robots/favicon/302，无订阅与健康检查入口）
 公网 8443  Caddy（橙云回源，仅 Cloudflare 官方回源 IPv4 段；节点域名同时承载订阅）
-  ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS WebSocket）
+  ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS HTTPUpgrade）
   ├─ = /subscribe、= /sub  → Token 鉴权的八产物订阅
   ├─ = /easy_all-health    → 固定 easy_all ok
   └─ 其他路径              → 404
@@ -118,7 +118,7 @@
 - **状态与链路**：`CHAIN=cloudflare`；状态字段集为 `COMMON + DIRECT + REALITY + CDN + CLOUDFLARE_ORIGIN_RULE`，**不含** `ANYTLS_PASSWORD`、`AWS_*` 与 `CLOUDFLARE_ORIGIN_CERT_*`。
 - **凭据**：`REALITY_SHORT_ID` 在输入阶段生成，密钥对在 `core` 阶段用已下载的核心生成；输入阶段先落盘一次安装身份，保证 `inputs`/`core` 之间中断仍可续装，且不会为 Reality 模式生成 `ANYTLS_PASSWORD`。
 - **端口预检**：首轮同时检查 `443`、`8443`、回环 `10086` 与 `9443`（含只绑 `127.0.0.1` 的监听）。
-- **客户端**：Base64 / Mihomo / sing-box 三种格式同时包含 **Reality 直连节点 + 橙云 VLESS-WS 节点**，节点构造与模式 3 相同，只把 CDN 链路换成橙云。
+- **客户端**：Base64 / Mihomo / sing-box 三种格式同时包含 **Reality 直连节点 + 橙云 VLESS HTTPUpgrade 节点**，节点构造与模式 3 相同，只把 CDN 链路换成橙云并改用 `httpupgrade`。
 ### 1.5 模式 5：AnyTLS + CloudFront
 一台 VPS 独占承载直连与 CDN 两个入口：
 
@@ -142,7 +142,7 @@
 ```text
 公网 443   sing-box AnyTLS（直连入口，TLS SNI=direct.<zone>）
 公网 8443（仅 Cloudflare 回源 IPv4 段）Caddy（与模式 1 相同的单域站点，证书为 Let's Encrypt）
-  ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS WebSocket）
+  ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS HTTPUpgrade）
   ├─ = /subscribe、= /sub  → Token 鉴权的八产物订阅
   ├─ = /easy_all-health    → 固定 easy_all ok
   └─ 其他路径              → 404
@@ -151,8 +151,8 @@
 - **端口划分**：直连入站固定 `443`（公网），橙云回源与订阅站点固定 `8443`（只放行 Cloudflare 回源段），回环 CDN 入站固定 `127.0.0.1:10086`。
 - **证书**：与模式 5 一样使用 Let's Encrypt 证书（DNS-01），直连与 Caddy 回源共用同一张证书（SAN 为直连域名与橙云节点域名）；不使用 Origin CA——直连 AnyTLS 必须是公信证书，Caddy 回源复用同一份。
 - **Origin Rule**：橙云边缘到 VPS 的连接默认打 `443`，因此用一条 `http_request_origin` 单规则把 `http.host eq <节点域名>` 路由到 `origin.port 8443`；生命周期与模式 4 的橙云回源完全相同，ruleset/rule ID 落盘到 state。
-- **`Full (strict)` 门禁**：橙云回源前只读校验 Zone SSL 为 `strict`，与模式 4 同口径；此外模式 6 的 WebSocket 节点还要求 `Network -> WebSockets` 为 `on`，同样在任何云资源创建前阻断（模式 1/2 不查该开关）。
-- **订阅**：与模式 1 一样只有一个橙云域名，但节点有两个（直连 + 橙云），`PROXY` 组不加自动测速或兜底组；没有聚合优选 IP 列表、没有源站头、没有 985 GB 计量。橙云节点的连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名，TLS SNI 与 WebSocket `Host` 仍是节点域名。
+- **`Full (strict)` 门禁**：橙云回源前只读校验 Zone SSL 为 `strict`，与模式 4 同口径；此外模式 6 的 HTTPUpgrade 节点还要求 `Network -> WebSockets` 为 `on`（HTTPUpgrade 握手仍发 `Upgrade: websocket`），同样在任何云资源创建前阻断（模式 2/3/5 不查该开关）。
+- **订阅**：与模式 1 一样只有一个橙云域名，但节点有两个（直连 + 橙云），`PROXY` 组不加自动测速或兜底组；没有聚合优选 IP 列表、没有源站头、没有 985 GB 计量。橙云节点的连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名，TLS SNI 与 transport `Host` 仍是节点域名。
 - **运维**：`apply-cloud` 同步两条 A 记录、证书与 Origin Rule；`renew-cert` 走 Certbot（与模式 3/4/5 同路径）；`uninstall` 级联清理两条 A 记录与 Origin Rule。
 
 
@@ -185,12 +185,12 @@
 | 模式 | UFW 公网放行 | 仅 Cloudflare 回源 IPv4 放行 | 本机回环监听 |
 | :--- | :--- | :--- | :--- |
 | 初始化（debian-init） | SSH 实际监听端口（安装收尾可选迁移到目标端口，默认 `22222`；迁移后旧端口被受管 `deny <旧端口>/tcp` 覆盖，选「不变更」则保持原端口与原放行） | — | — |
-| 1 纯 CloudFlare（单域名） | — | TCP `443` | `127.0.0.1:10086`（VLESS WebSocket） |
+| 1 纯 CloudFlare（单域名） | — | TCP `443` | `127.0.0.1:10086`（VLESS HTTPUpgrade） |
 | 2 纯 CloudFront | TCP `443` | — | `127.0.0.1:10086`（VLESS WebSocket） |
 | 3 Reality + CloudFront | TCP `443`、`8443` | — | `127.0.0.1:10086`（VLESS WebSocket）、`127.0.0.1:9443`（伪装站） |
-| 4 Reality + CloudFlare | TCP `443` | TCP `8443`（橙云节点/订阅回源） | `127.0.0.1:10086`（VLESS WebSocket）、`127.0.0.1:9443`（伪装站） |
+| 4 Reality + CloudFlare | TCP `443` | TCP `8443`（橙云节点/订阅回源） | `127.0.0.1:10086`（VLESS HTTPUpgrade）、`127.0.0.1:9443`（伪装站） |
 | 5 AnyTLS + CloudFront | TCP `443`、`8443` | — | `127.0.0.1:10086`（VLESS WebSocket） |
-| 6 AnyTLS + CloudFlare | TCP `443` | TCP `8443`（橙云节点/订阅回源） | `127.0.0.1:10086`（VLESS WebSocket） |
+| 6 AnyTLS + CloudFlare | TCP `443` | TCP `8443`（橙云节点/订阅回源） | `127.0.0.1:10086`（VLESS HTTPUpgrade） |
 
 - **不开放 `80`**：所有公信证书都走 Cloudflare DNS-01，不需要在 `80` 上做域名校验，也没有 HTTP 重定向。
 - `10086` 永不对公网放行；端口预检覆盖各模式实际使用的端口（模式 1：`443`、`10086`；模式 2：`443`、`10086`；模式 3/4：`443`、`8443`、`10086`、`9443`；模式 5：`443`、`8443`、`10086`；模式 6：`443`、`8443`、`10086`）。
@@ -266,7 +266,7 @@
 ## 3. 订阅分发与渲染
 
 - **订阅配置 JSON**：`SUBSCRIPTION_CONFIG` 的顶层只有三个键——`allowedTokens`（用户 Token 字典，必需）、`nodes`（外部聚合节点数组，必需）与可选的 `cdnEdgeAddress`（CDN 优选连接地址，只存完整主机名）。`cdnEdgeAddress` 只影响六种模式各自的本机 CDN 节点（六种模式都带 CDN 入口）：接受并持久化该字段；字段缺失或为 `null` 等同于不启用，删除字段即回退到节点域名（安装期必定写入且不提供关闭选项，删除只用于排障）。形状校验只发生在一处（`lib/local-aggregation.sh` 的 `normalize_subscription_config`，install / `edit-sub` / `apply` 全经它），拒绝 `*`、URL、端口、路径、空白、IP 字面量与单标签主机名，通过后按小写规范化存储；校验失败时 `update_subscription` 在写快照之前就退出，已发布的八份产物与状态不变。该字段随 `SUBSCRIPTION_CONFIG` 原样写入安装身份的 `subscription_config`，续装据此沿用原优选地址，不会重新随机（身份里没有该字段时按新规则生成）。
-- **连接地址与 SNI/Host 分离**：本机 CDN 节点的连接地址（VLESS URI 的 `@host`、Mihomo `server`、sing-box `server`）取运行期变量 `CF_EDGE_ADDRESS`（由 `cdnEdgeAddress` 在 `apply_local_aggregation_config` 中派生，为空即用 `CF_NODE_DOMAIN`）；TLS SNI（`sni=`、`servername`、`tls.server_name`）、证书校验与 WebSocket `Host` 始终是节点域名，订阅 URL 域名、云端 DNS、回源与 AnyTLS 直连都不受影响。
+- **连接地址与 SNI/Host 分离**：本机 CDN 节点的连接地址（VLESS URI 的 `@host`、Mihomo `server`、sing-box `server`）取运行期变量 `CF_EDGE_ADDRESS`（由 `cdnEdgeAddress` 在 `apply_local_aggregation_config` 中派生，为空即用 `CF_NODE_DOMAIN`）；TLS SNI（`sni=`、`servername`、`tls.server_name`）、证书校验与 transport `Host`（`ws` 的 `headers.Host`、`httpupgrade` 的 `host`）始终是节点域名，订阅 URL 域名、云端 DNS、回源与 AnyTLS 直连都不受影响。
 - **Caddy 路由顺序**：外层 `route` 固定为「源站密钥守卫（仅 CloudFront 链路）→ 精确代理路径 → 精确订阅入口 → health → 404」；模式 1/4/6 没有源站密钥守卫，依赖回源白名单、`Full (strict)` 与业务鉴权。
 - **订阅入口是精确路径**：matcher 精确列出 `/subscribe` 与 `/sub`，两者进入同一处理器并保留 query；`/subscribe/`、`/subscribed`、裸文件与其他路径一律 `404`，不重定向、不做前缀匹配。
 - **订阅处理器内部顺序**：公共响应头（`Vary: User-Agent`、`Cache-Control: no-store, no-cache, must-revalidate, max-age=0`、`Pragma: no-cache`、`X-Content-Type-Options: nosniff`、`X-Robots-Tag: noindex, nofollow, noarchive`）先于任何终止响应；随后非 `GET`/`HEAD` 返回 `405`，Token 缺失/错误返回 `403`，订阅未就绪返回 `503`；全部响应都带上述公共头。
@@ -313,7 +313,7 @@ Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成�
 - **分流顺序**与默认 Mihomo 模板逐条对应：DNS 接管 → 私网、CGNAT、链路本地与零地址 → 单标签/认证门户/本地管理域名 → FCM `5228-5230` → 代理服务与 Google 域名代理 → 微信/Steam/Apple 中国/国内服务 → 国内域名集合 → Telegram IP 代理 → CN IP 兜底 → `PROXY`。`UDP/443` 不再有任何拦截规则，三份 Mihomo 模板顶层为 `tcp-concurrent: true`（iOS 变体下发时改为 `false`）。`clash_mode=direct/global` 在路由与 DNS 两处都优先于业务规则。
 - **规则集**：小型内联集合（`private-fallback`、`captive-portal`、`fakeip-exceptions`、`proxy-services`、`wechat-services`、`steam-download`、`apple-cn-fallback`、`direct-services`、`telegram-fallback`）与 MetaCubeX 的 sing-box 分支 SRS（`geosite-*`、`geoip-*`，`update_interval=1d`）并存；下载走显式 `http_clients`（默认直连出口，不依赖待解析的代理节点）。冷启动时任一必需远程规则集下载失败会让客户端配置启动失败，少量内联规则只缩短影响面，不构成离线首次启动保证。内联集合的 `domain_suffix` 不写前导点：锁定核心对无点后缀按「裸域 + 各级子域」匹配（等价 Mihomo 的 `+.` 写法），带点后缀只匹配子域，因此 `wechat.com`、`steamcontent.com` 这类裸域与子域都会被同一个条目覆盖。
 - **策略组差异**：`PROXY` 为 `select`，成员顺序与本机节点/聚合节点一致，默认选中首个本机节点；六模式都只有 `PROXY` 与 `DIRECT`，不生成自动测速或兜底组。
-- **节点映射**：本机 AnyTLS（`password` + TLS + uTLS `chrome`）、本机 Reality（`uuid` + `flow=xtls-rprx-vision` + `tls.reality`，客户端只写公钥与 short_id）与 VLESS WebSocket（`transport.type=ws`、`headers.Host`、`packet_encoding=xudp`）；聚合 Reality 节点映射为 `flow=xtls-rprx-vision` + `tls.reality`（`public_key`、`short_id`），`udp=false` 时用 `network: "tcp"` 限制承载。1.14.4 的 Reality 客户端会从 ClientHello 里过滤 `X25519MLKEM768`（`common/tls/reality_client.go`），因此聚合节点的 `supportX25519Mlkem768` 在 sing-box 侧没有对应开关：`false` 与核心行为一致，`true` 的 PQ 扩展不会出现，两者都仍用经典 X25519 连接，所以都保留。源站密钥永不进入 JSON。
+- **节点映射**：本机 AnyTLS（`password` + TLS + uTLS `chrome`）、本机 Reality（`uuid` + `flow=xtls-rprx-vision` + `tls.reality`，客户端只写公钥与 short_id）与 VLESS CDN 节点（模式 2/3/5：`transport.type=ws` + `headers.Host`；模式 1/4/6：`transport.type=httpupgrade` + `transport.host` + `tls.alpn=["http/1.1"]`；两者 `packet_encoding=xudp`）；聚合 Reality 节点映射为 `flow=xtls-rprx-vision` + `tls.reality`（`public_key`、`short_id`），`udp=false` 时用 `network: "tcp"` 限制承载。1.14.4 的 Reality 客户端会从 ClientHello 里过滤 `X25519MLKEM768`（`common/tls/reality_client.go`），因此聚合节点的 `supportX25519Mlkem768` 在 sing-box 侧没有对应开关：`false` 与核心行为一致，`true` 的 PQ 扩展不会出现，两者都仍用经典 X25519 连接，所以都保留。源站密钥永不进入 JSON。
 - **排除规则**：官方 1.14.4 没有 xhttp 传输与 mieru 协议，`fp` 不在 1.14.4 utls 枚举内的 Reality 节点会让核心拒绝整份配置，因此这两类节点只从 JSON 排除，`apply` 会输出节点名、原因与数量；Mihomo / Base64 输出不变。Reality 的 `supportX25519Mlkem768` 不参与排除（见上一条：核心固定过滤 MLKEM），但该行为的握手实测仍未进行。所有模式都至少有一个本机节点，因此排除后 JSON 仍有效；本机节点生成失败则整个候选发布失败。
 - **候选校验**：发布前检查 JSON 可解析、outbound tag 唯一、策略组成员与路由/DNS 引用存在、默认出口存在、无源站密钥；存在锁定核心时再跑 `sing-box check`。`check` 不覆盖运行期初始化，因此 `scripts/verify-live.sh` 还会把客户端 JSON 去掉 TUN 入口后用真实核心启动一次（DNS detour 指向空 direct 出口这类问题只在启动阶段暴露）。校验失败即中止发布，已发布的旧订阅保持不变。
 - **发布与流控边界**：JSON 与六份旧产物在同一暂存目录生成并沿用逐文件原子替换（单文件原子，不是整代快照）。`render_mihomo_base64_files` 保留六产物渲染，仅供 CDN 就绪判定与流控门禁复用；JSON 缺失或损坏不会改变 `blocked`/`pending` 状态，也不清零用量。
