@@ -1,3 +1,15 @@
+## 5.4.2 更新说明（2026-11-23）
+
+### 增强与修复
+
+- **根治测试用 `openssl s_server` 孤儿进程残留**（`test/test_cloud_safety.sh`）：
+  - `spawn_background` 内置 `ulimit -t 30` CPU 上限并显式封闭 stdin，测试进程被 `SIGKILL` 强杀时，空转子进程也会在约 30 秒 CPU 后由内核自动终止。
+  - `start_tls_server` 端口就绪后拉起独立 wall-time watchdog（默认 120 秒），防止空闲占端口不耗 CPU 的进程长期滞留。
+  - `cleanup_test` 通过幂等 `stop_tls_server` 先停 watchdog 再 `TERM`/`KILL` 清理测试服务，并补齐 `HUP`/`INT`/`TERM` 信号 trap。
+  - 将 `LibreSSL` 检测前移到 `start_tls_server` 之前，macOS 等跳过路径不再白白启动 `s_server`；探活失败与用例结束时均立即回收服务。
+
+---
+
 ## 5.4.1 更新说明（2026-11-18）
 
 ### 增强与修复

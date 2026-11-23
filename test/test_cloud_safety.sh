@@ -19,11 +19,28 @@ TMP_DIR=$(mktemp -d 2>/dev/null || true)
 if [[ -z "${TMP_DIR}" ]]; then
     TMP_DIR=$(mktemp -d "${TMP_ROOT_FALLBACK:-/tmp}/easy_all_cloud_safety.XXXXXX")
 fi
+# 测试用 TLS 服务与其 watchdog 的生命周期收口：先停 watchdog，再 SIGTERM 服务，不退则升级 SIGKILL。
+TLS_SERVER_PID=""
+TLS_WATCHDOG_PID=""
+stop_tls_server() {
+    [[ -z "${TLS_WATCHDOG_PID}" ]] || kill "${TLS_WATCHDOG_PID}" 2>/dev/null || true
+    TLS_WATCHDOG_PID=""
+    [[ -z "${TLS_SERVER_PID}" ]] || kill -TERM "${TLS_SERVER_PID}" 2>/dev/null || true
+    if [[ -n "${TLS_SERVER_PID}" ]] && kill -0 "${TLS_SERVER_PID}" 2>/dev/null; then
+        sleep 0.2
+        kill -KILL "${TLS_SERVER_PID}" 2>/dev/null || true
+    fi
+    TLS_SERVER_PID=""
+}
 cleanup_test() {
-    [[ -z "${TLS_SERVER_PID:-}" ]] || kill "${TLS_SERVER_PID}" 2>/dev/null || true
+    stop_tls_server
     rm -rf -- "${TMP_DIR}"
 }
 trap cleanup_test EXIT
+# SIGKILL 拦不住：那种情况靠 spawn_background 里的 ulimit -t 与 wall-time watchdog 兜底。
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 fail() {
     printf 'not ok - %s\n' "$*" >&2
@@ -1716,10 +1733,17 @@ fingerprint() { # $1=证书文件 -> 小写 sha256 指纹
 }
 
 # 后台进程放在子 shell 里启动：主 shell 不持有作业，结束时不打印 "Terminated" 噪音。
+# ulimit -t 与封闭 stdin 是强杀兜底：测试进程被 SIGKILL 后 trap 不执行，由内核在 30 秒 CPU 后终止子进程。
 spawn_background() { # 其余参数为命令；成功时向 stdout 输出 PID
     local pid_file
     pid_file=$(mktemp "${TMP_DIR}/pid.XXXXXX") || return 1
-    ( "$@" >/dev/null 2>&1 & printf '%s' "$!" >"${pid_file}" )
+    (
+        (
+            ulimit -t 30
+            exec "$@" </dev/null >/dev/null 2>&1
+        ) &
+        printf '%s' "$!" >"${pid_file}"
+    )
     cat "${pid_file}"
     rm -f -- "${pid_file}"
 }
@@ -1798,23 +1822,31 @@ run_tls_certificate_cases() {
             sleep 1
             # 能建立 TCP 连接才能证明监听成功；失败说明端口被占用，换下一个候选。
             if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
+                # 空闲占端口不烧 CPU 时 ulimit -t 打不着，另起 wall-time watchdog 按秒兜底。
+                TLS_WATCHDOG_PID=$(spawn_background bash -c \
+                    'sleep "$1"; kill -TERM "$2" 2>/dev/null || true; sleep 1; kill -KILL "$2" 2>/dev/null || true' \
+                    _ "${TLS_WATCHDOG_TIMEOUT:-120}" "${TLS_SERVER_PID}") || true
                 TLS_PORT=${port}
                 return 0
             fi
-            kill "${TLS_SERVER_PID}" 2>/dev/null || true
-            TLS_SERVER_PID=""
+            stop_tls_server
         done
         return 1
     }
+    # LibreSSL（macOS 自带）的 s_client 在 stdin EOF 后可能不退出（或探测偶发通过而后续挂起），
+    # 握手用例在这些宿主上无法稳定完成：提前判掉，连 s_server 都不启动，避免白白留下服务进程。
+    if openssl version 2>/dev/null | grep -qi 'LibreSSL'; then
+        skip_case "真实 TLS 握手与证书部署" "本机 openssl 在握手后不返回（LibreSSL）"
+        return 0
+    fi
     # 起不了 TLS 服务是宿主环境问题，不是产品缺陷：跳过而不是把套件判成回归。
     if ! start_tls_server "${first_dir}"; then
         skip_case "真实 TLS 握手与证书部署" "无法在空闲端口启动测试用 TLS 服务"
         return 0
     fi
-    # LibreSSL（macOS 自带）的 s_client 在 stdin EOF 后可能不退出（或探测偶发通过而后续挂起），
-    # 握手用例在这些宿主上无法稳定完成：直接明确跳过，避免把整个套件卡死。
-    if openssl version 2>/dev/null | grep -qi 'LibreSSL' || ! tls_probe "${TLS_PORT}"; then
-        skip_case "真实 TLS 握手与证书部署" "本机 openssl 在握手后不返回（LibreSSL）"
+    if ! tls_probe "${TLS_PORT}"; then
+        stop_tls_server
+        skip_case "真实 TLS 握手与证书部署" "本机 openssl 在握手后不返回（探测超时）"
         return 0
     fi
 
@@ -1884,6 +1916,8 @@ run_tls_certificate_cases() {
     assert_contains "普通重载不带 --force" "${reload_output}" \
         "reload --address unix/${TMP_DIR}/reload-runtime/admin.sock"
 
+    # 用例结束就收口，不把后台服务拖到整个脚本退出。
+    stop_tls_server
 }
 
 # --- 5. 服务编排：单元重新加载与核心替换后的重启 ---------------------------
