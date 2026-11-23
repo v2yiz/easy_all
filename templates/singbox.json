@@ -890,7 +890,7 @@
     ],
     "final": "PROXY",
     "auto_detect_interface": true,
-    "default_domain_resolver": "dns-bootstrap",
+    "default_domain_resolver": "dns-cn",
     "default_http_client": "ruleset-direct"
   },
   "experimental": {
