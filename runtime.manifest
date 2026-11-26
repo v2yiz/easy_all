@@ -23,6 +23,7 @@ lib/caddy-core.sh
 lib/singbox-runtime.sh
 lib/singbox-subscription.sh
 lib/caddy-runtime.sh
+lib/camouflage.sh
 lib/cf-origin-rule.sh
 lib/cf-dns.sh
 lib/cdn-traffic-guard.sh
@@ -36,4 +37,7 @@ templates/aggregation.example.json
 templates/mihomo-common.yaml
 templates/mihomo-classic.yaml
 templates/camouflage-login.html
+templates/camouflage-status.html
+templates/camouflage-docs.html
+templates/camouflage-studio.html
 scripts/hellogfw.py

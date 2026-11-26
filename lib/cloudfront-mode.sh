@@ -593,8 +593,8 @@ cloudfront_marker() {
 
 build_distribution_config() {
     local destination=$1 caller=$2 origin_https_port
-    # 回源端口由模式派生（design §2 F）：模式 2 的 Caddy 在 443，模式 5 在 8443。
-    origin_https_port=$(caddy_site_port) || exit 1
+    # 外部回源端口由模式派生：模式 2/3 为 443（模式 3 经 sing-box 443 回落本机 9443），模式 5 为 8443。
+    origin_https_port=$(cloudfront_origin_https_port) || exit 1
     jq -n \
         --arg caller "${caller}" --arg alias "${CF_NODE_DOMAIN}" \
         --arg subscription "${SUBSCRIPTION_DOMAIN}" \
@@ -748,9 +748,10 @@ cloudfront_find_existing_distribution() {
 }
 
 # 分发传播期 get-distribution 可能仍返回上一次的 Deployed：只按 Status 判定会拿过期的
-# 配置去 update/delete-distribution 而被服务端拒绝。预期状态必须同时匹配 Status 与 Enabled。
+# 配置去 update/delete-distribution 或在切换 HTTPSPort 后误判已部署。
+# 预期状态必须同时匹配 Status、Enabled，且在传入预期回源端口时匹配 CustomOriginConfig.HTTPSPort。
 wait_for_cloudfront_distribution_state() {
-    local id=$1 expected_enabled=$2 attempt description status enabled
+    local id=$1 expected_enabled=$2 expected_origin_port=${3:-} attempt description status enabled origin_port
     local max_wait=$((CLOUDFRONT_DEPLOY_WAIT_ATTEMPTS * CLOUDFRONT_DEPLOY_WAIT_SECONDS))
     for attempt in $(seq 1 "${CLOUDFRONT_DEPLOY_WAIT_ATTEMPTS}"); do
         description=$(aws_cli cloudfront get-distribution --id "${id}" \
@@ -759,18 +760,21 @@ wait_for_cloudfront_distribution_state() {
         # Enabled 是布尔值：`// empty` 会把 false 当空值吞掉，必须显式 tostring 后再比较。
         enabled=$(jq -r '.Distribution.DistributionConfig.Enabled | tostring' \
             <<<"${description}" 2>/dev/null || true)
-        if [[ "${status}" == "Deployed" && "${enabled}" == "${expected_enabled}" ]]; then
+        origin_port=$(jq -r '.Distribution.DistributionConfig.Origins.Items[0].CustomOriginConfig.HTTPSPort // empty' \
+            <<<"${description}" 2>/dev/null || true)
+        if [[ "${status}" == "Deployed" && "${enabled}" == "${expected_enabled}" ]] \
+            && { [[ -z "${expected_origin_port}" ]] || [[ "${origin_port}" == "${expected_origin_port}" ]]; }; then
             return 0
         fi
         ((attempt % 3 != 1)) \
-            || info "正在等待 CloudFront 分发状态收敛（目标 Enabled=${expected_enabled}，当前 Status=${status:-未知}，Enabled=${enabled:-未知}，已等待 $(((attempt - 1) * CLOUDFRONT_DEPLOY_WAIT_SECONDS))s / 最长 ${max_wait}s）..."
+            || info "正在等待 CloudFront 分发状态收敛（目标 Enabled=${expected_enabled}${expected_origin_port:+, HTTPSPort=${expected_origin_port}}，当前 Status=${status:-未知}，Enabled=${enabled:-未知}${expected_origin_port:+, HTTPSPort=${origin_port:-未知}}，已等待 $(((attempt - 1) * CLOUDFRONT_DEPLOY_WAIT_SECONDS))s / 最长 ${max_wait}s）..."
         sleep "${CLOUDFRONT_DEPLOY_WAIT_SECONDS}"
     done
     return 1
 }
 
 wait_for_cloudfront_distribution() {
-    wait_for_cloudfront_distribution_state "$1" true
+    wait_for_cloudfront_distribution_state "$1" true "$(cloudfront_origin_https_port)"
 }
 
 # 卸载禁用后必须看到 Enabled=false 的 Deployed 配置；否则 delete-distribution 会被拒。
@@ -862,27 +866,45 @@ cdn_verify_traffic_counters() {
         || die "无法建立或读取 mangle 计量规则（链 ${CDN_TRAFFIC_COUNTER_CHAIN}）；请检查 iptables 与 ${CDN_TRAFFIC_COUNTER_DIR}"
 }
 
-# 节点 alias 返回固定 health 文本：能返回完整证据 CloudFront 已注入源站头并回源成功。
-cdn_public_health_ok() {
-    local body
-    body=$(public_dns_curl "https://${CF_NODE_DOMAIN}/easy_all-health") || return 1
-    [[ "${body}" == "easy_all ok" ]]
+# 节点 alias 边缘探测：访问 /subscribe?token=invalid 返回 403 即可证明 DNS CNAME、ACM 证书、
+# CloudFront 别名、源站头注入与 Caddy 路由均正常，不暴露明文 /easy_all-health 横幅。
+cdn_public_node_edge_ok() {
+    local status
+    status=$(public_dns_curl -o /dev/null -w '%{http_code}' \
+        --get --data-urlencode 'token=invalid' \
+        "https://${CF_NODE_DOMAIN}/subscribe") || return 1
+    [[ "${status}" == "403" ]]
 }
 
 # 源站域名是公网可见的 A 记录，也是源站头校验真正生效的地方（CloudFront 总会注入配置好的
-# 头，因此无法用节点域名探测“缺头/错头”）。无头与错头都必须被拒。
+# 头，因此无法用节点域名探测“缺头/错头”）。无头与错头都必须被拒或落入伪装站。
 cdn_public_origin_header_guard_ok() {
-    local status origin_port origin_url
+    local status origin_port origin_url token sub_url url
     local -a resolve_args=()
-    # 源站端口由模式派生：直接把请求发到 Caddy 的站点端口，模式 5 的 443 是 sing-box，
-    # 发到 443 只会被丢弃，把“连不上”误判成“守卫已拒绝”。
-    origin_port=$(caddy_site_port)
+    origin_port=$(cloudfront_origin_https_port)
     origin_url="https://${CF_ORIGIN_DOMAIN}:${origin_port}${VLESS_PATH}"
     # 已知本机公网 IP 时直连 VPS_PUBLIC_IPV4，避免旧 DNS 导致超时假阳性。
     [[ -z "${VPS_PUBLIC_IPV4:-}" ]] \
         || resolve_args=(--resolve "${CF_ORIGIN_DOMAIN}:${origin_port}:${VPS_PUBLIC_IPV4}")
-    # Caddy 守卫对缺头/错头执行 abort：连接被关闭，curl 拿不到状态码。两者都算拒绝，
-    # 但只要还能拿到 2xx 就说明守卫没生效。
+    if runtime_has_reality_entry; then
+        # 模式 3 单 443 合一：缺头或错头请求直连源站端口必须落入伪装站（404），
+        # 绝不能触发代理路径（101/400/503）或暴露订阅（200/403）。
+        token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS:-[]}" 2>/dev/null || true)
+        sub_url="https://${CF_ORIGIN_DOMAIN}:${origin_port}/subscribe?token=${token:-invalid}"
+        for url in "${origin_url}" "${sub_url}"; do
+            status=$(public_dns_curl -o /dev/null -w '%{http_code}' \
+                ${resolve_args[@]+"${resolve_args[@]}"} \
+                "${url}" || true)
+            [[ "${status}" == "404" ]] || return 1
+            status=$(public_dns_curl -o /dev/null -w '%{http_code}' \
+                ${resolve_args[@]+"${resolve_args[@]}"} \
+                --header 'X-Easy-All-Origin-Key: wrong-origin-key' \
+                "${url}" || true)
+            [[ "${status}" == "404" ]] || return 1
+        done
+        return 0
+    fi
+    # 模式 2/5：Caddy 守卫对缺头/错头执行 abort，连接被关闭（000）或拒绝（403/404）。
     status=$(public_dns_curl -o /dev/null -w '%{http_code}' \
         ${resolve_args[@]+"${resolve_args[@]}"} \
         "${origin_url}" || true)
@@ -938,7 +960,7 @@ cdn_validate_public_runtime() {
     local attempt expected
     flush_local_dns_cache
     for ((attempt = 1; attempt <= CDN_PUBLIC_ACCEPT_ATTEMPTS; attempt++)); do
-        if cdn_public_health_ok \
+        if cdn_public_node_edge_ok \
             && cdn_public_subscription_ok \
             && cdn_public_token_rejection_ok \
             && cdn_public_origin_header_guard_ok; then
@@ -1374,8 +1396,12 @@ show_status() {
     printf '协议: %s\n' "$(runtime_protocol_label)"
     show_tcp_acceleration_status
     if runtime_has_reality_entry; then
-        printf '直连域名: %s（VLESS Reality，TCP 443；非 Reality 握手回落 127.0.0.1:%s 伪装站）\n' \
+        printf '直连域名: %s（VLESS Reality，TCP 443；非 Reality 回落与 CloudFront 回源均走回环 127.0.0.1:%s）\n' \
             "${DIRECT_DOMAIN}" "$(caddy_reality_camouflage_port)"
+        show_ntp_sync_warning
+        if caddy_mode3_needs_legacy_8443; then
+            printf '单 443 迁移状态: 暂保留旧版 8443 兼容；请执行 sudo easy_all apply-cloud 切换 CloudFront 回源至 443 并关闭 8443\n'
+        fi
     elif runtime_has_direct_entry; then
         printf '直连域名: %s（AnyTLS，TCP 443）\n' "${DIRECT_DOMAIN}"
     fi
@@ -1385,7 +1411,8 @@ show_status() {
     fi
     printf '订阅域名: %s\n' "$(subscription_link_domain)"
     if state_protocol_uses_cloudfront "${PROTOCOL}"; then
-        printf '源站域名: %s（Caddy HTTPS %s）\n' "${CF_ORIGIN_DOMAIN}" "$(caddy_site_port)"
+        printf '源站域名: %s（CloudFront 回源 HTTPS %s，本机 Caddy %s）\n' \
+            "${CF_ORIGIN_DOMAIN}" "$(cloudfront_origin_https_port)" "$(caddy_site_port)"
         printf 'CloudFront 分发: %s（%s）\n' \
             "${AWS_CLOUDFRONT_DISTRIBUTION_ID}" "${AWS_CLOUDFRONT_DOMAIN}"
         printf 'ACM 证书: %s（%s）\n' "${AWS_ACM_CERTIFICATE_ARN}" "${AWS_CONTROL_REGION}"
@@ -1464,6 +1491,9 @@ apply_easy_all() {
     collect_installed_state
     cdn_traffic_admission
     cdn_require_valid_subscription
+    if caddy_mode3_needs_legacy_8443; then
+        warn "检测到旧版模式 3 尚未迁移至单 443 回源：本次 apply 暂保留 8443 兼容；请随后执行 sudo easy_all apply-cloud 将 CloudFront 切换至 443 并关闭 8443"
+    fi
     snapshot_subscription_update
     if ! cdn_traffic_protection_checkpoint; then
         UPDATE_SUB_ROLLBACK_NO_RESTART=1
@@ -1511,6 +1541,7 @@ apply_cloud_phase() {
 }
 
 apply_cloud_resources() {
+    local migrating_mode3=0
     require_root
     acquire_runtime_write_lock
     collect_installed_state
@@ -1524,9 +1555,22 @@ apply_cloud_resources() {
     configure_tcp_acceleration
     configure_ipv4_only
     configure_runtime_ufw
+    if caddy_mode3_needs_legacy_8443; then
+        migrating_mode3=1
+        # 平滑零中断迁移：在更新 CloudFront HTTPSPort=443 之前先发布统一 9443 + 兼容 8443 配置，
+        # 让新旧边缘 POP 在传播窗口内双通，等 CloudFront 收敛 Deployed 后再关闭 8443。
+        write_runtime_config "$(runtime_blocked_state)"
+        runtime_apply_runtime_services
+    fi
     apply_cloud_phase
     clear_aws_credentials
     persist_install_identity || die "无法落盘安装身份；已保留云端资源"
+    if [[ "${PROTOCOL}" == "reality-cloudfront" ]]; then
+        install -d -m 0700 "${STATE_DIR}" \
+            || die "无法创建状态目录：${STATE_DIR}"
+        install -m 0600 /dev/null "$(caddy_mode3_migration_marker)" \
+            || die "无法写入单 443 迁移标记：$(caddy_mode3_migration_marker)"
+    fi
     write_runtime_config "$(runtime_blocked_state)"
     # 云端阶段耗时长：最后一次采样紧贴 restart，计入云等待期间旧进程的流量。
     if ! cdn_traffic_protection_checkpoint; then
@@ -1541,6 +1585,10 @@ apply_cloud_resources() {
     validate_singbox_subscription_runtime
     # 本机 apply 子流程完成后才能证明公网链路；失败时云端资源保留，可重试 apply-cloud。
     cdn_validate_public_runtime
+    if ((migrating_mode3 == 1)); then
+        # CloudFront 已确认切换至 443 且公网验收通过后再回收旧 8443 UFW 放行，避免中途失败后误关端口。
+        configure_runtime_ufw
+    fi
     save_state
     cdn_commit_local_runtime
     commit_subscription_update
@@ -1704,8 +1752,9 @@ cdn_local_uninstall_common() {
     info "正在移除本机程序与状态目录..."
     rm -f -- "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
-    rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" "$(dirname -- "${SUBSCRIPTION_DIR}")" \
+    rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" \
         "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"
+    rmdir "$(dirname -- "${SUBSCRIPTION_DIR}")" 2>/dev/null || true
 }
 
 uninstall_all() {
@@ -1752,8 +1801,9 @@ cleanup_partial_install() {
     remove_daily_reboot_schedule || true
     cleanup_partial_install_files \
         "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}" \
-        "${STATE_DIR}" "${SUBSCRIPTION_DIR}" "$(dirname -- "${SUBSCRIPTION_DIR}")" \
+        "${STATE_DIR}" "${SUBSCRIPTION_DIR}" \
         "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"
+    rmdir "$(dirname -- "${SUBSCRIPTION_DIR}")" 2>/dev/null || true
 }
 
 rollback_fresh_install() {
@@ -1818,6 +1868,12 @@ install_all() {
     cdn_traffic_prepare_counters || die "无法建立 mangle 计量规则；已停止安装"
     certbot_write_cloudflare_credentials
     cdn_issue_origin_certificate
+    if [[ "${PROTOCOL}" == "reality-cloudfront" ]]; then
+        install -d -m 0700 "${STATE_DIR}" \
+            || die "无法创建状态目录：${STATE_DIR}"
+        install -m 0600 /dev/null "$(caddy_mode3_migration_marker)" \
+            || die "无法写入单 443 迁移标记：$(caddy_mode3_migration_marker)"
+    fi
     write_runtime_config 0 0
     # sing-box 的 ExecStartPre 调用已注册的 easy_all；首装必须在启动服务前注册入口，
     # 否则新机器上第一次启动会找不到 /usr/local/bin/easy_all。

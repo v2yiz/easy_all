@@ -1656,20 +1656,255 @@ run_combined_cf_state_case direct.example.com other.example.net deploy >/dev/nul
 run_combined_cf_state_case direct.example.com cf.example.com link >/dev/null \
     && fail "模式 6 固定 deploy，link 状态必须拒绝"
 
-# 证书覆盖直连与橙云节点两个名字（模式 6 不使用 Origin CA，回源与直连共用 LE 证书）。
-combined_cf_cert_hosts=$(
-    RUNTIME_TMP="${TMP_DIR}/combined-cf-cert-runtime" \
-    EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/combined-cf-cert-state" \
+# --- 3d. WP5：模式 4/6 双证书 SAN 隔离、缩容重签、hook 分槽与三列指纹校验 --------
+for split_profile in reality-cloudflare combined-cloudflare; do
+    split_hosts=$(
+        RUNTIME_TMP="${TMP_DIR}/split-cert-${split_profile}-runtime" \
+        EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/split-cert-${split_profile}-state" \
+            bash -c '
+                source "$1/profiles/$2.sh"
+                DIRECT_DOMAIN=direct.example.com
+                CF_NODE_DOMAIN=cf.example.com
+                printf "PRIMARY=%s\nCDN=%s\n" \
+                    "$(certificate_required_hosts | paste -sd, -)" \
+                    "$(certificate_cdn_required_hosts | paste -sd, -)"
+            ' _ "${ROOT_DIR}" "${split_profile}" 2>&1
+    ) || fail "${split_profile} 证书域名调用失败：${split_hosts}"
+    assert_contains "${split_profile} 主证书仅覆盖直连域名（防 SAN 泄露橙云域名）" \
+        "${split_hosts}" "PRIMARY=direct.example.com"
+    assert_contains "${split_profile} 独立 CDN 证书仅覆盖橙云节点域名" \
+        "${split_hosts}" "CDN=cf.example.com"
+done
+
+# 精确 SAN 校验：旧版合并证书（同时含 direct + cf）必须被 exact 检查拒掉。
+make_san_cert() { # $1=目录 $2=CN $3=subjectAltName(如 DNS:a,DNS:b)
+    mkdir -p "$1"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 60 -subj "/CN=$2" \
+        -addext "subjectAltName=$3" \
+        -keyout "$1/private.key" -out "$1/fullchain.pem" >/dev/null 2>&1 \
+        || fail "无法生成带 SAN 的测试证书：$3"
+}
+san_direct_dir="${TMP_DIR}/san-direct"
+san_cdn_dir="${TMP_DIR}/san-cdn"
+san_combined_dir="${TMP_DIR}/san-combined"
+make_san_cert "${san_direct_dir}" direct.example.com "DNS:direct.example.com"
+make_san_cert "${san_cdn_dir}" cf.example.com "DNS:cf.example.com"
+make_san_cert "${san_combined_dir}" direct.example.com "DNS:direct.example.com,DNS:cf.example.com"
+
+san_exact_out=$(
+    RUNTIME_TMP="${TMP_DIR}/san-exact-runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/san-exact-state" \
         bash -c '
-            source "$1/profiles/combined-cloudflare.sh"
-            PROTOCOL=combined-cloudflare
+            source "$1/profiles/reality-cloudflare.sh"
+            certificate_covers_exact_hosts "$2/fullchain.pem" direct.example.com && echo DIRECT_OK || echo DIRECT_FAIL
+            certificate_covers_exact_hosts "$3/fullchain.pem" cf.example.com && echo CDN_OK || echo CDN_FAIL
+            certificate_covers_exact_hosts "$4/fullchain.pem" direct.example.com && echo COMBINED_PASS || echo COMBINED_REJECT
+        ' _ "${ROOT_DIR}" "${san_direct_dir}" "${san_cdn_dir}" "${san_combined_dir}" 2>&1
+) || fail "certificate_covers_exact_hosts 执行失败：${san_exact_out}"
+assert_contains "单域名直连证书通过 exact 校验" "${san_exact_out}" "DIRECT_OK"
+assert_contains "单域名 CDN 证书通过 exact 校验" "${san_exact_out}" "CDN_OK"
+assert_contains "旧版合并双 SAN 证书被 exact 校验拒绝" "${san_exact_out}" "COMBINED_REJECT"
+
+# 模式 4/6 cdn_issue_certificate：分别签发 easy_all（direct）与 easy_all-cdn（cf），
+# 且检测到旧版合并 SAN 时即使 force=0 也必须传 --force-renewal 缩容 SAN。
+split_issue_dir="${TMP_DIR}/split-issue"
+mkdir -p "${split_issue_dir}/bin" "${split_issue_dir}/state" "${split_issue_dir}/certs" \
+    "${split_issue_dir}/runtime" \
+    "${split_issue_dir}/live/easy_all" "${split_issue_dir}/live/easy_all-cdn"
+: >"${split_issue_dir}/certbot.log"
+cat >"${split_issue_dir}/bin/certbot" <<'FAKE_CERTBOT'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_CERTBOT_LOG}"
+cert_name=""
+while (($#)); do
+    case "$1" in
+    --cert-name) cert_name=$2; shift 2 ;;
+    *) shift ;;
+    esac
+done
+if [[ "${cert_name}" == "easy_all" ]]; then
+    install -m 0644 "${SAN_DIRECT_DIR}/fullchain.pem" "${FAKE_LIVE_PRIMARY}/fullchain.pem"
+    install -m 0600 "${SAN_DIRECT_DIR}/private.key" "${FAKE_LIVE_PRIMARY}/privkey.pem"
+elif [[ "${cert_name}" == "easy_all-cdn" ]]; then
+    install -m 0644 "${SAN_CDN_DIR}/fullchain.pem" "${FAKE_LIVE_CDN}/fullchain.pem"
+    install -m 0600 "${SAN_CDN_DIR}/private.key" "${FAKE_LIVE_CDN}/privkey.pem"
+fi
+FAKE_CERTBOT
+chmod +x "${split_issue_dir}/bin/certbot"
+# 预置旧版合并证书在主 live 目录与现用证书路径，验证缩容触发 --force-renewal。
+install -m 0644 "${san_combined_dir}/fullchain.pem" "${split_issue_dir}/live/easy_all/fullchain.pem"
+install -m 0600 "${san_combined_dir}/private.key" "${split_issue_dir}/live/easy_all/privkey.pem"
+install -m 0644 "${san_combined_dir}/fullchain.pem" "${split_issue_dir}/certs/fullchain.pem"
+install -m 0600 "${san_combined_dir}/private.key" "${split_issue_dir}/certs/private.key"
+
+split_issue_out=$(
+    PATH="${split_issue_dir}/bin:${PATH}" \
+    FAKE_CERTBOT_LOG="${split_issue_dir}/certbot.log" \
+    FAKE_LIVE_PRIMARY="${split_issue_dir}/live/easy_all" \
+    FAKE_LIVE_CDN="${split_issue_dir}/live/easy_all-cdn" \
+    SAN_DIRECT_DIR="${san_direct_dir}" \
+    SAN_CDN_DIR="${san_cdn_dir}" \
+    RUNTIME_TMP="${split_issue_dir}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${split_issue_dir}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${split_issue_dir}/certs" \
+    EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE="${split_issue_dir}/live/easy_all" \
+    EASY_ALL_CERTBOT_CDN_LIVE_DIR_OVERRIDE="${split_issue_dir}/live/easy_all-cdn" \
+    EASY_ALL_CLOUDFLARE_CREDENTIALS_OVERRIDE="${split_issue_dir}/state/cloudflare.ini" \
+        bash -c '
+            source "$1/profiles/reality-cloudflare.sh"
             DIRECT_DOMAIN=direct.example.com
             CF_NODE_DOMAIN=cf.example.com
-            certificate_required_hosts
+            CLOUDFLARE_API_TOKEN=test-cf-token-1234567890
+            certificate_chain_valid() { return 0; }
+            cdn_issue_certificate 0
+            printf "PRIMARY_SAN=%s\nCDN_SAN=%s\n" \
+                "$(certificate_san_hosts "${CERT_FILE}" | paste -sd, -)" \
+                "$(certificate_san_hosts "${CDN_CERT_FILE}" | paste -sd, -)"
         ' _ "${ROOT_DIR}" 2>&1
-) || fail "模式 6 证书域名调用失败"
-assert_equal "模式 6 证书覆盖直连与节点域名" \
-    $'cf.example.com\ndirect.example.com' "${combined_cf_cert_hosts}"
+) || fail "模式 4 双证书签发/缩容测试失败：${split_issue_out}"
+certbot_calls=$(<"${split_issue_dir}/certbot.log")
+assert_contains "主证书走 easy_all lineage 且仅签 direct" "${certbot_calls}" "--cert-name easy_all"
+assert_contains "主证书缩容旧合并 SAN 时强制 --force-renewal" "${certbot_calls}" "--force-renewal -d direct.example.com"
+assert_contains "回源证书走独立 easy_all-cdn lineage 且仅签 cf" "${certbot_calls}" "--cert-name easy_all-cdn"
+assert_contains "回源证书包含 -d cf.example.com" "${certbot_calls}" "-d cf.example.com"
+assert_contains "落盘主证书 SAN 仅含 direct" "${split_issue_out}" "PRIMARY_SAN=direct.example.com"
+assert_contains "落盘回源证书 SAN 仅含 cf" "${split_issue_out}" "CDN_SAN=cf.example.com"
+
+# internal_cert_deploy：按 RENEWED_LINEAGE 分槽部署主证书或回源证书，非拆证模式拒绝 cdn lineage。
+cert_hook_out=$(
+    RUNTIME_TMP="${split_issue_dir}/hook-runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${split_issue_dir}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${split_issue_dir}/certs" \
+    EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE="${split_issue_dir}/live/easy_all" \
+    EASY_ALL_CERTBOT_CDN_LIVE_DIR_OVERRIDE="${split_issue_dir}/live/easy_all-cdn" \
+        bash -c '
+            source "$1/profiles/reality-cloudflare.sh"
+            require_root() { :; }
+            acquire_runtime_write_lock() { :; }
+            release_runtime_write_lock() { :; }
+            collect_installed_state() { :; }
+            save_state() { :; }
+            certificate_deploy() { printf "DEPLOY_PRIMARY\n"; }
+            certificate_deploy_cdn() { printf "DEPLOY_CDN\n"; }
+            RENEWED_LINEAGE="${CERTBOT_LIVE_DIR}" internal_cert_deploy >/dev/null
+            RENEWED_LINEAGE="${CERTBOT_CDN_LIVE_DIR}" internal_cert_deploy >/dev/null
+            if (RENEWED_LINEAGE="/etc/letsencrypt/live/foreign" internal_cert_deploy) >/dev/null 2>&1; then
+                printf "FOREIGN_ACCEPTED\n"
+            else
+                printf "FOREIGN_REJECTED\n"
+            fi
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "internal_cert_deploy 分槽测试失败：${cert_hook_out}"
+assert_contains "hook 正确拒绝未知 lineage" "${cert_hook_out}" "FOREIGN_REJECTED"
+cert_hook_calls=$(
+    RUNTIME_TMP="${split_issue_dir}/hook-runtime-2" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${split_issue_dir}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${split_issue_dir}/certs" \
+    EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE="${split_issue_dir}/live/easy_all" \
+    EASY_ALL_CERTBOT_CDN_LIVE_DIR_OVERRIDE="${split_issue_dir}/live/easy_all-cdn" \
+        bash -c '
+            source "$1/profiles/reality-cloudflare.sh"
+            require_root() { :; }
+            acquire_runtime_write_lock() { :; }
+            release_runtime_write_lock() { :; }
+            collect_installed_state() { :; }
+            save_state() { :; }
+            success() { :; }
+            certificate_deploy() { printf "DEPLOY_PRIMARY\n"; }
+            certificate_deploy_cdn() { printf "DEPLOY_CDN\n"; }
+            RENEWED_LINEAGE="${CERTBOT_LIVE_DIR}" internal_cert_deploy
+            RENEWED_LINEAGE="${CERTBOT_CDN_LIVE_DIR}" internal_cert_deploy
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "internal_cert_deploy 双槽调用失败"
+assert_equal "hook 按 lineage 分派 primary 与 cdn 槽位" \
+    $'DEPLOY_PRIMARY\nDEPLOY_CDN' "${cert_hook_calls}"
+if (
+    RUNTIME_TMP="${split_issue_dir}/hook-runtime-3" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${split_issue_dir}/state" \
+    EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE="${split_issue_dir}/live/easy_all" \
+    EASY_ALL_CERTBOT_CDN_LIVE_DIR_OVERRIDE="${split_issue_dir}/live/easy_all-cdn" \
+        bash -c '
+            source "$1/profiles/combined.sh"
+            require_root() { :; }
+            acquire_runtime_write_lock() { :; }
+            collect_installed_state() { :; }
+            RENEWED_LINEAGE="${CERTBOT_CDN_LIVE_DIR}" internal_cert_deploy
+        ' _ "${ROOT_DIR}"
+) >/dev/null 2>&1; then
+    fail "非双证书模式不得接受 easy_all-cdn lineage"
+fi
+
+# 三列端点契约（<host> <port> <cert_file>）与逐端点指纹校验：
+# 模式 4/6 必须分别比对 443↔CERT_FILE 与 8443↔CDN_CERT_FILE；8443 错送主证书必须失败。
+endpoints_check_dir="${TMP_DIR}/endpoints-check"
+mkdir -p "${endpoints_check_dir}/certs"
+install -m 0644 "${san_direct_dir}/fullchain.pem" "${endpoints_check_dir}/certs/fullchain.pem"
+install -m 0644 "${san_cdn_dir}/fullchain.pem" "${endpoints_check_dir}/certs/cdn-fullchain.pem"
+endpoints_out=$(
+    RUNTIME_TMP="${endpoints_check_dir}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${endpoints_check_dir}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${endpoints_check_dir}/certs" \
+        bash -c '
+            source "$1/profiles/reality-cloudflare.sh"
+            DIRECT_DOMAIN=direct.example.com
+            CF_NODE_DOMAIN=cf.example.com
+            runtime_served_certificate_endpoints
+            fp_primary=$(runtime_certificate_fingerprint_on_disk "${CERT_FILE}")
+            fp_cdn=$(runtime_certificate_fingerprint_on_disk "${CDN_CERT_FILE}")
+            runtime_tls_peer_fingerprint() {
+                if [[ "$2" == "443" ]]; then printf "%s\n" "${fp_primary}"; else printf "%s\n" "${fp_cdn}"; fi
+            }
+            runtime_served_certificate_matches_disk && printf "MATCH_OK\n"
+            # 模拟 8443 仍送出旧主证书（未切至 CDN 证书）：必须判失败。
+            runtime_tls_peer_fingerprint() { printf "%s\n" "${fp_primary}"; }
+            sleep() { :; }
+            if runtime_served_certificate_matches_disk >/dev/null 2>&1; then
+                printf "MISMATCH_MISSED\n"
+            else
+                printf "MISMATCH_CAUGHT\n"
+            fi
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "三列端点与双证书指纹校验失败：${endpoints_out}"
+assert_contains "模式 4 直连端点绑定主证书" "${endpoints_out}" \
+    "direct.example.com 443 ${endpoints_check_dir}/certs/fullchain.pem"
+assert_contains "模式 4 回源端点绑定独立 CDN 证书" "${endpoints_out}" \
+    "cf.example.com 8443 ${endpoints_check_dir}/certs/cdn-fullchain.pem"
+assert_contains "两端口各送对应证书时指纹校验通过" "${endpoints_out}" "MATCH_OK"
+assert_contains "8443 误送主证书时指纹校验失败" "${endpoints_out}" "MISMATCH_CAUGHT"
+
+# v5.5.0 升级未拆证前（有 CERT_FILE、无 CDN_CERT_FILE）：8443 端点平滑回退到 CERT_FILE。
+rm -f -- "${endpoints_check_dir}/certs/cdn-fullchain.pem"
+endpoints_fallback=$(
+    RUNTIME_TMP="${endpoints_check_dir}/runtime-fb" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${endpoints_check_dir}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${endpoints_check_dir}/certs" \
+        bash -c '
+            source "$1/profiles/combined-cloudflare.sh"
+            DIRECT_DOMAIN=direct.example.com
+            CF_NODE_DOMAIN=cf.example.com
+            runtime_served_certificate_endpoints
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "模式 6 回退端点输出失败"
+assert_contains "v5.5.0 回退态 8443 端点指向旧主证书" "${endpoints_fallback}" \
+    "cf.example.com 8443 ${endpoints_check_dir}/certs/fullchain.pem"
+
+# 模式 3 端点：443 + 9443（单 443 合一回环，不再是 8443）。
+mode3_endpoints=$(
+    RUNTIME_TMP="${endpoints_check_dir}/runtime-m3" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${endpoints_check_dir}/state-m3" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${endpoints_check_dir}/certs" \
+        bash -c '
+            source "$1/profiles/reality-cloudfront.sh"
+            DIRECT_DOMAIN=direct.example.com
+            CF_ORIGIN_DOMAIN=origin.example.com
+            runtime_served_certificate_endpoints
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "模式 3 端点输出失败"
+assert_contains "模式 3 直连 443 端点" "${mode3_endpoints}" \
+    "direct.example.com 443 ${endpoints_check_dir}/certs/fullchain.pem"
+assert_contains "模式 3 合一 9443 端点" "${mode3_endpoints}" \
+    "origin.example.com 9443 ${endpoints_check_dir}/certs/fullchain.pem"
+assert_not_contains "模式 3 端点不含 8443" "${mode3_endpoints}" " 8443 "
 
 # --- 4. 证书：强制重载，并以本机真实 TLS 握手确认磁盘证书已生效 ----------------
 first_dir="${TMP_DIR}/certs-first"
@@ -1774,45 +2009,72 @@ tls_probe() { # $1=端口；0 表示可以
 # 全程 stub runtime_served_certificate_matches_disk，不依赖真实 TLS 握手——因此**不受**
 # LibreSSL 的门限制，无条件执行（这是「证书部署失败必须恢复旧证书」在开发机上的唯一覆盖）。
 run_certificate_deploy_cases() {
-# 证书部署事务：强制重载 + 握手校验；校验失败恢复旧副本。
-certificate_deploy_case() { # $1=1 表示握手校验失败
-    local handshake_fail=$1
-    EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE="${TMP_DIR}/lineage" \
-    RUNTIME_TMP="${TMP_DIR}/deploy-runtime-${handshake_fail}" \
-    EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/deploy-state-${handshake_fail}" \
-    EASY_ALL_CERT_DIR_OVERRIDE="${TMP_DIR}/deploy-certs-${handshake_fail}" \
+# 证书部署事务：强制重载 + 握手校验；校验失败恢复旧副本（覆盖主证书与独立 CDN 证书两槽位）。
+certificate_deploy_case() { # $1=1 表示握手校验失败 [$2=primary|cdn]
+    local handshake_fail=$1 slot=${2:-primary}
+    EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE="${TMP_DIR}/lineage-${slot}-${handshake_fail}" \
+    EASY_ALL_CERTBOT_CDN_LIVE_DIR_OVERRIDE="${TMP_DIR}/lineage-cdn-${slot}-${handshake_fail}" \
+    RUNTIME_TMP="${TMP_DIR}/deploy-runtime-${slot}-${handshake_fail}" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/deploy-state-${slot}-${handshake_fail}" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${TMP_DIR}/deploy-certs-${slot}-${handshake_fail}" \
     EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/deploy-subscriptions" \
         bash -c '
             handshake_target=$4
+            slot=$5
             source "$1/profiles/combined-cloudflare.sh"
             PROTOCOL=combined-cloudflare
             DIRECT_DOMAIN=node.example.com
-            SUBSCRIPTION_MODE=link
-            install -d -m 0700 "${CERT_DIR}" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}" "${RUNTIME_TMP}"
-            install -m 0644 "$2/fullchain.pem" "${CERT_FILE}"
-            install -m 0600 "$2/private.key" "${KEY_FILE}"
-            install -m 0644 "$3/fullchain.pem" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}/fullchain.pem"
-            install -m 0600 "$3/private.key" "${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE}/privkey.pem"
+            CF_NODE_DOMAIN=cf.example.com
+            SUBSCRIPTION_MODE=deploy
+            if [[ "${slot}" == "cdn" ]]; then
+                live_dir=${CERTBOT_CDN_LIVE_DIR}
+                dest_cert=${CDN_CERT_FILE}
+                dest_key=${CDN_KEY_FILE}
+            else
+                live_dir=${CERTBOT_LIVE_DIR}
+                dest_cert=${CERT_FILE}
+                dest_key=${KEY_FILE}
+            fi
+            install -d -m 0700 "${CERT_DIR}" "${live_dir}" "${RUNTIME_TMP}"
+            install -m 0644 "$2/fullchain.pem" "${dest_cert}"
+            install -m 0600 "$2/private.key" "${dest_key}"
+            install -m 0644 "$3/fullchain.pem" "${live_dir}/fullchain.pem"
+            install -m 0600 "$3/private.key" "${live_dir}/privkey.pem"
+            certificate_check_for_hosts() { return 0; }
             certificate_check() { return 0; }
             certificate_verify() { return 0; }
             runtime_apply_runtime_services() { printf "APPLY %s\n" "$1"; }
             runtime_served_certificate_matches_disk() { [[ "${handshake_target}" == "0" ]]; }
             status=0
-            certificate_deploy "" 1 || status=$?
+            if [[ "${slot}" == "cdn" ]]; then
+                certificate_deploy_cdn "" 1 || status=$?
+            else
+                certificate_deploy "" 1 || status=$?
+            fi
             printf "STATUS=%s\n" "${status}"
-            printf "SERVED=%s\n" "$(cat "${CERT_FILE}")"
-        ' _ "${ROOT_DIR}" "${first_dir}" "${second_dir}" "${handshake_fail}" 2>&1
+            printf "SERVED=%s\n" "$(cat "${dest_cert}")"
+        ' _ "${ROOT_DIR}" "${first_dir}" "${second_dir}" "${handshake_fail}" "${slot}" 2>&1
 }
-deploy_ok=$(certificate_deploy_case 0) || fail "证书部署成功路径失败：${deploy_ok}"
+deploy_ok=$(certificate_deploy_case 0 primary) || fail "证书部署成功路径失败：${deploy_ok}"
 assert_contains "部署成功时强制重载" "${deploy_ok}" "APPLY 1"
 assert_contains "部署成功时状态为 0" "${deploy_ok}" "STATUS=0"
 assert_contains "部署成功后磁盘是新证书" "${deploy_ok}" "$(<"${second_dir}/fullchain.pem")"
 
-deploy_fail=$(certificate_deploy_case 1) || true
+deploy_fail=$(certificate_deploy_case 1 primary) || true
 assert_contains "握手校验失败时部署失败" "${deploy_fail}" "STATUS=1"
 assert_contains "握手校验失败后恢复旧证书" "${deploy_fail}" "$(<"${first_dir}/fullchain.pem")"
 force_applies=$(grep -c 'APPLY 1' <<<"${deploy_fail}" || true)
 assert_equal "旧证书恢复也走强制重载" "2" "${force_applies}"
+
+deploy_cdn_ok=$(certificate_deploy_case 0 cdn) || fail "CDN 证书部署成功路径失败：${deploy_cdn_ok}"
+assert_contains "CDN 证书部署成功时强制重载" "${deploy_cdn_ok}" "APPLY 1"
+assert_contains "CDN 证书部署成功状态为 0" "${deploy_cdn_ok}" "STATUS=0"
+assert_contains "CDN 证书部署成功后磁盘是新证书" "${deploy_cdn_ok}" "$(<"${second_dir}/fullchain.pem")"
+
+deploy_cdn_fail=$(certificate_deploy_case 1 cdn) || true
+assert_contains "CDN 证书握手失败时部署失败" "${deploy_cdn_fail}" "STATUS=1"
+assert_contains "CDN 证书握手失败后恢复旧证书" "${deploy_cdn_fail}" "$(<"${first_dir}/fullchain.pem")"
+assert_equal "CDN 旧证书恢复也走强制重载" "2" "$(grep -c 'APPLY 1' <<<"${deploy_cdn_fail}" || true)"
 }
 
 run_tls_certificate_cases() {
@@ -2094,6 +2356,220 @@ assert_contains "模式 2 探测 Caddy 443" "${mode2_urls}" "https://origin.exam
 assert_contains "模式 2 守卫探测钉本机公网 IP 与 Caddy 443" "${mode2_urls}" \
     "--resolve origin.example.com:443:203.0.113.10"
 
+# --- 6b. WP4 模式 3 源站守卫公网探测：单 443 落入伪装站必须恒为 404 -------------
+mode3_guard_case() { # $1=stub HTTP 状态码
+    local code=$1
+    local stub_dir="${TMP_DIR}/curl-stub-m3-${code}"
+    local url_log="${TMP_DIR}/origin-guard-m3-${code}.log"
+    mkdir -p "${stub_dir}"
+    : >"${url_log}"
+    cat >"${stub_dir}/curl" <<'FAKE_CURL'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${ORIGIN_GUARD_LOG}"
+printf '%s' "${FAKE_HTTP_CODE}"
+FAKE_CURL
+    chmod 0755 "${stub_dir}/curl"
+    PATH="${stub_dir}:${PATH}" ORIGIN_GUARD_LOG="${url_log}" FAKE_HTTP_CODE="${code}" \
+    RUNTIME_TMP="${TMP_DIR}/guard-runtime-m3-${code}" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${TMP_DIR}/guard-state-m3-${code}" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/guard-subscriptions" \
+        bash -c '
+            source "$1/profiles/reality-cloudfront.sh"
+            CF_ORIGIN_DOMAIN=origin.example.com
+            DIRECT_DOMAIN=origin.example.com
+            VPS_PUBLIC_IPV4=203.0.113.10
+            VLESS_PATH=/vless-0123456789ab
+            ALLOWED_TOKENS="{\"owner\":\"tok-abcdefgh\"}"
+            cdn_public_origin_header_guard_ok
+        ' _ "${ROOT_DIR}" >/dev/null 2>&1
+}
+mode3_guard_case 404 || fail "模式 3 源站守卫在全部 404 时必须通过"
+mode3_guard_urls=$(<"${TMP_DIR}/origin-guard-m3-404.log")
+assert_equal "模式 3 源站守卫共发 4 次探测（代理+订阅 × 无头+错头）" "4" \
+    "$(grep -c . "${TMP_DIR}/origin-guard-m3-404.log" || true)"
+assert_contains "模式 3 源站守卫探测 443 代理路径" "${mode3_guard_urls}" \
+    "https://origin.example.com:443/vless-0123456789ab"
+assert_contains "模式 3 源站守卫探测 443 订阅路径" "${mode3_guard_urls}" \
+    "https://origin.example.com:443/subscribe?token=tok-abcdefgh"
+assert_contains "模式 3 源站守卫包含错头探测" "${mode3_guard_urls}" \
+    "X-Easy-All-Origin-Key: wrong-origin-key"
+assert_contains "模式 3 源站守卫钉 443 与本机公网 IP" "${mode3_guard_urls}" \
+    "--resolve origin.example.com:443:203.0.113.10"
+assert_not_contains "模式 3 源站守卫不再探测 8443" "${mode3_guard_urls}" ":8443"
+for bad_m3_code in 000 200 403 503; do
+    if mode3_guard_case "${bad_m3_code}"; then
+        fail "模式 3 源站守卫在返回 ${bad_m3_code} 时不得通过（必须严格 404）"
+    fi
+done
+
+# --- 6c. WP4 CloudFront 分发收敛门禁：必须匹配 CustomOriginConfig.HTTPSPort ----
+cf_wait_dir="${TMP_DIR}/cf-wait"
+mkdir -p "${cf_wait_dir}"
+cf_wait_count="${cf_wait_dir}/count"
+printf '0\n' >"${cf_wait_count}"
+cf_wait_ok=$(
+    CF_WAIT_COUNT="${cf_wait_count}" \
+    RUNTIME_TMP="${cf_wait_dir}/runtime-ok" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${cf_wait_dir}/state-ok" \
+        bash -c '
+            source "$1/profiles/reality-cloudfront.sh"
+            sleep() { :; }
+            aws_cli() {
+                local c
+                c=$(<"${CF_WAIT_COUNT}")
+                c=$((c + 1))
+                printf "%s\n" "${c}" >"${CF_WAIT_COUNT}"
+                case "${c}" in
+                1) printf "{\"Distribution\":{\"Status\":\"Deployed\",\"DistributionConfig\":{\"Enabled\":true,\"Origins\":{\"Items\":[{\"CustomOriginConfig\":{\"HTTPSPort\":8443}}]}}}}\n" ;;
+                2) printf "{\"Distribution\":{\"Status\":\"InProgress\",\"DistributionConfig\":{\"Enabled\":true,\"Origins\":{\"Items\":[{\"CustomOriginConfig\":{\"HTTPSPort\":443}}]}}}}\n" ;;
+                *) printf "{\"Distribution\":{\"Status\":\"Deployed\",\"DistributionConfig\":{\"Enabled\":true,\"Origins\":{\"Items\":[{\"CustomOriginConfig\":{\"HTTPSPort\":443}}]}}}}\n" ;;
+                esac
+            }
+            wait_for_cloudfront_distribution EDFDVBD6EXAMPLE
+            printf "POLLS=%s\n" "$(<"${CF_WAIT_COUNT}")"
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "模式 3 分发收敛等待应在 HTTPSPort=443 Deployed 后通过：${cf_wait_ok}"
+assert_contains "旧 8443 Deployed 与 443 InProgress 均继续等待，第 3 轮通过" "${cf_wait_ok}" "POLLS=3"
+
+# 若全程停留在旧 8443 Deployed 而未收敛至 443，必须超时失败（防止提前撤 8443 导致 502）。
+if (
+    RUNTIME_TMP="${cf_wait_dir}/runtime-stale" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${cf_wait_dir}/state-stale" \
+        bash -c '
+            source "$1/profiles/reality-cloudfront.sh"
+            sleep() { :; }
+            aws_cli() {
+                printf "{\"Distribution\":{\"Status\":\"Deployed\",\"DistributionConfig\":{\"Enabled\":true,\"Origins\":{\"Items\":[{\"CustomOriginConfig\":{\"HTTPSPort\":8443}}]}}}}\n"
+            }
+            wait_for_cloudfront_distribution EDFDVBD6EXAMPLE
+        ' _ "${ROOT_DIR}"
+) >/dev/null 2>&1; then
+    fail "CloudFront 停留在旧 HTTPSPort=8443 时 wait_for_cloudfront_distribution 必须失败"
+fi
+
+# 卸载禁用等待不限制 HTTPSPort（仅校验 Deployed + Enabled=false）。
+cf_wait_disabled=$(
+    RUNTIME_TMP="${cf_wait_dir}/runtime-dis" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${cf_wait_dir}/state-dis" \
+        bash -c '
+            source "$1/profiles/reality-cloudfront.sh"
+            sleep() { :; }
+            aws_cli() {
+                printf "{\"Distribution\":{\"Status\":\"Deployed\",\"DistributionConfig\":{\"Enabled\":false,\"Origins\":{\"Items\":[{\"CustomOriginConfig\":{\"HTTPSPort\":8443}}]}}}}\n"
+            }
+            wait_for_cloudfront_distribution_disabled EDFDVBD6EXAMPLE && printf "DISABLED_OK\n"
+        ' _ "${ROOT_DIR}" 2>&1
+) || fail "禁用态分发等待应通过：${cf_wait_disabled}"
+assert_contains "禁用态分发等待不因旧 8443 失败" "${cf_wait_disabled}" "DISABLED_OK"
+
+# --- 6d. WP1/WP3 本机探活与公网边缘探活：无 /easy_all-health、禁 Server 头、按盘比对 ---
+for mode_lib in lib/cloudfront-mode.sh lib/cloudflare-mode.sh lib/anytls-mode.sh lib/runtime-core.sh; do
+    assert_not_contains "${mode_lib} 已移除 cdn_public_health_ok" "$(<"${ROOT_DIR}/${mode_lib}")" \
+        "cdn_public_health_ok"
+done
+
+probe_case_dir="${TMP_DIR}/wp1-probes"
+mkdir -p "${probe_case_dir}/camo" "${probe_case_dir}/runtime" "${probe_case_dir}/state"
+printf '<!doctype html><title>Custom Ops Status</title><h1>All Systems Operational</h1>\n' \
+    >"${probe_case_dir}/camo/index.html"
+
+run_caddy_probe_case() { # $1=HTTP code $2=headers $3=fallback_code $4=fallback_headers $5=fallback_body
+    PROBE_CODE=$1 PROBE_HEADERS=$2 FB_CODE=$3 FB_HEADERS=$4 FB_BODY=$5 \
+    PROBE_LOG="${probe_case_dir}/probe.log" \
+    CAMOUFLAGE_DIR="${probe_case_dir}/camo" \
+    RUNTIME_TMP="${probe_case_dir}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${probe_case_dir}/state" \
+        bash -c '
+            source "$1/profiles/reality-cloudfront.sh"
+            DIRECT_DOMAIN=direct.example.com
+            CF_ORIGIN_DOMAIN=direct.example.com
+            ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef
+            systemctl() { return 0; }
+            curl() {
+                local arg d_file="" o_file="" url="" expect=""
+                printf "%s\n" "$*" >>"${PROBE_LOG}"
+                for arg in "$@"; do
+                    case "${expect}" in
+                    d) d_file=${arg}; expect=""; continue ;;
+                    o) o_file=${arg}; expect=""; continue ;;
+                    esac
+                    case "${arg}" in
+                    -D) expect=d ;;
+                    -o) expect=o ;;
+                    https://*) url=${arg} ;;
+                    esac
+                done
+                if [[ "${url}" == *"/subscribe?token=invalid" ]]; then
+                    [[ -z "${d_file}" ]] || printf "%b" "${PROBE_HEADERS}" >"${d_file}"
+                    printf "%s" "${PROBE_CODE}"
+                else
+                    [[ -z "${d_file}" ]] || printf "%b" "${FB_HEADERS}" >"${d_file}"
+                    [[ -z "${o_file}" || "${o_file}" == "/dev/null" ]] || printf "%s\n" "${FB_BODY}" >"${o_file}"
+                    printf "%s" "${FB_CODE}"
+                fi
+            }
+            runtime_caddy_probe_ok
+        ' _ "${ROOT_DIR}" >/dev/null 2>&1
+}
+
+camo_html=$(<"${probe_case_dir}/camo/index.html")
+: >"${probe_case_dir}/probe.log"
+run_caddy_probe_case 403 'HTTP/2 403\r\nX-Robots-Tag: noindex, nofollow, noarchive\r\n\r\n' \
+    200 'HTTP/2 200\r\nContent-Type: text/html\r\n\r\n' "${camo_html}" \
+    || fail "403+noindex+无Server头 且 443 回落逐字节匹配自定义首页时探活应通过"
+probe_log_text=$(<"${probe_case_dir}/probe.log")
+assert_contains "Caddy 探活访问 /subscribe?token=invalid" "${probe_log_text}" "/subscribe?token=invalid"
+assert_not_contains "Caddy 探活不再访问 /easy_all-health" "${probe_log_text}" "/easy_all-health"
+assert_contains "Reality 回落探测本机 443" "${probe_log_text}" "https://direct.example.com:443/"
+
+if run_caddy_probe_case 200 'HTTP/2 200\r\nX-Robots-Tag: noindex\r\n\r\n' \
+    200 'HTTP/2 200\r\n\r\n' "${camo_html}"; then
+    fail "Caddy 探活状态码非 403 时必须失败"
+fi
+if run_caddy_probe_case 403 'HTTP/2 403\r\n\r\n' \
+    200 'HTTP/2 200\r\n\r\n' "${camo_html}"; then
+    fail "Caddy 探活缺少 X-Robots-Tag noindex 时必须失败"
+fi
+if run_caddy_probe_case 403 'HTTP/2 403\r\nServer: Caddy\r\nX-Robots-Tag: noindex\r\n\r\n' \
+    200 'HTTP/2 200\r\n\r\n' "${camo_html}"; then
+    fail "Caddy 探活出现 Server 响应头时必须失败"
+fi
+if run_caddy_probe_case 403 'HTTP/2 403\r\nX-Robots-Tag: noindex\r\n\r\n' \
+    200 'HTTP/2 200\r\nServer: Caddy\r\n\r\n' "${camo_html}"; then
+    fail "Reality 回落出现 Server 响应头时必须失败"
+fi
+if run_caddy_probe_case 403 'HTTP/2 403\r\nX-Robots-Tag: noindex\r\n\r\n' \
+    200 'HTTP/2 200\r\n\r\n' '<html>mismatch</html>'; then
+    fail "Reality 回落响应体与磁盘 index.html 不一致时必须失败"
+fi
+
+# CloudFront 公网节点边缘探测：访问 /subscribe?token=invalid 返回 403。
+edge_probe_log="${probe_case_dir}/edge-probe.log"
+run_edge_probe_case() { # $1=HTTP status
+    : >"${edge_probe_log}"
+    EDGE_STATUS=$1 EDGE_LOG="${edge_probe_log}" \
+    RUNTIME_TMP="${probe_case_dir}/runtime-edge" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${probe_case_dir}/state-edge" \
+        bash -c '
+            source "$1/profiles/cloudfront.sh"
+            CF_NODE_DOMAIN=cf.example.com
+            public_dns_curl() {
+                printf "%s\n" "$*" >>"${EDGE_LOG}"
+                printf "%s" "${EDGE_STATUS}"
+            }
+            cdn_public_node_edge_ok
+        ' _ "${ROOT_DIR}" >/dev/null 2>&1
+}
+run_edge_probe_case 403 || fail "cdn_public_node_edge_ok 在 403 时应通过"
+assert_contains "边缘探测走 /subscribe + token=invalid" "$(<"${edge_probe_log}")" "token=invalid"
+assert_contains "边缘探测指向节点域名 /subscribe" "$(<"${edge_probe_log}")" "https://cf.example.com/subscribe"
+assert_not_contains "边缘探测不再访问 /easy_all-health" "$(<"${edge_probe_log}")" "/easy_all-health"
+for bad_edge_code in 200 404 502; do
+    if run_edge_probe_case "${bad_edge_code}"; then
+        fail "cdn_public_node_edge_ok 在 ${bad_edge_code} 时必须失败"
+    fi
+done
+
 # --- 7. update-core：核心缺失时按“重装修复”处理，并在替换二进制后重启 Caddy ---
 # 该入口要求 root，且下载核心、systemd 与 iptables 计量都是本机外部能力：这里只替身这些
 # 边界（root 门禁、下载、systemctl、flock、计量检查），备份/回滚/发布顺序保持真实。
@@ -2200,7 +2676,10 @@ incomplete_uninstall_case() {
     local real_install
     real_install=$(command -v install)
     mkdir -p "${case_dir}/state" "${case_dir}/bin" "${case_dir}/systemd" \
-        "${case_dir}/counter" "${case_dir}/subs"
+        "${case_dir}/counter" "${case_dir}/subs/subscriptions" "${case_dir}/subs/camouflage"
+    printf 'sub-data\n' >"${case_dir}/subs/subscriptions/base64.txt"
+    printf '<html>managed</html>\n' >"${case_dir}/subs/camouflage/index.html"
+    printf '<html>user custom site</html>\n' >"${case_dir}/subs/camouflage/user-custom.html"
     # 损坏/字段不齐：schema 1、PROTOCOL=cloudfront，但 CloudFront 字段全部缺失。
     cat >"${case_dir}/state/state.env" <<'STATE'
 STATE_VERSION=1
@@ -2248,6 +2727,7 @@ INSTALL
     EASY_ALL_STATE_FILE_OVERRIDE="${case_dir}/state/state.env" \
     EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
     EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/subs/subscriptions" \
+    CAMOUFLAGE_DIR="${case_dir}/subs/camouflage" \
     SINGBOX_BIN="${case_dir}/core/sing-box/sing-box" \
     CADDY_BIN="${case_dir}/core/caddy/caddy" \
     SINGBOX_SERVICE=easy_all-singbox.service \
@@ -2285,6 +2765,12 @@ assert_contains "不完整状态卸载回收 mangle 计量链" "${incomplete_ipt
     "-D INPUT -i lo -p tcp -m tcp --dport 10086 -j easy_all-cdn"
 assert_contains "不完整状态卸载删除 mangle 计量链本身" "${incomplete_iptables}" \
     "-X easy_all-cdn"
+[[ ! -e "${TMP_DIR}/incomplete-uninstall/subs/subscriptions" ]] \
+    || fail "不完整状态卸载必须删除订阅目录"
+[[ ! -e "${TMP_DIR}/incomplete-uninstall/subs/camouflage/index.html" ]] \
+    || fail "不完整状态卸载必须回收受管伪装页"
+[[ -s "${TMP_DIR}/incomplete-uninstall/subs/camouflage/user-custom.html" ]] \
+    || fail "不完整状态卸载不得通过 rm -rf 父目录误删用户的自定义站点文件"
 
 # --- 8b. 回滚执行段屏蔽 INT/TERM：在前台保护段内向自身发信号 ------------------
 # 非交互 bash 的 `cmd &` 会继承“忽略 SIGINT/SIGQUIT”，后台进程无法为启动时已忽略
@@ -3017,7 +3503,7 @@ curl_resolve_out=$(
         curl() {
             printf "CURL %s\n" "$*"
         }
-        public_dns_curl "https://edge.example.com:8443/easy_all-health"
+        public_dns_curl "https://edge.example.com:8443/subscribe?token=invalid"
     ' _ "${ROOT_DIR}" 2>&1
 ) || fail "公网验收 curl 注入 --resolve 失败：${curl_resolve_out}"
 assert_contains "公网验收 curl 注入 --resolve host:port:ip" "${curl_resolve_out}" "--resolve edge.example.com:8443:198.51.100.42"
@@ -3034,7 +3520,7 @@ curl_half_propagated_out=$(
         curl() {
             printf "CURL %s\n" "$*"
         }
-        public_dns_curl "https://edge.example.com/easy_all-health"
+        public_dns_curl "https://edge.example.com/subscribe?token=invalid"
     ' _ "${ROOT_DIR}" 2>&1
 ) || fail "仅一方公共 DNS 命中时应仍用命中方的 IP 钉 --resolve：${curl_half_propagated_out}"
 assert_contains "半传播时仍钉命中方返回的 IP" "${curl_half_propagated_out}" \

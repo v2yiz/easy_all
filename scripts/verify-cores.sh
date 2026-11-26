@@ -130,6 +130,11 @@ render_mode() {
         openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=${CF_ZONE}" \
             -keyout "${KEY_FILE}" -out "${CERT_FILE}" >/dev/null 2>&1 || exit 1
         chmod 0600 "${KEY_FILE}"
+        if runtime_uses_split_cdn_cert; then
+            openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=${CF_NODE_DOMAIN}" \
+                -keyout "${CDN_KEY_FILE}" -out "${CDN_CERT_FILE}" >/dev/null 2>&1 || exit 1
+            chmod 0600 "${CDN_KEY_FILE}"
+        fi
         render_singbox_config "${SINGBOX_CONFIG}" 0
         validate_singbox_config "${SINGBOX_CONFIG}" || exit 1
         # 客户端订阅同样是正式产物：真实核心必须接受渲染出的完整 JSON。

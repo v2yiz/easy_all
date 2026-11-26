@@ -19,6 +19,8 @@ readonly STATE_FILE="${STATE_DIR}/state.env"
 readonly CERT_DIR="${EASY_ALL_CERT_DIR_OVERRIDE:-${STATE_DIR}/certs}"
 readonly CERT_FILE="${CERT_DIR}/fullchain.pem"
 readonly KEY_FILE="${CERT_DIR}/private.key"
+readonly CDN_CERT_FILE="${CERT_DIR}/cdn-fullchain.pem"
+readonly CDN_KEY_FILE="${CERT_DIR}/cdn-private.key"
 readonly SUBSCRIPTION_DIR="${EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE:-/var/www/easy_all/subscriptions}"
 readonly SUBSCRIPTION_BASE64_FILE="${SUBSCRIPTION_DIR}/base64.txt"
 readonly SUBSCRIPTION_MIHOMO_FILE="${SUBSCRIPTION_DIR}/mihomo.yaml"
@@ -42,9 +44,11 @@ readonly STATE_SCHEMA_VERSION="${EASY_ALL_STATE_SCHEMA_VERSION}"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="Caddy"
 
 # easy_all 专用 Certbot lineage（design §6）：DNS-01 签发，不使用 Caddy DNS 插件，
-# 不开放 80 端口。凭据 0600 持久保存以便定时续期。
+# 不开放 80 端口。模式 4/6 使用独立 CDN lineage（easy_all-cdn）隔离直连与橙云 SAN。
 readonly CERTBOT_LINEAGE_NAME="easy_all"
 readonly CERTBOT_LIVE_DIR="${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE:-/etc/letsencrypt/live/easy_all}"
+readonly CERTBOT_CDN_LINEAGE_NAME="easy_all-cdn"
+readonly CERTBOT_CDN_LIVE_DIR="${EASY_ALL_CERTBOT_CDN_LIVE_DIR_OVERRIDE:-/etc/letsencrypt/live/easy_all-cdn}"
 readonly CERTBOT_DEPLOY_HOOK_FILE="${EASY_ALL_CERTBOT_HOOK_FILE_OVERRIDE:-/etc/letsencrypt/renewal-hooks/deploy/easy_all.sh}"
 readonly CLOUDFLARE_CREDENTIALS_FILE="${EASY_ALL_CLOUDFLARE_CREDENTIALS_OVERRIDE:-/etc/easy_all/cloudflare.ini}"
 
@@ -74,6 +78,8 @@ source "${RUNTIME_LIB_DIR}/singbox-runtime.sh"
 source "${RUNTIME_LIB_DIR}/singbox-subscription.sh"
 # shellcheck source=lib/caddy-runtime.sh
 source "${RUNTIME_LIB_DIR}/caddy-runtime.sh"
+# shellcheck source=lib/camouflage.sh
+source "${RUNTIME_LIB_DIR}/camouflage.sh"
 # shellcheck source=lib/cf-dns.sh
 source "${RUNTIME_LIB_DIR}/cf-dns.sh"
 # shellcheck source=lib/cf-origin-rule.sh
@@ -251,16 +257,31 @@ internal_traffic_prepare() {
 }
 
 # 内部入口：Certbot 定时 hook。自行取 runtime 锁，只部署已签发证书（不再次签发）。
+# 模式 4/6 同时维护主直连 lineage（easy_all）与橙云回源 lineage（easy_all-cdn）。
 internal_cert_deploy() {
-    local lineage=${RENEWED_LINEAGE:-}
+    local lineage=${RENEWED_LINEAGE:-} real_lineage="" primary_dir="" cdn_dir="" slot=""
     require_root
     [[ -n "${lineage}" ]] || die "缺少 RENEWED_LINEAGE；拒绝部署未知证书"
-    [[ "$(cd -- "${lineage}" 2>/dev/null && pwd)" == "$(cd -- "${CERTBOT_LIVE_DIR}" 2>/dev/null && pwd)" ]] \
-        || die "RENEWED_LINEAGE 不属于本工具：${lineage}"
+    real_lineage=$(cd -- "${lineage}" 2>/dev/null && pwd || true)
+    primary_dir=$(cd -- "${CERTBOT_LIVE_DIR}" 2>/dev/null && pwd || true)
+    cdn_dir=$(cd -- "${CERTBOT_CDN_LIVE_DIR}" 2>/dev/null && pwd || true)
+    if [[ -n "${real_lineage}" && -n "${primary_dir}" && "${real_lineage}" == "${primary_dir}" ]]; then
+        slot="primary"
+    elif [[ -n "${real_lineage}" && -n "${cdn_dir}" && "${real_lineage}" == "${cdn_dir}" ]]; then
+        slot="cdn"
+    else
+        die "RENEWED_LINEAGE 不属于本工具：${lineage}"
+    fi
     acquire_runtime_write_lock 30 \
         || die "证书部署未能取得运行时写锁；保留当前证书，请执行 sudo easy_all renew-cert"
     collect_installed_state
-    certificate_deploy || die "无法部署并验收新证书；保留现用证书与 Certbot lineage"
+    if [[ "${slot}" == "cdn" ]]; then
+        runtime_uses_split_cdn_cert \
+            || die "当前模式不使用独立 CDN 证书 lineage：${lineage}"
+        certificate_deploy_cdn || die "无法部署并验收新橙云回源证书；保留现用证书与 Certbot lineage"
+    else
+        certificate_deploy || die "无法部署并验收新证书；保留现用证书与 Certbot lineage"
+    fi
     save_state
     release_runtime_write_lock
     success "证书已部署"
@@ -334,10 +355,24 @@ runtime_has_cdn_entry() {
     state_protocol_has_cdn_entry "${PROTOCOL:-}"
 }
 
-# 公网 TCP 业务端口（design §2）。模式 1 的 443 与模式 4/6 的 8443 只对 Cloudflare 段开放。
+runtime_uses_split_cdn_cert() {
+    case "${PROTOCOL:-}" in
+    reality-cloudflare | combined-cloudflare) return 0 ;;
+    esac
+    return 1
+}
+
+# 公网 TCP 业务端口（design §2）。模式 1 的 443 与模式 4/6 的 8443 只对 Cloudflare 段开放；
+# 模式 3 采用单 443 合一，仅在旧版 v5.5.0 尚未执行 apply-cloud 迁移期间临时保留 8443。
 runtime_public_tcp_ports() {
     case "${PROTOCOL:-}" in
-    reality-cloudfront) printf '443 8443' ;;
+    reality-cloudfront)
+        if caddy_mode3_needs_legacy_8443; then
+            printf '443 8443'
+        else
+            printf '443'
+        fi
+        ;;
     reality-cloudflare) printf '443' ;;
     cloudfront) printf '443' ;;
     cloudflare) printf '' ;;
@@ -924,6 +959,19 @@ install_packages() {
     if [[ "${current_ntp}" != "yes" ]]; then
         timedatectl set-ntp true || warn "无法启用网络时间同步"
     fi
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || true
+    fi
+}
+
+# Reality 启用 max_time_difference=2m：状态输出中检查本机 NTP 同步状态，偏差过大提前告警。
+show_ntp_sync_warning() {
+    command -v timedatectl >/dev/null 2>&1 || return 0
+    local synced
+    synced=$(timedatectl show --property=NTPSynchronized --value 2>/dev/null || true)
+    if [[ -n "${synced}" && "${synced}" != "yes" ]]; then
+        printf '时间同步警告: 系统 NTP 尚未同步（NTPSynchronized=%s）；Reality 已开启 2m 时间窗校验，请核对 timedatectl\n' "${synced}"
+    fi
 }
 
 snapshot_fresh_install() {
@@ -1006,18 +1054,23 @@ configure_runtime_ufw() {
 # --- 证书（design §6） -------------------------------------------------------
 
 certificate_required_hosts() {
-    # 同一域名复用（如模式 5 的直连域名等于源站域名）只保留一个 -d；域名顺序不影响签发与展示。
+    # 同一域名复用（如模式 3/5 的直连域名等于源站域名）只保留一个 -d；域名顺序不影响签发与展示。
+    # 模式 4/6 采用双证书 SAN 隔离：主证书只覆盖 DIRECT_DOMAIN，CF_NODE_DOMAIN 由独立 CDN 证书承载。
     {
         if runtime_has_direct_entry; then
             printf '%s\n' "${DIRECT_DOMAIN}"
         fi
         if state_protocol_uses_cloudfront "${PROTOCOL}"; then
             printf '%s\n' "${CF_ORIGIN_DOMAIN}"
-        elif [[ "${PROTOCOL}" == "combined-cloudflare" || "${PROTOCOL}" == "reality-cloudflare" ]]; then
-            # 模式 4/6 的橙云节点域名同时是订阅站点：同一个 LE 证书覆盖直连与回源。
-            printf '%s\n' "${CF_NODE_DOMAIN}"
         fi
     } | sort -u
+    return 0
+}
+
+certificate_cdn_required_hosts() {
+    if runtime_uses_split_cdn_cert; then
+        printf '%s\n' "${CF_NODE_DOMAIN}"
+    fi
     return 0
 }
 
@@ -1037,6 +1090,27 @@ certificate_covers_host() {
         fi
     done < <(certificate_san_hosts "${cert}")
     return 1
+}
+
+certificate_covers_hosts() {
+    local cert=$1 host
+    shift
+    [[ -s "${cert}" && $# -gt 0 ]] || return 1
+    for host in "$@"; do
+        [[ -n "${host}" ]] || continue
+        certificate_covers_host "${cert}" "${host}" || return 1
+    done
+    return 0
+}
+
+# 精确 SAN 集合校验（防旧版合并证书把 CF_NODE_DOMAIN 带进直连 443/9443 握手）。
+certificate_covers_exact_hosts() {
+    local cert=$1 expected actual
+    shift
+    [[ -s "${cert}" && $# -gt 0 ]] || return 1
+    expected=$(printf '%s\n' "$@" | awk 'NF' | sort -u)
+    actual=$(certificate_san_hosts "${cert}" | awk 'NF' | sort -u)
+    [[ -n "${expected}" && "${actual}" == "${expected}" ]]
 }
 
 certificate_covers_required_hosts() {
@@ -1094,21 +1168,47 @@ certificate_chain_valid() {
     return "${status}"
 }
 
-certificate_check() {
-    local cert=${1:-${CERT_FILE}} key=${2:-${KEY_FILE}}
+certificate_check_for_hosts() {
+    local cert=$1 key=$2
+    shift 2
     [[ -s "${cert}" ]] || { warn "证书不存在：${cert}"; return 1; }
     [[ -s "${key}" ]] || { warn "证书私钥不存在：${key}"; return 1; }
     openssl x509 -in "${cert}" -noout -checkend 0 >/dev/null 2>&1 \
         || { warn "证书已过期：${cert}"; return 1; }
-    certificate_covers_required_hosts "${cert}" \
-        || { warn "证书未覆盖模式所需域名：$(certificate_required_hosts | paste -sd, -)"; return 1; }
+    certificate_covers_hosts "${cert}" "$@" \
+        || { warn "证书未覆盖所需域名：$(printf '%s\n' "$@" | paste -sd, -)"; return 1; }
     certificate_key_matches "${cert}" "${key}" \
         || { warn "证书与私钥不配对"; return 1; }
     certificate_chain_valid "${cert}" || { warn "证书链验证失败"; return 1; }
 }
 
+certificate_check() {
+    local cert=${1:-${CERT_FILE}} key=${2:-${KEY_FILE}} host
+    local -a hosts=()
+    while IFS= read -r host; do
+        [[ -n "${host}" ]] || continue
+        hosts+=("${host}")
+    done < <(certificate_required_hosts)
+    certificate_check_for_hosts "${cert}" "${key}" "${hosts[@]}"
+}
+
+certificate_cdn_check() {
+    local cert=${1:-${CDN_CERT_FILE}} key=${2:-${CDN_KEY_FILE}} host
+    local -a hosts=()
+    while IFS= read -r host; do
+        [[ -n "${host}" ]] || continue
+        hosts+=("${host}")
+    done < <(certificate_cdn_required_hosts)
+    certificate_check_for_hosts "${cert}" "${key}" "${hosts[@]}"
+}
+
 certificate_verify() {
     certificate_check "${CERT_FILE}" "${KEY_FILE}" || die "本机证书验收失败；请执行 sudo easy_all renew-cert"
+}
+
+certificate_cdn_verify() {
+    certificate_cdn_check "${CDN_CERT_FILE}" "${CDN_KEY_FILE}" \
+        || die "本机橙云回源证书验收失败；请执行 sudo easy_all renew-cert"
 }
 
 certbot_account_email_args() {
@@ -1127,26 +1227,47 @@ certbot_write_cloudflare_credentials() {
     chmod 0600 "${CLOUDFLARE_CREDENTIALS_FILE}"
 }
 
-certbot_issue_certificate() {
-    local force=${1:-0} host
+certbot_issue_certificate_for_lineage() {
+    local lineage=$1 force=$2 host
+    shift 2
     local -a args=(certonly --dns-cloudflare
         --dns-cloudflare-credentials "${CLOUDFLARE_CREDENTIALS_FILE}"
         --dns-cloudflare-propagation-seconds 30
-        --cert-name "${CERTBOT_LINEAGE_NAME}"
+        --cert-name "${lineage}"
         --non-interactive --agree-tos)
     command -v certbot >/dev/null 2>&1 || die "缺少 certbot；无法签发证书"
     [[ -s "${CLOUDFLARE_CREDENTIALS_FILE}" ]] \
         || die "缺少 Cloudflare DNS-01 凭据：${CLOUDFLARE_CREDENTIALS_FILE}"
     args+=("$(certbot_account_email_args)")
     [[ "${force}" != "1" ]] || args+=(--force-renewal)
-    while IFS= read -r host; do
+    for host in "$@"; do
         [[ -n "${host}" ]] || continue
         args+=(-d "${host}")
-    done < <(certificate_required_hosts)
-    info "通过 Cloudflare DNS-01 签发证书：$(certificate_required_hosts | paste -sd, -)"
+    done
+    info "通过 Cloudflare DNS-01 签发证书（${lineage}）：$(printf '%s\n' "$@" | paste -sd, -)"
     # 手动路径已持写锁：只让本次 certbot 子进程跳过自有 hook，由父命令在当前事务部署。
     EASY_ALL_CERTBOT_SKIP_DEPLOY=1 certbot "${args[@]}" \
         || die "Certbot DNS-01 证书签发失败；请确认 Cloudflare Token 具备 Zone:DNS:Edit 与 Zone:Zone:Read"
+}
+
+certbot_issue_certificate() {
+    local force=${1:-0} host
+    local -a hosts=()
+    while IFS= read -r host; do
+        [[ -n "${host}" ]] || continue
+        hosts+=("${host}")
+    done < <(certificate_required_hosts)
+    certbot_issue_certificate_for_lineage "${CERTBOT_LINEAGE_NAME}" "${force}" "${hosts[@]}"
+}
+
+certbot_issue_cdn_certificate() {
+    local force=${1:-0} host
+    local -a hosts=()
+    while IFS= read -r host; do
+        [[ -n "${host}" ]] || continue
+        hosts+=("${host}")
+    done < <(certificate_cdn_required_hosts)
+    certbot_issue_certificate_for_lineage "${CERTBOT_CDN_LINEAGE_NAME}" "${force}" "${hosts[@]}"
 }
 
 # --- 证书实际生效的运行时证据 ---------------------------------------------------
@@ -1181,21 +1302,22 @@ runtime_tls_peer_fingerprint() {
 }
 
 runtime_certificate_fingerprint_on_disk() {
-    local output
-    output=$(openssl x509 -in "${CERT_FILE}" -noout -fingerprint -sha256 2>/dev/null) \
+    local cert=${1:-${CERT_FILE}} output
+    output=$(openssl x509 -in "${cert}" -noout -fingerprint -sha256 2>/dev/null) \
         || return 1
     output=${output#*=}
     [[ -n "${output}" ]] || return 1
     printf '%s\n' "${output}" | tr '[:upper:]' '[:lower:]'
 }
 
-# 需要验证的本机端点：AnyTLS 入站（443）与 Caddy 站点（存在时）。
+# 需要验证的本机端点（<host> <port> <cert_file> 三元组）：直连入站（443）与 Caddy 站点（存在时）。
 runtime_served_certificate_endpoints() {
     if runtime_has_direct_entry; then
-        printf '%s 443\n' "${DIRECT_DOMAIN:-}"
+        printf '%s 443 %s\n' "${DIRECT_DOMAIN:-}" "${CERT_FILE}"
     fi
     if runtime_caddy_site_enabled; then
-        printf '%s %s\n' "$(caddy_site_host 2>/dev/null)" "$(caddy_site_port 2>/dev/null)"
+        printf '%s %s %s\n' "$(caddy_site_host 2>/dev/null)" "$(caddy_site_port 2>/dev/null)" \
+            "$(caddy_origin_cert_file 2>/dev/null)"
     fi
     return 0
 }
@@ -1203,10 +1325,11 @@ runtime_served_certificate_endpoints() {
 # 服务实际送出的证书必须与磁盘一致：证书轮换只换文件、配置内容不变，
 # Caddy/sing-box 可能仍持有旧证书；模式 1 的 Origin CA 吊销与 LE 续期都不得靠猜测。
 runtime_served_certificate_matches_disk() {
-    local host port expected actual attempt matched
-    expected=$(runtime_certificate_fingerprint_on_disk) || return 1
-    while IFS=' ' read -r host port; do
+    local host port cert_file expected actual attempt matched
+    while IFS=' ' read -r host port cert_file; do
         [[ -n "${host}" && -n "${port}" ]] || continue
+        cert_file=${cert_file:-${CERT_FILE}}
+        expected=$(runtime_certificate_fingerprint_on_disk "${cert_file}") || return 1
         matched=0
         for attempt in 1 2 3 4 5; do
             actual=$(runtime_tls_peer_fingerprint "${host}" "${port}" || true)
@@ -1224,32 +1347,33 @@ runtime_served_certificate_matches_disk() {
     return 0
 }
 
-# 证书部署事务：先对候选文件做完整验收，再备份现用证书/私钥与运行配置，
+# 证书部署事务：先对候选文件做完整验收，再备份现用证书/私钥，
 # 安装后（apply_services=1 时）重启 sing-box、重载 Caddy 并跑可选验收；
 # 任一步失败恢复备份并返回非零。首次安装传 0，由调用方在同一事务里启服务。
-certificate_deploy() {
-    local accept=${1:-} apply_services=${2:-1}
-    local chain="${CERTBOT_LIVE_DIR}/fullchain.pem" key="${CERTBOT_LIVE_DIR}/privkey.pem"
+certificate_deploy_for_slot() {
+    local live_dir=$1 dest_cert=$2 dest_key=$3 accept=${4:-} apply_services=${5:-1}
+    shift 5
+    local chain="${live_dir}/fullchain.pem" key="${live_dir}/privkey.pem"
     local backup had_cert=0 had_key=0
     [[ -s "${chain}" && -s "${key}" ]] || return 1
     install -d -m 0700 "${CERT_DIR}"
     backup=$(make_temp_dir) || return 1
     install -m 0644 "${chain}" "${backup}/fullchain.pem" || return 1
     install -m 0600 "${key}" "${backup}/privkey.pem" || return 1
-    certificate_check "${backup}/fullchain.pem" "${backup}/privkey.pem" \
+    certificate_check_for_hosts "${backup}/fullchain.pem" "${backup}/privkey.pem" "$@" \
         || { warn "新证书未通过验收；保留现用证书与 Certbot lineage"; return 1; }
-    if [[ -f "${CERT_FILE}" ]]; then
+    if [[ -f "${dest_cert}" ]]; then
         had_cert=1
-        install -m 0644 "${CERT_FILE}" "${backup}/previous-cert.pem" || return 1
+        install -m 0644 "${dest_cert}" "${backup}/previous-cert.pem" || return 1
     fi
-    if [[ -f "${KEY_FILE}" ]]; then
+    if [[ -f "${dest_key}" ]]; then
         had_key=1
-        install -m 0600 "${KEY_FILE}" "${backup}/previous-key.pem" || return 1
+        install -m 0600 "${dest_key}" "${backup}/previous-key.pem" || return 1
     fi
     if (
-        install -m 0644 "${backup}/fullchain.pem" "${CERT_FILE}" || exit 1
-        install -m 0600 "${backup}/privkey.pem" "${KEY_FILE}" || exit 1
-        certificate_verify || exit 1
+        install -m 0644 "${backup}/fullchain.pem" "${dest_cert}" || exit 1
+        install -m 0600 "${backup}/privkey.pem" "${dest_key}" || exit 1
+        certificate_check_for_hosts "${dest_cert}" "${dest_key}" "$@" || exit 1
         # 首次安装时运行配置还没发布：由调用方在同一事务里启服务，这里不做服务动作。
         [[ "${apply_services}" != "1" ]] || runtime_apply_runtime_services 1 || exit 1
         # 新证书必须真的能被本机 TLS 握手送达，否则恢复旧副本（由调用方/此处回滚）。
@@ -1261,16 +1385,16 @@ certificate_deploy() {
     fi
     warn "证书部署失败，恢复部署前的证书与私钥"
     if ((had_cert == 1)); then
-        install -m 0644 "${backup}/previous-cert.pem" "${CERT_FILE}" \
+        install -m 0644 "${backup}/previous-cert.pem" "${dest_cert}" \
             || warn "恢复现用证书失败；请执行 sudo easy_all renew-cert"
     else
-        rm -f -- "${CERT_FILE}"
+        rm -f -- "${dest_cert}"
     fi
     if ((had_key == 1)); then
-        install -m 0600 "${backup}/previous-key.pem" "${KEY_FILE}" \
+        install -m 0600 "${backup}/previous-key.pem" "${dest_key}" \
             || warn "恢复现用证书私钥失败；请执行 sudo easy_all renew-cert"
     else
-        rm -f -- "${KEY_FILE}"
+        rm -f -- "${dest_key}"
     fi
     [[ "${apply_services}" != "1" ]] \
         || runtime_apply_runtime_services 1 \
@@ -1279,11 +1403,50 @@ certificate_deploy() {
     return 1
 }
 
+certificate_deploy() {
+    local accept=${1:-} apply_services=${2:-1} host
+    local -a hosts=()
+    while IFS= read -r host; do
+        [[ -n "${host}" ]] || continue
+        hosts+=("${host}")
+    done < <(certificate_required_hosts)
+    certificate_deploy_for_slot "${CERTBOT_LIVE_DIR}" "${CERT_FILE}" "${KEY_FILE}" \
+        "${accept}" "${apply_services}" "${hosts[@]}"
+}
+
+certificate_deploy_cdn() {
+    local accept=${1:-} apply_services=${2:-1} host
+    local -a hosts=()
+    while IFS= read -r host; do
+        [[ -n "${host}" ]] || continue
+        hosts+=("${host}")
+    done < <(certificate_cdn_required_hosts)
+    certificate_deploy_for_slot "${CERTBOT_CDN_LIVE_DIR}" "${CDN_CERT_FILE}" "${CDN_KEY_FILE}" \
+        "${accept}" "${apply_services}" "${hosts[@]}"
+}
+
 certificate_lineage_is_newer() {
     local chain="${CERTBOT_LIVE_DIR}/fullchain.pem"
     [[ -s "${chain}" ]] || return 1
     certificate_check "${chain}" "${CERTBOT_LIVE_DIR}/privkey.pem" >/dev/null 2>&1 || return 1
+    if runtime_uses_split_cdn_cert \
+        && ! certificate_covers_exact_hosts "${chain}" "${DIRECT_DOMAIN}"; then
+        return 1
+    fi
     if [[ -s "${CERT_FILE}" ]] && cmp -s "${chain}" "${CERT_FILE}"; then
+        return 1
+    fi
+    return 0
+}
+
+certificate_cdn_lineage_is_newer() {
+    local chain="${CERTBOT_CDN_LIVE_DIR}/fullchain.pem"
+    [[ -s "${chain}" ]] || return 1
+    certificate_cdn_check "${chain}" "${CERTBOT_CDN_LIVE_DIR}/privkey.pem" >/dev/null 2>&1 || return 1
+    if ! certificate_covers_exact_hosts "${chain}" "${CF_NODE_DOMAIN}"; then
+        return 1
+    fi
+    if [[ -s "${CDN_CERT_FILE}" ]] && cmp -s "${chain}" "${CDN_CERT_FILE}"; then
         return 1
     fi
     return 0
@@ -1310,33 +1473,29 @@ remove_certbot_deploy_hook() {
 }
 
 certificate_remove_lineage() {
-    local etc_dir
+    local etc_dir cdn_etc_dir
     etc_dir=$(dirname -- "$(dirname -- "${CERTBOT_LIVE_DIR}")")
     rm -rf -- "${CERTBOT_LIVE_DIR}" \
         "${etc_dir}/archive/${CERTBOT_LINEAGE_NAME}" \
         "${etc_dir}/renewal/${CERTBOT_LINEAGE_NAME}.conf"
+    cdn_etc_dir=$(dirname -- "$(dirname -- "${CERTBOT_CDN_LIVE_DIR}")")
+    rm -rf -- "${CERTBOT_CDN_LIVE_DIR}" \
+        "${cdn_etc_dir}/archive/${CERTBOT_CDN_LINEAGE_NAME}" \
+        "${cdn_etc_dir}/renewal/${CERTBOT_CDN_LINEAGE_NAME}.conf"
 }
 
 # --- Reality 自偷入口（模式 3/4） ---------------------------------
 
 # 伪装站静态页面与 Caddy 配置同生命周期：写 Caddy 配置前必须先有页面，
-# 否则 Caddy 的 root 指向不存在的文件，首页探活必失败（见 runtime_write_config）。
+# 已有实例变体或用户自定义页面时绝不覆盖（见 lib/camouflage.sh）。
 reality_deploy_camouflage_page() {
-    local source="${SCRIPT_DIR}/../templates/camouflage-login.html"
-    [[ -s "${source}" ]] || die "缺少伪装站页面模板：${source}"
-    install -d -m 0755 "${CAMOUFLAGE_DIR}" \
-        || die "创建伪装站目录失败：${CAMOUFLAGE_DIR}"
-    install -m 0644 "${source}" "${CAMOUFLAGE_DIR}/index.html" \
-        || die "部署伪装站页面失败：${CAMOUFLAGE_DIR}/index.html"
+    camouflage_deploy_site
 }
 
 reality_remove_camouflage_page() {
     # 只有 Reality 模式写过伪装站；其他模式卸载不得碰到 /var/www 下的宿主路径。
     runtime_has_reality_entry || return 0
-    [[ -n "${CAMOUFLAGE_DIR:-}" ]] || return 0
-    rm -f -- "${CAMOUFLAGE_DIR}/index.html" 2>/dev/null || true
-    # 只回收本工具创建的空目录；用户覆写的非空目录保留。
-    rmdir "${CAMOUFLAGE_DIR}" 2>/dev/null || true
+    camouflage_remove_managed_files
 }
 
 # Reality keypair 必须在输入阶段之后、任何证书/配置写入之前生成并落盘。
@@ -1494,30 +1653,40 @@ runtime_singbox_required_ports() {
     printf '%s\n' "${ports# }"
 }
 
-# sing-box 入站与 Caddy 站点分别验收：Caddy health 不能替代核心入站断言。
-# 模式 3/4 的伪装站不提供 /easy_all-health，因此订阅站点与伪装站分开判定，
-# 并用 443 回洛链路（sing-box → 127.0.0.1:9443）做真实探测。
+# sing-box 入站与 Caddy 站点分别验收：Caddy 探活改走 /subscribe?token=invalid → 403
+# （兼校验 X-Robots-Tag 与无 Server 响应头），在首装/blocked/subscription_ok=0 下恒成立，
+# 不再依赖明文 /easy_all-health 横幅；模式 3/4 额外探测 443 回落链路。
 runtime_caddy_probe_ok() {
+    local probe_headers probe_status
     runtime_caddy_site_enabled || return 0
     systemctl is-active --quiet "${CADDY_SERVICE}" 2>/dev/null || return 1
     if runtime_subscription_site_enabled; then
         runtime_local_probe_context
-        [[ "$(runtime_local_curl /easy_all-health || true)" == "easy_all ok" ]] || return 1
+        probe_headers="${RUNTIME_TMP}/caddy-probe.headers"
+        probe_status=$(runtime_local_curl "/subscribe?token=invalid" \
+            -D "${probe_headers}" -o /dev/null -w '%{http_code}' || true)
+        [[ "${probe_status}" == "403" ]] || return 1
+        grep -Eqi '^x-robots-tag:.*noindex' "${probe_headers}" || return 1
+        ! grep -Eqi '^server:' "${probe_headers}" || return 1
     fi
     runtime_reality_fallback_ok
 }
 
-# 非 Reality 模式没有回洛链路，直接视为通过。
+# 非 Reality 模式没有回落链路，直接视为通过。
 runtime_reality_fallback_ok() {
     runtime_has_reality_entry || return 0
-    local response code
-    response=$(curl --proto '=https' --noproxy '*' -sS --connect-timeout 5 --max-time 20 \
-        -w '\n%{http_code}' --resolve "${DIRECT_DOMAIN}:443:127.0.0.1" \
+    [[ -s "${CAMOUFLAGE_DIR}/index.html" ]] || return 1
+    local body_file headers_file code
+    body_file="${RUNTIME_TMP}/reality-fallback.body"
+    headers_file="${RUNTIME_TMP}/reality-fallback.headers"
+    code=$(curl --proto '=https' --noproxy '*' -sS --connect-timeout 5 --max-time 20 \
+        -D "${headers_file}" -o "${body_file}" -w '%{http_code}' \
+        --resolve "${DIRECT_DOMAIN}:443:127.0.0.1" \
         "https://${DIRECT_DOMAIN}:443/" 2>/dev/null) || return 1
-    code=${response##*$'\n'}
     [[ "${code}" == "200" ]] || return 1
-    # 回落响应必须是伪装站首页：既证明 443 已由 sing-box 接管，也证明它透明转发到了 9443。
-    [[ "${response}" == *'Workspace Sign In'* ]]
+    ! grep -Eqi '^server:' "${headers_file}" || return 1
+    # 回落响应体必须与磁盘伪装站首页逐字节一致：兼容所有随机变体模板与用户自定义页面。
+    cmp -s "${body_file}" "${CAMOUFLAGE_DIR}/index.html"
 }
 
 validate_protocol_runtime() {
@@ -1788,6 +1957,23 @@ snapshot_subscription_update() {
     else
         install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/private-key.missing"
     fi
+    if [[ -f "${CDN_CERT_FILE}" ]]; then
+        install -m 0644 "${CDN_CERT_FILE}" "${UPDATE_SUB_BACKUP_DIR}/cdn-certificate.pem"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/cdn-certificate.missing"
+    fi
+    if [[ -f "${CDN_KEY_FILE}" ]]; then
+        install -m 0600 "${CDN_KEY_FILE}" "${UPDATE_SUB_BACKUP_DIR}/cdn-private.key"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/cdn-private-key.missing"
+    fi
+    local mode3_marker
+    mode3_marker=$(caddy_mode3_migration_marker)
+    if [[ -f "${mode3_marker}" ]]; then
+        install -m 0600 "${mode3_marker}" "${UPDATE_SUB_BACKUP_DIR}/mode3-single443.migrated"
+    else
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/mode3-single443.missing"
+    fi
     if [[ -d "${SUBSCRIPTION_DIR}" ]]; then
         cp -a "${SUBSCRIPTION_DIR}" "${UPDATE_SUB_BACKUP_DIR}/subscriptions"
     else
@@ -1824,6 +2010,23 @@ rollback_subscription_update() {
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/private.key" "${KEY_FILE}"
     elif [[ -f "${UPDATE_SUB_BACKUP_DIR}/private-key.missing" ]]; then
         rm -f -- "${KEY_FILE}"
+    fi
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/cdn-certificate.pem" ]]; then
+        install -m 0644 "${UPDATE_SUB_BACKUP_DIR}/cdn-certificate.pem" "${CDN_CERT_FILE}"
+    elif [[ -f "${UPDATE_SUB_BACKUP_DIR}/cdn-certificate.missing" ]]; then
+        rm -f -- "${CDN_CERT_FILE}"
+    fi
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/cdn-private.key" ]]; then
+        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/cdn-private.key" "${CDN_KEY_FILE}"
+    elif [[ -f "${UPDATE_SUB_BACKUP_DIR}/cdn-private-key.missing" ]]; then
+        rm -f -- "${CDN_KEY_FILE}"
+    fi
+    local mode3_marker
+    mode3_marker=$(caddy_mode3_migration_marker)
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/mode3-single443.migrated" ]]; then
+        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/mode3-single443.migrated" "${mode3_marker}"
+    elif [[ -f "${UPDATE_SUB_BACKUP_DIR}/mode3-single443.missing" ]]; then
+        rm -f -- "${mode3_marker}"
     fi
     if [[ -d "${UPDATE_SUB_BACKUP_DIR}/subscriptions" ]]; then
         publish_subscription_files "${UPDATE_SUB_BACKUP_DIR}/subscriptions"
@@ -2010,11 +2213,8 @@ uninstall_incomplete() {
             || die "回收 mangle 计量规则失败；已保留本机状态与命令，修正后重试 uninstall"
     fi
     # 模式 3/4 可能已部署伪装站页面：这条路径不 source state、也不知道协议，
-    # 因此按固定路径回收，口径与 cleanup_partial_install 一致（只删本工具写的文件与空目录）。
-    if [[ -n "${CAMOUFLAGE_DIR:-}" ]]; then
-        rm -f -- "${CAMOUFLAGE_DIR}/index.html" 2>/dev/null || true
-        rmdir "${CAMOUFLAGE_DIR}" 2>/dev/null || true
-    fi
+    # 因此按受管清单或固定受管集合回收（只删本工具写的文件与空目录，不碰用户文件）。
+    camouflage_remove_managed_files
     remove_certbot_deploy_hook || true
     certificate_remove_lineage || true
     restore_platform_security_state || warn "SSH 配置恢复失败；请通过服务商 Console 检查"

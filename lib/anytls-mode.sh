@@ -163,20 +163,53 @@ anytls_remove_origin_rule() {
 
 # --- 证书 ---------------------------------------------------------------------
 
-# 证书由 runtime-core 的 DNS-01 路径覆盖 certificate_required_hosts（direct + 已部署 sub）。
+# 证书由 runtime-core 的 DNS-01 路径分别签发：
+#   - 主证书（easy_all lineage）只覆盖 DIRECT_DOMAIN（9443 伪装站 / 443 AnyTLS，防 SAN 泄露 CF_NODE_DOMAIN）；
+#   - 回源证书（easy_all-cdn lineage）只覆盖 CF_NODE_DOMAIN（8443 橙云回源）。
 cdn_issue_certificate() {
     local force=${1:-0}
+    local need_direct=0 need_cdn=0 direct_force=${force} cdn_force=${force}
     install -d -m 0700 "${CERT_DIR}"
-    if [[ "${force}" != "1" ]] \
-        && certificate_covers_required_hosts "${CERT_FILE}" \
-        && certificate_key_matches \
-        && openssl x509 -in "${CERT_FILE}" -noout -checkend 2592000 >/dev/null 2>&1; then
+    if [[ "${force}" == "1" ]] \
+        || ! certificate_covers_exact_hosts "${CERT_FILE}" "${DIRECT_DOMAIN}" \
+        || ! certificate_key_matches "${CERT_FILE}" "${KEY_FILE}" \
+        || ! openssl x509 -in "${CERT_FILE}" -noout -checkend 2592000 >/dev/null 2>&1; then
+        need_direct=1
+    fi
+    if [[ "${force}" == "1" ]] \
+        || ! certificate_covers_exact_hosts "${CDN_CERT_FILE}" "${CF_NODE_DOMAIN}" \
+        || ! certificate_key_matches "${CDN_CERT_FILE}" "${CDN_KEY_FILE}" \
+        || ! openssl x509 -in "${CDN_CERT_FILE}" -noout -checkend 2592000 >/dev/null 2>&1; then
+        need_cdn=1
+    fi
+    if ((need_direct == 0 && need_cdn == 0)); then
         certificate_verify
+        certificate_cdn_verify
         return 0
     fi
     certbot_write_cloudflare_credentials
-    certbot_issue_certificate "${force}"
-    certificate_deploy "" 0 || die "Certbot 未生成覆盖模式所需域名的有效证书"
+    if ((need_direct == 1)); then
+        # 旧版合并证书同时覆盖 DIRECT_DOMAIN 与 CF_NODE_DOMAIN：缩容 SAN 时即使未临近到期
+        # 也必须显式 --force-renewal，防止 Certbot 跳过重签留下串域 SAN。
+        if [[ -s "${CERTBOT_LIVE_DIR}/fullchain.pem" ]] \
+            && ! certificate_covers_exact_hosts "${CERTBOT_LIVE_DIR}/fullchain.pem" "${DIRECT_DOMAIN}"; then
+            direct_force=1
+        fi
+        certbot_issue_certificate "${direct_force}"
+        certificate_deploy "" 0 || die "Certbot 未生成仅覆盖直连域名的有效证书"
+    else
+        certificate_verify
+    fi
+    if ((need_cdn == 1)); then
+        if [[ -s "${CERTBOT_CDN_LIVE_DIR}/fullchain.pem" ]] \
+            && ! certificate_covers_exact_hosts "${CERTBOT_CDN_LIVE_DIR}/fullchain.pem" "${CF_NODE_DOMAIN}"; then
+            cdn_force=1
+        fi
+        certbot_issue_cdn_certificate "${cdn_force}"
+        certificate_deploy_cdn "" 0 || die "Certbot 未生成仅覆盖橙云节点域名的有效证书"
+    else
+        certificate_cdn_verify
+    fi
 }
 
 # --- 运行配置与订阅渲染 -------------------------------------------------------
@@ -329,14 +362,11 @@ anytls_subscription_ready() {
 
 # --- 公网验收 -----------------------------------------------------------------
 
-# 订阅经橙云 → Origin Rule 8443 → Caddy：公网 200 是链路与 strict 的二次证据。
+# 订阅经橙云 → Origin Rule 8443 → Caddy：公网 200/403 是链路与 strict 的二次证据（无 /easy_all-health）。
 anytls_public_subscription_ok() {
     local token body decoded status marker
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS:-[]}") || return 1
     [[ -n "${token}" && "${token}" != "null" ]] || return 1
-    if [[ "$(public_dns_curl "https://${SUBSCRIPTION_DOMAIN}/easy_all-health")" != "easy_all ok" ]]; then
-        return 1
-    fi
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         "https://${SUBSCRIPTION_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
@@ -391,7 +421,7 @@ show_node() {
 }
 
 show_status() {
-    local cert_enddate=""
+    local cert_enddate="" cdn_cert_enddate=""
     require_root
     collect_installed_state
     printf '模式: %s\n' "${CDN_MODE_LABEL}"
@@ -399,6 +429,7 @@ show_status() {
     show_tcp_acceleration_status
     if runtime_has_reality_entry; then
         printf '直连域名: %s（VLESS Reality，TCP 443 公网；伪装站 127.0.0.1:9443）\n' "${DIRECT_DOMAIN}"
+        show_ntp_sync_warning
     else
         printf '直连域名: %s（AnyTLS，TCP 443 公网）\n' "${DIRECT_DOMAIN}"
     fi
@@ -412,10 +443,19 @@ show_status() {
     fi
     if [[ -s "${CERT_FILE}" ]]; then
         cert_enddate=$(openssl x509 -in "${CERT_FILE}" -noout -enddate 2>/dev/null | sed -n 's/^notAfter=//p')
-        printf '证书到期: %s（覆盖 %s）\n' "${cert_enddate:-未知}" \
+        printf '直连证书到期: %s（覆盖 %s）\n' "${cert_enddate:-未知}" \
             "$(certificate_required_hosts | paste -sd, -)"
     else
-        printf '证书: 缺失；请执行 sudo easy_all renew-cert\n'
+        printf '直连证书: 缺失；请执行 sudo easy_all renew-cert\n'
+    fi
+    if [[ -s "${CDN_CERT_FILE}" ]]; then
+        cdn_cert_enddate=$(openssl x509 -in "${CDN_CERT_FILE}" -noout -enddate 2>/dev/null | sed -n 's/^notAfter=//p')
+        printf '橙云回源证书到期: %s（覆盖 %s）\n' "${cdn_cert_enddate:-未知}" \
+            "$(certificate_cdn_required_hosts | paste -sd, -)"
+    elif [[ -s "${CERT_FILE}" ]]; then
+        printf '橙云回源证书: 暂沿用旧版共享证书；建议执行 sudo easy_all renew-cert 完成双证书 SAN 隔离\n'
+    else
+        printf '橙云回源证书: 缺失；请执行 sudo easy_all renew-cert\n'
     fi
     printf 'sing-box: '
     systemctl is-active --quiet "${SINGBOX_SERVICE}" 2>/dev/null \
@@ -441,6 +481,9 @@ apply_easy_all() {
     acquire_runtime_write_lock
     collect_installed_state
     cdn_require_valid_subscription
+    if [[ -s "${CERT_FILE}" && ! -s "${CDN_CERT_FILE}" ]]; then
+        warn "检测到旧版共享证书（尚未拆分独立橙云回源证书）；本次 apply 将暂沿用现用证书，建议随后执行 sudo easy_all renew-cert 完成双证书 SAN 隔离"
+    fi
     snapshot_subscription_update
     configure_tcp_acceleration
     configure_ipv4_only
@@ -541,7 +584,7 @@ update_subscription() {
 }
 
 renew_certificate() {
-    local direct_label=AnyTLS
+    local direct_label=AnyTLS need_direct_issue=0 need_cdn_issue=0
     runtime_has_reality_entry && direct_label=Reality
     require_root
     acquire_runtime_write_lock
@@ -551,11 +594,25 @@ renew_certificate() {
     install_certbot_deploy_hook
     certbot_write_cloudflare_credentials
     if certificate_lineage_is_newer; then
-        certificate_deploy "" 0 || die "部署已签发的新证书失败"
+        certificate_deploy "" 0 || die "部署已签发的新直连证书失败"
     else
-        cdn_issue_certificate 1
+        need_direct_issue=1
+    fi
+    if certificate_cdn_lineage_is_newer; then
+        certificate_deploy_cdn "" 0 || die "部署已签发的新橙云回源证书失败"
+    else
+        need_cdn_issue=1
+    fi
+    if ((need_direct_issue == 1)); then
+        certbot_issue_certificate 1
+        certificate_deploy "" 0 || die "Certbot 未生成仅覆盖直连域名的有效证书"
+    fi
+    if ((need_cdn_issue == 1)); then
+        certbot_issue_cdn_certificate 1
+        certificate_deploy_cdn "" 0 || die "Certbot 未生成仅覆盖橙云节点域名的有效证书"
     fi
     certificate_verify
+    certificate_cdn_verify
     write_runtime_config
     runtime_apply_runtime_services 1
     validate_protocol_runtime
@@ -566,7 +623,7 @@ renew_certificate() {
     fi
     save_state
     commit_subscription_update
-    success "证书已更新（${direct_label} 与订阅入口使用同一 lineage）"
+    success "证书已更新（${direct_label} 与橙云回源已使用独立证书 lineage，SAN 已隔离）"
 }
 
 cdn_local_uninstall_common() {
@@ -589,8 +646,9 @@ cdn_local_uninstall_common() {
     fi
     rm -f -- "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
-    rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" "$(dirname -- "${SUBSCRIPTION_DIR}")" \
+    rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" \
         "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"
+    rmdir "$(dirname -- "${SUBSCRIPTION_DIR}")" 2>/dev/null || true
 }
 
 cdn_print_cloud_inventory() {
@@ -691,11 +749,12 @@ cleanup_partial_install() {
     certificate_remove_lineage || true
     remove_daily_reboot_schedule || true
     for path in "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}" \
-        "${SUBSCRIPTION_DIR}" "$(dirname -- "${SUBSCRIPTION_DIR}")" \
+        "${SUBSCRIPTION_DIR}" \
         "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"; do
         [[ -n "${path}" ]] || continue
         rm -rf -- "${path}" 2>/dev/null || { warn "删除残留失败：${path}"; failed=1; }
     done
+    rmdir "$(dirname -- "${SUBSCRIPTION_DIR}")" 2>/dev/null || true
     systemctl daemon-reload >/dev/null 2>&1 || true
     if ((failed == 1)); then
         warn "业务残留未完全删除；已保留安装进度标记与安装前快照，修正权限/挂载后重试 sudo easy_all cleanup-partial"

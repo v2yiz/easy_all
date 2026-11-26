@@ -35,6 +35,7 @@ TIMESTAMP_PARTS_RE = re.compile(
 SRC_RE = re.compile(r'(?:^|\s)SRC=(\S+)')
 DPT_RE = re.compile(r'(?:^|\s)DPT=(\S+)')
 ALERT_RE = re.compile(r'(?i)\b(warn|error)\b')
+REALITY_FALLBACK_MARKER = 'REALITY: processed invalid connection'
 
 
 class InputError(Exception):
@@ -165,7 +166,8 @@ def build_parser():
         usage='%(prog)s [--since <时间范围>] [--my-ip <IPv4> ...]',
         description=(
             '分析直连 TCP 443 的 GFW_CHK: 内核日志。\n'
-            '输出只是基于连接时序与频次的候选线索，不构成 GFW 归因证明。'),
+            '输出只是基于连接时序与频次的候选线索，不构成 GFW 归因证明。\n'
+            '注：模式 3（Single-443）下 CloudFront 回源流量（订阅刷新与应急 CDN）也共用 TCP 443。'),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
@@ -193,6 +195,11 @@ def analyze(args):
         ['journalctl', '-u', SINGBOX_UNIT, '--since', since, '--no-pager'],
         SINGBOX_LOG_OVERRIDE, 'sing-box 日志')
     alerts = count_alerts(singbox_log)
+    reality_fallbacks = (
+        sum(1 for line in singbox_log.splitlines()
+            if ALERT_RE.search(line) and REALITY_FALLBACK_MARKER in line)
+        if alerts else 0
+    )
 
     counts = count_sources(records)
     references = select_references(counts, args.my_ips)
@@ -210,7 +217,11 @@ def analyze(args):
     else:
         print('正常客户端参照：参照样本不足（未指定 --my-ip，且没有出现次数 >= {} 的来源）'
               .format(REF_MIN_COUNT))
-    print('sing-box 同期 WARN/ERROR：{} 条'.format(alerts))
+    if reality_fallbacks:
+        print('sing-box 同期 WARN/ERROR：{} 条（其中 Reality 非授权回落：{} 条，含主动探测及模式 3 回源流量）'
+              .format(alerts, reality_fallbacks))
+    else:
+        print('sing-box 同期 WARN/ERROR：{} 条'.format(alerts))
     if malformed:
         print('注意：有 {} 条匹配记录的时间戳或来源地址无法解析，本结果不完整'.format(malformed))
 

@@ -30,7 +30,7 @@
 
 ## 3. 各客户端注意事项
 
-- **模式 3（VLESS Reality 直连 + CloudFront）**：订阅同时下发两个本机节点——Reality 直连（`flow=xtls-rprx-vision` + `public-key` / `short-id`）与 CloudFront VLESS-WS。Reality 节点在 Mihomo 侧**不写** `support-x25519mlkem768`（保持经典 X25519，与服务端 sing-box 1.14.4 握手一致）；sing-box 官方客户端使用自带的 Reality 实现，无需额外开关。直连不可用时切到 CDN 节点即可。
+- **模式 3/4（VLESS Reality 直连 + CloudFront / CloudFlare）**：订阅同时下发两个本机节点——Reality 直连（`flow=xtls-rprx-vision` + `public-key` / `short-id`）与 CDN 节点（模式 3 为 CloudFront VLESS-WS，模式 4 为橙云 VLESS HTTPUpgrade）。Reality 节点在 Mihomo 侧**不写** `support-x25519mlkem768`（保持经典 X25519，与服务端 sing-box 1.14.4 握手一致）；sing-box 官方客户端使用自带的 Reality 实现，无需额外开关。**时钟同步要求**：服务端已开启 `max_time_difference: 2m` 抗重放校验，客户端设备必须开启系统自动校时；若本机与服务端时钟偏差超过 2 分钟，握手会静默回落到伪装站导致直连失败。直连不可用时可先切到 CDN 节点。
 - **sing-box 官方客户端（SFA / SFI / SFM / SFT / SFW / SFL）**：
   - 内核必须 **≥ 1.14.0**（旧版本会报错无法启动）。
   - 首次启动需联网拉取内置规则集；官方 sing-box 不支持的协议（如 `xhttp`、`mieru`）会在生成订阅时自动跳过。
@@ -47,5 +47,6 @@
 - **订阅更新失败（`i/o timeout` / `no such host`）**：多为本地 DNS 污染，可在客户端设置中开启自定义 DNS 覆写，填写 `https://223.5.5.5/dns-query` 或 `https://1.1.1.1/dns-query` 后重试。
 - **订阅正常但无法连接**：
   1. 确认客户端内核版本满足要求（Mihomo ≥ 1.19.9 / sing-box ≥ 1.14.0），且未开启“跳过证书校验”；
-  2. 若同时有直连与 CDN 节点，尝试在 `PROXY` 分组切换到另一节点确认是否为单条线路受阻；
-  3. 如仍异常或需调整优选地址/检查服务端状态，请参阅[运维指南](operations-guide.md)。
+  2. **模式 3/4 Reality 直连无法连通**：检查客户端设备是否开启自动网络校时（服务端开启了 2 分钟时间窗校验，时钟偏差超过 2 分钟时握手会静默回落到伪装站；服务端也可按[运维指南](operations-guide.md#9-常见问题排查速查表)用 `timedatectl` 核对 NTP）；
+  3. 若同时有直连与 CDN 节点，尝试在 `PROXY` 分组切换到另一节点确认是否为单条线路受阻；
+  4. 如仍异常或需调整优选地址/检查服务端状态，请参阅[运维指南](operations-guide.md)。

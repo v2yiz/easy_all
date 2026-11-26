@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="generator" content="__BRAND__ Docs __BUILD_ID__">
+<title>__TITLE__ — __BRAND__</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/assets/site.css">
+</head>
+<body class="page-docs">
+<header class="topbar">
+  <div class="shell topbar-inner">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>__BRAND__</span><span class="version-pill">API v2</span></a>
+    <nav class="nav" aria-label="Documentation">
+      <a href="/#quickstart">Quickstart</a>
+      <a href="/#authentication">Authentication</a>
+      <a href="/#webhooks">Webhooks</a>
+      <a href="/#sdks">SDKs</a>
+    </nav>
+  </div>
+</header>
+<main class="shell main-stack">
+  <section class="hero">
+    <p class="eyebrow">Developer Reference</p>
+    <h1>__TITLE__</h1>
+    <p class="subtitle">__SUBTITLE__</p>
+    <p class="meta-line">__TAGLINE__</p>
+    <div class="action-row">
+      <a class="btn-primary btn-inline" href="/#quickstart">Read Quickstart</a>
+      <a class="btn-secondary btn-inline" href="/#authentication">Authentication</a>
+    </div>
+  </section>
+
+  <section class="grid-2" aria-label="Documentation topics">
+    <a class="card doc-card" href="/#quickstart">
+      <h2>Quickstart</h2>
+      <p>Send your first authenticated request to <code>__DOMAIN__</code> and parse paginated JSON collections.</p>
+    </a>
+    <a class="card doc-card" href="/#authentication">
+      <h2>Authentication</h2>
+      <p>Configure scoped Bearer tokens, key rotation schedules, and least-privilege workspace roles.</p>
+    </a>
+    <a class="card doc-card" href="/#webhooks">
+      <h2>Webhooks</h2>
+      <p>Receive signed HTTP event deliveries with HMAC-SHA256 verification and automatic retries.</p>
+    </a>
+    <a class="card doc-card" href="/#sdks">
+      <h2>SDKs &amp; Tooling</h2>
+      <p>Typed client packages for TypeScript, Python, and Go with built-in idempotency support.</p>
+    </a>
+  </section>
+
+  <section id="quickstart" class="card doc-section">
+    <h2>Quickstart</h2>
+    <p>All API endpoints are served over HTTPS from <code>__DOMAIN__</code> using UTF-8 JSON payloads. Include an API token in the <code>Authorization</code> header:</p>
+    <pre><code>curl -sS https://__DOMAIN__/v2/projects \
+  -H "Authorization: Bearer &lt;api_token&gt;" \
+  -H "Accept: application/json"</code></pre>
+    <p>Successful responses return a deterministic envelope with cursor pagination:</p>
+    <pre><code>{
+  "object": "list",
+  "data": [
+    { "id": "prj_01j8k2m4", "name": "core-service", "region": "us-east" }
+  ],
+  "next_cursor": null
+}</code></pre>
+  </section>
+
+  <section id="authentication" class="card doc-section">
+    <h2>Authentication</h2>
+    <p>Create environment-scoped tokens from your workspace settings. Tokens follow the <code>Bearer</code> scheme and may be restricted to read-only or deployment scopes.</p>
+    <ul class="bullet-list">
+      <li>Requests without valid credentials receive HTTP <code>401 Unauthorized</code>.</li>
+      <li>Requests lacking required scope receive HTTP <code>403 Forbidden</code>.</li>
+      <li>Rotate tokens periodically using overlapping active keys for zero-downtime rollover.</li>
+    </ul>
+  </section>
+
+  <section id="webhooks" class="card doc-section">
+    <h2>Webhooks</h2>
+    <p>Event subscriptions deliver signed <code>POST</code> requests to your configured HTTPS listener. Verify the <code>X-Signature-256</code> header against the raw request body using your endpoint signing secret.</p>
+    <div class="table-wrap">
+      <table class="meta-table">
+        <thead>
+          <tr><th>Event</th><th>Description</th><th>Retry Policy</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>deployment.created</code></td><td>Emitted when a new release artifact is registered</td><td>Exponential, 24h max</td></tr>
+          <tr><td><code>deployment.ready</code></td><td>Emitted after health checks pass in target regions</td><td>Exponential, 24h max</td></tr>
+          <tr><td><code>token.rotated</code></td><td>Audit event for scheduled credential replacement</td><td>Exponential, 24h max</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="sdks" class="card doc-section">
+    <h2>SDKs</h2>
+    <p>Official client bindings mirror the v2 REST specification and support automatic backoff on HTTP <code>429</code> and <code>5xx</code> responses.</p>
+    <div class="grid-3">
+      <div class="subcard">
+        <h3>TypeScript</h3>
+        <p class="row-desc">ESM &amp; CommonJS runtime support with zero transitive dependencies.</p>
+        <a class="text-link" href="/#quickstart">Setup guide &rarr;</a>
+      </div>
+      <div class="subcard">
+        <h3>Python</h3>
+        <p class="row-desc">Synchronous and asyncio clients typed with standard dataclasses.</p>
+        <a class="text-link" href="/#quickstart">Setup guide &rarr;</a>
+      </div>
+      <div class="subcard">
+        <h3>Go</h3>
+        <p class="row-desc">Context-aware <code>net/http</code> transport with structured errors.</p>
+        <a class="text-link" href="/#quickstart">Setup guide &rarr;</a>
+      </div>
+    </div>
+  </section>
+</main>
+<footer class="site-footer">
+  <div class="shell footer-inner">
+    <p>__FOOTER_NOTE__ · Developer Desk: <a href="mailto:__CONTACT_EMAIL__">__CONTACT_EMAIL__</a></p>
+    <p>&copy; __YEAR__ __BRAND__ · build __BUILD_ID__</p>
+  </div>
+</footer>
+</body>
+</html>

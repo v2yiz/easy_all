@@ -316,12 +316,6 @@ cdn_wait_for_node_dns() {
 
 # 本机验收（--resolve 127.0.0.1）不能证明橙云链路：DNS 指向、边缘证书与
 # Full (strict) 回源都可能在这里才暴露。公网探测走真实域名 + 系统 CA，禁止 -k。
-cdn_public_health_ok() {
-    local body
-    body=$(public_dns_curl "https://${CF_NODE_DOMAIN}/easy_all-health") || return 1
-    [[ "${body}" == "easy_all ok" ]]
-}
-
 cdn_public_subscription_ok() {
     local token body decoded
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS:-[]}") || return 1
@@ -348,8 +342,7 @@ cdn_validate_public_runtime() {
     local attempt
     cdn_wait_for_node_dns
     for ((attempt = 1; attempt <= CDN_PUBLIC_ACCEPT_ATTEMPTS; attempt++)); do
-        if cdn_public_health_ok \
-            && cdn_public_subscription_ok \
+        if cdn_public_subscription_ok \
             && cdn_public_token_rejection_ok; then
             return 0
         fi
@@ -566,8 +559,9 @@ cdn_local_uninstall_common() {
     fi
     rm -f -- "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
-    rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" "$(dirname -- "${SUBSCRIPTION_DIR}")" \
+    rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" \
         "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"
+    rmdir "$(dirname -- "${SUBSCRIPTION_DIR}")" 2>/dev/null || true
 }
 
 uninstall_all() {
@@ -605,11 +599,12 @@ cleanup_partial_install() {
         || { warn "回收 TCP 443 探测日志规则与单元失败；已保留安装进度标记与状态，修正后重试 sudo easy_all cleanup-partial"; return 1; }
     remove_daily_reboot_schedule || true
     for path in "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}" \
-        "${SUBSCRIPTION_DIR}" "$(dirname -- "${SUBSCRIPTION_DIR}")" \
+        "${SUBSCRIPTION_DIR}" \
         "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"; do
         [[ -n "${path}" ]] || continue
         rm -rf -- "${path}" 2>/dev/null || { warn "删除残留失败：${path}"; failed=1; }
     done
+    rmdir "$(dirname -- "${SUBSCRIPTION_DIR}")" 2>/dev/null || true
     systemctl daemon-reload >/dev/null 2>&1 || true
     if ((failed == 1)); then
         warn "业务残留未完全删除；已保留安装进度标记与安装前快照，修正权限/挂载后重试 sudo easy_all cleanup-partial"

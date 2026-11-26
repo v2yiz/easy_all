@@ -1,3 +1,24 @@
+## 5.6.0 更新说明（2026-11-26）
+
+### 增强与修复
+
+- **模式 3（`reality-cloudfront`）单端口 `443` 合一与平滑迁移**（`lib/caddy-runtime.sh`、`lib/cloudfront-mode.sh`、`lib/runtime-core.sh`、`profiles/reality-cloudfront.sh`、`scripts/hellogfw.py`）：
+  - 新装模式 3 公网仅开放 `TCP 443`（不再开放公网 `8443`），所有非 Reality 握手由 `sing-box:443` 透明回落到 `127.0.0.1:9443` Caddy 回环站点，内部按精确 `X-Easy-All-Origin-Key` 分流代理/订阅与伪装站；同步解耦 `cloudfront_origin_https_port()`，并修复 `wait_for_cloudfront_distribution_state()` 更新分发时旧 `Deployed` 状态的最终一致性竞态。
+  - 兼容 v5.5.0 老节点零中断升级：通过 `${STATE_DIR}/mode3-single443.migrated` 标记，纯本机 `apply` 暂保留 `8443` 兼容，待执行 `sudo easy_all apply-cloud` 将 CloudFront 回源切至 `443` 并通过公网验收后自动关闭 `8443`。
+  - `scripts/hellogfw.py` 补充模式 3 共用 TCP 443 说明，存在 `REALITY: processed invalid connection` 时单列回落计数。
+- **Reality 伪装站多模板抗指纹变异与用户自定义目录保护**（`lib/camouflage.sh`、`templates/camouflage-{login,status,docs,studio}.html`、`lib/caddy-runtime.sh`、`lib/runtime-core.sh`、`runtime.manifest`）：
+  - 内置 4 套中性静态站点原型（登录门户、服务状态、开发者文档、工程团队主页），首次部署随机选择并注入实例级变异（品牌、配色、`--ui-<hex>` 样式变量、构建标识、SVG 图标、`404.html`、`assets/site.css`）；登录原型改用 `assets/auth.js` 异步请求，不再原生跳转裸 JSON。
+  - Caddy 伪装路由支持 `try_files {path} {path}/index.html`、点文件 `*/.* -> 404`、显式 `405`/`404`；`runtime_reality_fallback_ok()` 改为 `cmp -s` 逐字节校验，解耦固定文案。
+  - 已有 `index.html` 时绝不覆写（保护用户自定义静态站点），卸载/清理仅按 `${STATE_DIR}/camouflage-managed.list` 回收受管文件，并修复卸载/清理路径 `rm -rf` 误删 `/var/www/easy_all` 父目录的隐患。
+- **模式 4 / 6（`reality-cloudflare` / `combined-cloudflare`）双 Certbot DNS-01 证书 SAN 隔离**（`lib/runtime-core.sh`、`lib/anytls-mode.sh`、`lib/caddy-runtime.sh`、`profiles/reality-cloudflare.sh`）：
+  - 拆分为 `easy_all`（仅 `DIRECT_DOMAIN` → `CERT_FILE`）与 `easy_all-cdn`（仅 `CF_NODE_DOMAIN` → `CDN_CERT_FILE`）两套独立 lineage，零新增 Cloudflare API Token 权限、零 `state.env` 必填字段变更；支持旧装 `--force-renewal` SAN 缩容与 `apply` 拆分前平滑回退。
+- **全模式去指纹与 Reality 协议加固**（`lib/caddy-runtime.sh`、`lib/singbox-runtime.sh`、`lib/runtime-core.sh`、`lib/cloudflare-mode.sh`、`lib/cloudfront-mode.sh`、`lib/anytls-mode.sh`、`scripts/verify-live.sh`）：
+  - 全模式移除 `/easy_all-health`（`"easy_all ok"`）路由并在全部 Caddy 站点添加 `header -Server`；本机与边缘探活改为 `/subscribe?token=invalid -> 403`。
+  - `singbox_reality_inbound_json()` 新增 `max_time_difference: "2m"` 防重放，安装期同步启用 `systemd-timesyncd` 并在 `status` 中校验 `NTPSynchronized`。
+  - **升级提示**：v5.5.0 节点执行 `sudo easy_all self-update` 后，模式 3 请执行 `sudo easy_all apply-cloud` 完成单 `443` 迁移，模式 4 / 6 请执行 `sudo easy_all renew-cert` 完成双证书 SAN 拆分，模式 1 / 2 / 5 执行 `sudo easy_all apply`；如需回退，可切回 tag `20261126` 后执行 `sudo easy_all apply`。
+
+---
+
 ## 5.5.0 更新说明（2026-11-23）
 
 ### 增强与变更

@@ -1025,6 +1025,7 @@ assert_contains "独立来源数" "${auto_out}" "独立来源 IP：6 个"
 assert_contains "自动识别两个正常客户端参照" "${auto_out}" \
     "正常客户端参照：203.0.113.10（5 次）、198.51.100.20（4 次）"
 assert_contains "同期 WARN/ERROR 统计" "${auto_out}" "sing-box 同期 WARN/ERROR：2 条"
+assert_not_contains "无 Reality 回落日志时不输出回落拆分" "${auto_out}" "其中 Reality 非授权回落"
 assert_contains "候选含 5 秒后出现的低频陌生来源" "${auto_out}" "192.0.2.66  全窗 1 次"
 assert_contains "候选给出与参照连接的时间差" "${auto_out}" "5.0 秒"
 assert_contains "候选含 1 秒后出现的低频陌生来源" "${auto_out}" "192.0.2.55"
@@ -1032,6 +1033,23 @@ assert_not_contains "全窗 3 次的陌生高频来源不是候选" "${auto_out}
 assert_not_contains "DPT=8443 的记录被忽略" "${auto_out}" "192.0.2.88"
 assert_not_contains "窗口外记录不产生候选" "${auto_out}" "192.0.2.44"
 assert_contains "输出解释边界" "${auto_out}" "不构成 GFW 归因证明"
+
+# 模式 3 单 443 回落拆分：sing-box 含 REALITY: processed invalid connection 时单独计数。
+sample_singbox_reality="${TMP_DIR}/singbox-reality.log"
+cat >"${sample_singbox_reality}" <<'LOG'
+2024-05-01T12:00:00+0000 host easy_all-singbox[1]: INFO inbound connection
+2024-05-01T12:00:01+0000 host easy_all-singbox[1]: WARN inbound/vless[vless-reality-in]: REALITY: processed invalid connection from 198.51.100.1
+2024-05-01T12:00:02+0000 host easy_all-singbox[1]: ERROR inbound/vless[vless-reality-in]: REALITY: processed invalid connection from 198.51.100.2
+2024-05-01T12:00:03+0000 host easy_all-singbox[1]: ERROR dial failed
+LOG
+reality_fb_out=$(
+    HELLOGFW_IPTABLES_RULES_FILE="${rules_ok}" \
+    HELLOGFW_KERNEL_LOG_FILE="${sample_kernel}" \
+    HELLOGFW_SINGBOX_LOG_FILE="${sample_singbox_reality}" \
+        bash -c "${RUN_HELLOGFW_SNIPPET}" _ "${ROOT_DIR}" --since "24 hours ago" 2>&1
+)
+assert_contains "含 Reality 回落日志时拆分统计回落条数" "${reality_fb_out}" \
+    "sing-box 同期 WARN/ERROR：3 条（其中 Reality 非授权回落：2 条，含主动探测及模式 3 回源流量）"
 
 manual_out=$(analyze "${rules_ok}" "${sample_kernel}" --my-ip 203.0.113.10)
 assert_contains "显式 --my-ip 覆盖自动识别" "${manual_out}" \

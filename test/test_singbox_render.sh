@@ -168,14 +168,19 @@ assert_equal "模式 4 Reality 入站监听 0.0.0.0:443" "0.0.0.0 443" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-reality-in") | "\(.listen) \(.listen_port)"' <<<"${reality_cf_json}")"
 assert_equal "模式 4 Reality 回落至回环 9443" "127.0.0.1 9443" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-reality-in") | .tls.reality.handshake | "\(.server) \(.server_port)"' <<<"${reality_cf_json}")"
+assert_equal "模式 4 Reality 开启 2m 时间窗防重放" "2m" \
+    "$(jq -r '.inbounds[] | select(.tag == "vless-reality-in") | .tls.reality.max_time_difference' <<<"${reality_cf_json}")"
 assert_equal "模式 4 Reality 用户为 xtls-rprx-vision" "xtls-rprx-vision" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-reality-in") | .users[0].flow' <<<"${reality_cf_json}")"
 assert_equal "模式 4 回环 CDN 入站 10086" "127.0.0.1 10086" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | "\(.listen) \(.listen_port)"' <<<"${reality_cf_json}")"
 assert_equal "模式 4 回环 CDN 入站用 httpupgrade" "httpupgrade" \
     "$(jq -r '.inbounds[] | select(.tag == "vless-cdn-in") | .transport.type' <<<"${reality_cf_json}")"
+reality_cf_blocked_json=$(render reality-cloudflare 1)
 assert_equal "模式 4 blocked 只保留 Reality 直连" "vless-reality-in" \
-    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render reality-cloudflare 1)")"
+    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${reality_cf_blocked_json}")"
+assert_equal "模式 4 blocked 保留 2m 时间窗" "2m" \
+    "$(jq -r '.inbounds[0].tls.reality.max_time_difference' <<<"${reality_cf_blocked_json}")"
 
 # 公共结构：log/dns/outbounds/route 按 design §7。
 for proto in reality-cloudfront reality-cloudflare cloudfront cloudflare combined-cloudfront combined-cloudflare; do
@@ -346,19 +351,26 @@ assert_equal "Reality 使用直连域名与私钥" "direct.example.com ${REALITY
     "$(jq -r '.inbounds[0].tls | "\(.server_name) \(.reality.private_key)"' <<<"${reality_json}")"
 assert_equal "Reality short_id 列表" "[\"${REALITY_SHORT_ID}\"]" \
     "$(jq -c '.inbounds[0].tls.reality.short_id' <<<"${reality_json}")"
+assert_equal "模式 3 Reality 开启 2m 时间窗防重放" "2m" \
+    "$(jq -r '.inbounds[0].tls.reality.max_time_difference' <<<"${reality_json}")"
 assert_equal "Reality 入站不内联证书" "no-cert" \
     "$(jq -r 'if .inbounds[0].tls.certificate_path then "cert" else "no-cert" end' <<<"${reality_json}")"
+reality_blocked_json=$(render reality-cloudfront 1)
 assert_equal "模式 3 blocked 只保留 Reality 直连入站" "vless-reality-in" \
-    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"$(render reality-cloudfront 1)")"
+    "$(jq -r '[.inbounds[].tag] | join(",")' <<<"${reality_blocked_json}")"
 assert_equal "模式 3 blocked 保留 443 Reality 内容" "0.0.0.0 443" \
-    "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"$(render reality-cloudfront 1)")"
+    "$(jq -r '.inbounds[0] | "\(.listen) \(.listen_port)"' <<<"${reality_blocked_json}")"
+assert_equal "模式 3 blocked 保留 2m 时间窗" "2m" \
+    "$(jq -r '.inbounds[0].tls.reality.max_time_difference' <<<"${reality_blocked_json}")"
 if (PROTOCOL=reality-cloudfront; REALITY_PRIVATE_KEY=""; render_singbox_config "${TMP_DIR}/x.json" 0) >/dev/null 2>&1; then
     fail "缺少 REALITY_PRIVATE_KEY 必须失败"
 fi
 
+reality_link=$(DIRECT_NODE_NAME="Reality" build_reality_link)
 assert_equal "Reality 链接格式" \
     "vless://${VLESS_UUID}@direct.example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=direct.example.com&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=tcp&packetEncoding=xudp#Reality" \
-    "$(DIRECT_NODE_NAME="Reality" build_reality_link)"
+    "${reality_link}"
+assert_not_contains "Reality 链接不含服务端 max_time_difference" "${reality_link}" "max_time_difference"
 assert_equal "Reality 链接对节点名编码" \
     "vless://${VLESS_UUID}@direct.example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=direct.example.com&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=tcp&packetEncoding=xudp#Reality%20%E8%87%AA%E5%81%B7" \
     "$(DIRECT_NODE_NAME="Reality 自偷" build_reality_link)"
@@ -379,6 +391,7 @@ assert_not_contains "Reality 节点不写 support-x25519mlkem768" \
     "${reality_node}" "support-x25519mlkem768"
 assert_not_contains "Reality 节点不写 PQ 开关" "${reality_node}" "x25519mlkem768"
 assert_not_contains "Reality 节点无 websocket 传输" "${reality_node}" "network: ws"
+assert_not_contains "Reality Mihomo 节点不含 max_time_difference" "${reality_node}" "max_time_difference"
 
 reality_outbound=$(DIRECT_NODE_NAME="Reality" build_singbox_reality_outbound)
 assert_equal "sing-box Reality outbound 契约" \
@@ -386,6 +399,8 @@ assert_equal "sing-box Reality outbound 契约" \
     "$(jq -r '"\(.type) \(.tag) \(.server_port) \(.uuid) \(.flow) \(.tls.server_name) \(.tls.utls.fingerprint) \(.tls.reality.public_key) \(.tls.reality.short_id) \(.packet_encoding)"' <<<"${reality_outbound}")"
 assert_equal "sing-box Reality outbound 不内联私钥" "no-key" \
     "$(jq -r 'if (.tls.reality.private_key // null) == null then "no-key" else "key" end' <<<"${reality_outbound}")"
+assert_equal "sing-box Reality outbound 不含服务端 max_time_difference" "false" \
+    "$(jq -r '.tls.reality | has("max_time_difference")' <<<"${reality_outbound}")"
 if (DIRECT_NODE_NAME="Reality"; REALITY_PUBLIC_KEY=""; build_mihomo_reality_node) >/dev/null 2>&1; then
     fail "缺少 REALITY_PUBLIC_KEY 必须失败"
 fi

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Mode 3: Reality self-steal direct entry (TCP 443) plus the CloudFront CDN entry
-# (Caddy origin 8443 → sing-box loopback VLESS WebSocket on 10086), same shape as
-# mode 5. 443 is a vless/xtls-rprx-vision/reality inbound: any non-Reality
-# handshake (including active probing) is handed to Caddy on 127.0.0.1:9443 and
-# gets a real TLS 1.3 handshake with the workspace login page. 9443 is loopback
-# only and never exposes the origin guard, /subscribe, /sub or /easy_all-health.
+# Mode 3: Reality self-steal direct entry (TCP 443) + single-port 443 CloudFront origin
+# consolidation. Public TCP 443 is owned exclusively by sing-box vless/xtls-rprx-vision/reality:
+# any non-Reality handshake (browsers, active probes, and CloudFront origin HTTPS) is transparently
+# forwarded to Caddy on 127.0.0.1:9443, which routes exact X-Easy-All-Origin-Key requests to
+# VLESS WebSocket (127.0.0.1:10086) / subscription routes and serves the camouflage site to all
+# other traffic. No public 8443 port is exposed on fresh installs.
 set -Eeuo pipefail
 umask 077
 
@@ -28,11 +28,11 @@ CDN_PROVIDER=aws
 readonly CDN_PROFILE_KEY=reality-cloudfront
 readonly CDN_EXPECTED_PROTOCOL=reality-cloudfront
 readonly CDN_MODE_LABEL="Reality + CloudFront"
-readonly CDN_ENTRY_SUMMARY="VLESS Reality direct 443 + 伪装站 127.0.0.1:9443 + AWS CloudFront VLESS WebSocket"
-# 声明性元数据：实际安装端口预检由 runtime_public_tcp_ports（443 8443） /
-# runtime_cloudflare_only_port（本模式为空，8443 由源站头守卫） /
+readonly CDN_ENTRY_SUMMARY="VLESS Reality direct 443 + 回环 127.0.0.1:9443 伪装站与 AWS CloudFront 单 443 合一回源"
+# 声明性元数据：实际安装端口预检由 runtime_public_tcp_ports（443） /
+# runtime_cloudflare_only_port（本模式为空） /
 # runtime_cdn_loopback_port（10086）与 caddy_reality_camouflage_port（9443）派生。
-CDN_INSTALL_PORTS=(443 8443)
+CDN_INSTALL_PORTS=(443)
 SUBSCRIPTION_OPTIONAL_VARIANTS=1
 
 collect_install_inputs() {

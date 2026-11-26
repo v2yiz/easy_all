@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Mode 4: Reality self-steal direct entry (TCP 443) plus the Cloudflare orange-cloud CDN
-# entry (Caddy origin 8443 → sing-box loopback VLESS WebSocket on 10086), same shape as
+# entry (Caddy origin 8443 → sing-box loopback VLESS HTTPUpgrade on 10086), same shape as
 # mode 6. 443 is a vless/xtls-rprx-vision/reality inbound: any non-Reality handshake
 # (including active probing) is handed to Caddy on 127.0.0.1:9443 and gets a real TLS 1.3
-# handshake with the workspace login page. 9443 is loopback only and never exposes the
-# subscription routes, /easy_all-health or an origin guard; 8443 只对 Cloudflare IPv4
-# 回源段放行。CF_NODE_DOMAIN 同时是橙云节点域名、订阅域名与证书名。
+# handshake with the camouflage site using a DIRECT_DOMAIN-only Let's Encrypt cert (no SAN
+# overlap with CF_NODE_DOMAIN). 9443 is loopback only and never exposes subscription routes
+# or an origin guard; 8443 只对 Cloudflare IPv4 回源段放行，使用独立的 CF_NODE_DOMAIN 证书。
 set -Eeuo pipefail
 umask 077
 
@@ -29,7 +29,7 @@ CDN_PROVIDER=cloudflare
 readonly CDN_PROFILE_KEY=reality-cloudflare
 readonly CDN_EXPECTED_PROTOCOL=reality-cloudflare
 readonly CDN_MODE_LABEL="Reality + CloudFlare"
-readonly CDN_ENTRY_SUMMARY="VLESS Reality direct 443 + 伪装站 127.0.0.1:9443 + Cloudflare 橙云 VLESS WebSocket"
+readonly CDN_ENTRY_SUMMARY="VLESS Reality direct 443 + 伪装站 127.0.0.1:9443 + Cloudflare 橙云 VLESS HTTPUpgrade"
 # 声明性元数据：实际安装端口预检由 runtime_public_tcp_ports（443） /
 # runtime_cloudflare_only_port（8443） / runtime_cdn_loopback_port（10086）与
 # caddy_reality_camouflage_port（9443）派生。

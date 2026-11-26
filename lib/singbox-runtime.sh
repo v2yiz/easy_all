@@ -113,7 +113,8 @@ singbox_reality_inbound_json() {
               enabled: true,
               handshake: {server: "127.0.0.1", server_port: 9443},
               private_key: $key,
-              short_id: [$sid]
+              short_id: [$sid],
+              max_time_difference: "2m"
             }
           }
         }'

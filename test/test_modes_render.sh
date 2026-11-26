@@ -86,7 +86,7 @@ render_mode() {
             render_caddy_config "${CADDY_CONFIG}" 0 1
         fi
         printf '%s\n' "${PROTOCOL}" >"${out_dir}/protocol"
-        if [[ "${PROTOCOL}" == "cloudfront" ]]; then
+        if state_protocol_uses_cloudfront "${PROTOCOL}"; then
             build_distribution_config "${out_dir}/distribution.json" "test-caller"
         fi
         build_node_links >"${out_dir}/links.txt"
@@ -126,6 +126,8 @@ assert_contains "模式 2 节点是 VLESS ws" "${out}/links.txt" 'type=ws'
 assert_not_contains "模式 2 节点不泄露源站密钥" "${out}/links.txt" '0123456789abcdef0123456789abcdef'
 assert_not_contains "模式 2 无 Reality 参数" "${out}/links.txt" 'security=reality'
 assert_contains "模式 2 Mihomo ws 节点" "${out}/nodes.yaml" 'network: ws'
+assert_equal "模式 2 回源 HTTPS 端口为 443" "443" \
+    "$(jq -r '.Origins.Items[0].CustomOriginConfig.HTTPSPort' "${out}/distribution.json")"
 assert_equal "模式 2 回源响应超时对齐官方上限" "120" \
     "$(jq -r '.Origins.Items[0].CustomOriginConfig.OriginReadTimeout' "${out}/distribution.json")"
 assert_equal "模式 2 回源保活超时" "120" \
@@ -176,6 +178,8 @@ assert_not_contains "模式 5 Mihomo 不写 v2ray-http-upgrade" "${out}/nodes.ya
 assert_contains "模式 5 协议标签保持 WebSocket" "${out}/label.txt" 'VLESS WebSocket over AWS CloudFront'
 assert_equal "模式 5 Base64 标记" $'anytls://\ntype=ws' "$(<"${out}/markers-base64.txt")"
 assert_equal "模式 5 Mihomo 标记" $'type: anytls\nnetwork: ws' "$(<"${out}/markers-mihomo.txt")"
+assert_equal "模式 5 CloudFront 回源 HTTPS 端口为 8443" "8443" \
+    "$(jq -r '.Origins.Items[0].CustomOriginConfig.HTTPSPort' "${out}/distribution.json")"
 
 # 节点名推荐默认值：必须在交互提示里出现（加载运行时库前由 Profile 赋值），
 # 否则会被 singbox-runtime.sh 的 AnyTLS / VLESS-WS 兜底值覆盖。
@@ -209,6 +213,7 @@ assert_contains "模式 6 有 AnyTLS 入站" "${out}/config.json" '"type": "anyt
 assert_contains "模式 6 AnyTLS 监听 443" "${out}/config.json" '"listen_port": 443'
 assert_contains "模式 6 CDN 入站在回环" "${out}/config.json" '"listen_port": 10086'
 assert_contains "模式 6 站点是节点域名 8443" "${out}/Caddyfile" 'https://cf.example.com:8443 {'
+assert_contains "模式 6 8443 回源使用独立 CDN 证书" "${out}/Caddyfile" "tls ${out}/certs/cdn-fullchain.pem ${out}/certs/cdn-private.key"
 assert_contains "模式 6 有订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
 assert_contains "模式 6 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
 assert_not_contains "模式 6 没有 Caddy 源站守卫" "${out}/Caddyfile" 'X-Easy-All-Origin-Key'
@@ -308,7 +313,7 @@ assert_equal "A7: 后续调用覆盖后最终 Caddyfile 不含裸 503" "0" \
 assert_equal "A7: 后续调用覆盖后产物路径恢复" "2" \
     "$(grep -c 'rewrite \* /mihomo.yaml' "${a7_early}/Caddyfile" || true)"
 
-# --- 模式 3：Reality 443 + CloudFront 源站/订阅 8443 + 回环伪装站 9443 -------
+# --- 模式 3：Reality 443 + CloudFront 单 443 合一回环 9443（WP1-WP4） ---------
 out="${TMP_DIR}/reality-cloudfront"
 render_mode reality-cloudfront "${out}"
 assert_contains "模式 3 Reality 入站" "${out}/config.json" '"tag": "vless-reality-in"'
@@ -316,25 +321,36 @@ assert_contains "模式 3 Reality 监听 0.0.0.0:443" "${out}/config.json" '"lis
 assert_contains "模式 3 Reality 端口 443" "${out}/config.json" '"listen_port": 443'
 assert_contains "模式 3 启用 vision 流控" "${out}/config.json" '"flow": "xtls-rprx-vision"'
 assert_contains "模式 3 握手目标回环 9443" "${out}/config.json" '"server_port": 9443'
+assert_contains "模式 3 Reality 开启 2m 时间窗" "${out}/config.json" '"max_time_difference": "2m"'
 assert_contains "模式 3 双入站保留回环 CDN" "${out}/config.json" '"tag": "vless-cdn-in"'
 assert_not_contains "模式 3 没有 AnyTLS 入站" "${out}/config.json" 'anytls-in'
-assert_contains "模式 3 伪装站 9443" "${out}/Caddyfile" 'https://direct.example.com:9443 {'
-assert_contains "模式 3 CloudFront 源站 8443" "${out}/Caddyfile" \
-    'https://origin.example.com:8443 {'
-assert_contains "模式 3 源站头守卫" "${out}/Caddyfile" 'abort @easy_all_bad_origin'
+assert_contains "模式 3 单 443 合一回环站 9443" "${out}/Caddyfile" \
+    'https://direct.example.com:9443, https://origin.example.com:9443 {'
+assert_not_contains "模式 3 全新态不渲染 8443 块" "${out}/Caddyfile" ':8443 {'
+assert_not_contains "模式 3 全新态不使用 abort 守卫" "${out}/Caddyfile" 'abort @easy_all_bad_origin'
+assert_contains "模式 3 合一源站密钥分流" "${out}/Caddyfile" \
+    "@easy_all_valid_origin expression {http.request.header.X-Easy-All-Origin-Key} == '0123456789abcdef0123456789abcdef'"
 assert_contains "模式 3 源站反代回环" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
 assert_contains "模式 3 订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
-camo_block=$(awk '/^https:\/\/[^[:space:]]+:9443 \{$/{inside=1;next} inside&&/^\}$/{exit} inside' "${out}/Caddyfile")
-[[ -n "${camo_block}" ]] || fail "模式 3 缺少 9443 伪装站块"
-grep -Fq 'bind 127.0.0.1' <<<"${camo_block}" || fail "模式 3 伪装站必须只绑回环"
+camo_block=$(awk '/^https:\/\/.*:9443 \{$/{inside=1;next} inside&&/^\}$/{exit} inside' "${out}/Caddyfile")
+[[ -n "${camo_block}" ]] || fail "模式 3 缺少 9443 合一回环块"
+grep -Fq 'bind 127.0.0.1' <<<"${camo_block}" || fail "模式 3 合一站点必须只绑回环"
+if grep -Fq 'bind 0.0.0.0' <<<"${camo_block}"; then
+    fail "模式 3 合一站点不得绑定公网"
+fi
+grep -Fq 'header -Server' <<<"${camo_block}" || fail "模式 3 合一站点缺少 header -Server"
 grep -Fq 'handle @easy_all_camo_page {' <<<"${camo_block}" \
-    || fail "模式 3 伪装站缺少登录页"
-if grep -Fq '@easy_all_health' <<<"${camo_block}"; then
-    fail "模式 3 伪装站不得暴露 health"
+    || fail "模式 3 合一站点缺少伪装静态页路由"
+grep -Fq '@easy_all_camo_dotfiles path */.*' <<<"${camo_block}" \
+    || fail "模式 3 合一站点缺少隐藏点文件拦截"
+if grep -Fq 'redir * /login 302' <<<"${camo_block}"; then
+    fail "模式 3 伪装站不得无差别 302 跳 /login"
 fi
-if grep -Fq '@easy_all_bad_origin' <<<"${camo_block}"; then
-    fail "模式 3 伪装站不得暴露源站守卫"
+if grep -Eq '/easy_all-health|easy_all ok' <<<"${camo_block}"; then
+    fail "模式 3 合一站点不得暴露 health"
 fi
+assert_equal "模式 3 CloudFront 回源 HTTPS 端口为 443" "443" \
+    "$(jq -r '.Origins.Items[0].CustomOriginConfig.HTTPSPort' "${out}/distribution.json")"
 assert_contains "模式 3 节点是 Reality" "${out}/links.txt" 'security=reality'
 assert_contains "模式 3 节点含 VLESS ws" "${out}/links.txt" 'type=ws'
 assert_not_contains "模式 3 节点不是 AnyTLS" "${out}/links.txt" 'anytls://'
@@ -347,13 +363,14 @@ assert_not_contains "模式 3 Mihomo 不写 PQ 开关" "${out}/nodes.yaml" 'supp
 assert_equal "模式 3 PROXY 成员是 Reality + CDN" \
     $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
 
-# --- 模式 4：Reality 443 + 橙云回源/订阅 8443 + 回环伪装站 9443 ----------------
+# --- 模式 4：Reality 443 + 橙云回源/订阅 8443 + 回环伪装站 9443（WP1-WP3/WP5） ---
 out="${TMP_DIR}/reality-cloudflare"
 render_mode reality-cloudflare "${out}"
 assert_contains "模式 4 Reality 入站" "${out}/config.json" '"tag": "vless-reality-in"'
 assert_contains "模式 4 Reality 端口 443" "${out}/config.json" '"listen_port": 443'
 assert_contains "模式 4 启用 vision 流控" "${out}/config.json" '"flow": "xtls-rprx-vision"'
 assert_contains "模式 4 握手目标回环 9443" "${out}/config.json" '"server_port": 9443'
+assert_contains "模式 4 Reality 开启 2m 时间窗" "${out}/config.json" '"max_time_difference": "2m"'
 assert_contains "模式 4 保留回环 CDN 入站" "${out}/config.json" '"tag": "vless-cdn-in"'
 assert_not_contains "模式 4 没有 AnyTLS 入站" "${out}/config.json" 'anytls-in'
 assert_contains "模式 4 伪装站 9443" "${out}/Caddyfile" 'https://direct.example.com:9443 {'
@@ -362,11 +379,22 @@ assert_not_contains "模式 4 回源站点无源站头守卫" "${out}/Caddyfile"
 assert_contains "模式 4 回源站点反代回环" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
 assert_contains "模式 4 订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
 camo_block=$(awk '/^https:\/\/[^[:space:]]+:9443 \{$/{inside=1;next} inside&&/^\}$/{exit} inside' "${out}/Caddyfile")
+origin_block=$(awk '/^https:\/\/[^[:space:]]+:8443 \{$/{inside=1;next} inside&&/^\}$/{exit} inside' "${out}/Caddyfile")
 [[ -n "${camo_block}" ]] || fail "模式 4 缺少 9443 伪装站块"
+[[ -n "${origin_block}" ]] || fail "模式 4 缺少 8443 橙云回源块"
 grep -Fq 'bind 127.0.0.1' <<<"${camo_block}" || fail "模式 4 伪装站必须只绑回环"
+grep -Fq "tls ${out}/certs/fullchain.pem ${out}/certs/private.key" <<<"${camo_block}" \
+    || fail "模式 4 伪装站必须仅用直连主证书"
+grep -Fq "tls ${out}/certs/cdn-fullchain.pem ${out}/certs/cdn-private.key" <<<"${origin_block}" \
+    || fail "模式 4 8443 回源站必须使用独立 CDN 证书"
 grep -Fq 'handle @easy_all_camo_page {' <<<"${camo_block}" \
-    || fail "模式 4 伪装站缺少登录页"
-if grep -Fq '@easy_all_health' <<<"${camo_block}"; then
+    || fail "模式 4 伪装站缺少伪装静态页路由"
+grep -Fq '@easy_all_camo_dotfiles path */.*' <<<"${camo_block}" \
+    || fail "模式 4 伪装站缺少隐藏点文件拦截"
+if grep -Fq 'redir * /login 302' <<<"${camo_block}"; then
+    fail "模式 4 伪装站不得无差别 302 跳 /login"
+fi
+if grep -Eq '/easy_all-health|easy_all ok' <<<"${camo_block}"; then
     fail "模式 4 伪装站不得暴露 health"
 fi
 if grep -Fq '@easy_all_sub' <<<"${camo_block}"; then
@@ -386,5 +414,13 @@ assert_equal "模式 4 Base64 标记" $'security=reality\ntype=httpupgrade' "$(<
 assert_not_contains "模式 4 不带 AnyTLS 节点" "${out}/nodes.yaml" 'type: anytls'
 assert_equal "模式 4 PROXY 成员是 Reality + 橙云" \
     $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
+
+# --- 全六模式公共反指纹断言（WP1） -------------------------------------------
+for mode_out in cloudfront cloudflare combined combined-cloudflare reality-cloudfront reality-cloudflare; do
+    out="${TMP_DIR}/${mode_out}"
+    assert_contains "${mode_out} Caddy 去除 Server 响应头" "${out}/Caddyfile" 'header -Server'
+    assert_not_contains "${mode_out} Caddy 禁止 /easy_all-health" "${out}/Caddyfile" '/easy_all-health'
+    assert_not_contains "${mode_out} Caddy 禁止 easy_all ok 横幅" "${out}/Caddyfile" 'easy_all ok'
+done
 
 printf 'ok - 六模式渲染测试通过\n'

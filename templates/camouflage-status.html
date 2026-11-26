@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="generator" content="__BRAND__ Status __BUILD_ID__">
+<title>__TITLE__ — __BRAND__</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/assets/site.css">
+</head>
+<body class="page-status">
+<header class="topbar">
+  <div class="shell topbar-inner">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>__BRAND__</span></a>
+    <nav class="nav" aria-label="Primary">
+      <a href="/#systems">Systems</a>
+      <a href="/#uptime">Uptime</a>
+      <a href="/#maintenance">Maintenance</a>
+      <a href="/#contact">Contact</a>
+    </nav>
+  </div>
+</header>
+<main class="shell main-stack">
+  <section class="hero-compact">
+    <div class="status-banner" role="status">
+      <span class="dot dot-ok" aria-hidden="true"></span>
+      <div>
+        <h1>All Systems Operational</h1>
+        <p class="subtitle">__SUBTITLE__</p>
+      </div>
+    </div>
+    <p class="meta-line">Host: <code>__DOMAIN__</code> · __TAGLINE__</p>
+  </section>
+
+  <section id="systems" class="card">
+    <div class="section-head">
+      <h2>Core Components</h2>
+      <span class="muted">Updated automatically</span>
+    </div>
+    <ul class="service-list">
+      <li class="service-row">
+        <div>
+          <strong>API</strong>
+          <p class="row-desc">REST endpoints, schema validation, and request dispatch</p>
+        </div>
+        <div class="service-meta">
+          <span class="uptime-pct">99.99%</span>
+          <span class="badge badge-ok">Operational</span>
+        </div>
+      </li>
+      <li class="service-row">
+        <div>
+          <strong>Auth</strong>
+          <p class="row-desc">Directory login, session signing, and token refresh</p>
+        </div>
+        <div class="service-meta">
+          <span class="uptime-pct">100.00%</span>
+          <span class="badge badge-ok">Operational</span>
+        </div>
+      </li>
+      <li class="service-row">
+        <div>
+          <strong>Storage</strong>
+          <p class="row-desc">Object replication, checksum verification, and snapshots</p>
+        </div>
+        <div class="service-meta">
+          <span class="uptime-pct">99.98%</span>
+          <span class="badge badge-ok">Operational</span>
+        </div>
+      </li>
+      <li class="service-row">
+        <div>
+          <strong>Edge</strong>
+          <p class="row-desc">TLS termination, health checks, and regional failover</p>
+        </div>
+        <div class="service-meta">
+          <span class="uptime-pct">99.99%</span>
+          <span class="badge badge-ok">Operational</span>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <section id="uptime" class="card">
+    <div class="section-head">
+      <h2>90-Day Availability</h2>
+      <span class="muted">Composite 99.99%</span>
+    </div>
+    <div class="uptime-bars" role="img" aria-label="90-day uptime chart showing operational availability">
+      <span class="uptime-seg"></span><span class="uptime-seg"></span><span class="uptime-seg"></span>
+      <span class="uptime-seg"></span><span class="uptime-seg"></span><span class="uptime-seg"></span>
+      <span class="uptime-seg"></span><span class="uptime-seg"></span><span class="uptime-seg"></span>
+      <span class="uptime-seg"></span><span class="uptime-seg"></span><span class="uptime-seg"></span>
+      <span class="uptime-seg"></span><span class="uptime-seg"></span><span class="uptime-seg"></span>
+      <span class="uptime-seg"></span><span class="uptime-seg"></span><span class="uptime-seg"></span>
+      <span class="uptime-seg"></span><span class="uptime-seg"></span><span class="uptime-seg"></span>
+      <span class="uptime-seg"></span><span class="uptime-seg"></span><span class="uptime-seg"></span>
+    </div>
+    <div class="uptime-axis">
+      <span>90 days ago</span>
+      <span>No active incidents</span>
+      <span>Today</span>
+    </div>
+  </section>
+
+  <section id="maintenance" class="card">
+    <div class="section-head">
+      <h2>Recent Maintenance Log</h2>
+      <span class="muted">UTC</span>
+    </div>
+    <ul class="log-list">
+      <li class="log-item">
+        <div class="log-head">
+          <strong>Scheduled storage index compaction</strong>
+          <span class="badge badge-neutral">Completed</span>
+        </div>
+        <p class="row-desc">Routine online compaction completed across primary partitions with zero customer-facing downtime.</p>
+        <span class="log-time">Window: 03:00–03:20 UTC · __YEAR__</span>
+      </li>
+      <li class="log-item">
+        <div class="log-head">
+          <strong>Automated TLS certificate rotation</strong>
+          <span class="badge badge-neutral">Completed</span>
+        </div>
+        <p class="row-desc">Edge certificate bundles were refreshed and validated across active ingress listeners.</p>
+        <span class="log-time">Window: 02:15–02:22 UTC · __YEAR__</span>
+      </li>
+      <li class="log-item">
+        <div class="log-head">
+          <strong>Telemetry queue capacity expansion</strong>
+          <span class="badge badge-neutral">Completed</span>
+        </div>
+        <p class="row-desc">Added partition headroom for audit log ingestion and metrics aggregation pipelines.</p>
+        <span class="log-time">Window: 04:00–04:18 UTC · __YEAR__</span>
+      </li>
+    </ul>
+  </section>
+</main>
+<footer id="contact" class="site-footer">
+  <div class="shell footer-inner">
+    <p>__FOOTER_NOTE__ · Operations: <a href="mailto:__CONTACT_EMAIL__">__CONTACT_EMAIL__</a></p>
+    <p>&copy; __YEAR__ __BRAND__ · __TITLE__ · ref __BUILD_ID__</p>
+  </div>
+</footer>
+</body>
+</html>

@@ -2834,6 +2834,7 @@ ROOT_DIR=$1
 WORK=$2
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 export RUNTIME_TMP="${WORK}/runtime"
+export EASY_ALL_STATE_DIR_OVERRIDE="${WORK}/state"
 export EASY_ALL_GUARD_STATE_DIR="${WORK}/state"
 export EASY_ALL_GUARD_STATE_FILE="${WORK}/state/state.env"
 export EASY_ALL_CERT_DIR_OVERRIDE="${WORK}/certs"
@@ -2865,7 +2866,7 @@ source "${ROOT_DIR}/profiles/reality-cloudfront.sh"
 DIRECT_DOMAIN=direct.example.com
 DIRECT_NODE_NAME=Reality
 VLESS_UUID=11111111-2222-4111-8111-111111111111
-# 模式 3 与模式 5 同构：源站域名复用直连域名，订阅域名复用节点域名。
+# 模式 3：源站域名复用直连域名，订阅域名复用节点域名；单 443 合一回环 9443。
 CF_ORIGIN_DOMAIN=direct.example.com
 CF_NODE_DOMAIN=cf.example.com
 CF_NODE_PREFIX="CF"
@@ -2881,16 +2882,30 @@ CF_ZONE=example.com
 VPS_PUBLIC_IPV4=203.0.113.10
 SUBSCRIPTION_MODE=deploy
 
-# 端口与链路派生与模式 5 完全一致。
-[[ "$(runtime_public_tcp_ports)" == "443 8443" ]] || fail "模式 3 公网端口应为 443 8443"
-[[ -z "$(runtime_cloudflare_only_port)" ]] || fail "模式 3 的 8443 由源站头守卫，不按源段限制"
+# 全新模式 3：单 443 公网端口、外部回源 443、本机 Caddy 9443 合一回环。
+[[ "$(runtime_public_tcp_ports)" == "443" ]] || fail "模式 3 全新公网端口应为 443：$(runtime_public_tcp_ports)"
+! caddy_mode3_needs_legacy_8443 || fail "全新模式 3 不应进入旧 8443 过渡态"
+[[ -z "$(runtime_cloudflare_only_port)" ]] || fail "模式 3 不按源段限制 Cloudflare IP"
 [[ "$(runtime_cdn_loopback_port)" == "10086" ]] || fail "模式 3 回环入站端口错误"
 [[ "$(caddy_reality_camouflage_port)" == "9443" ]] || fail "模式 3 伪装站端口错误"
-[[ "$(caddy_site_port)" == "8443" ]] || fail "模式 3 Caddy 站点端口应为 8443"
+[[ "$(caddy_site_port)" == "9443" ]] || fail "模式 3 Caddy 本机站点端口应为 9443：$(caddy_site_port)"
+[[ "$(cloudfront_origin_https_port)" == "443" ]] || fail "模式 3 CloudFront 外部回源端口应为 443"
 [[ "$(caddy_site_host)" == "direct.example.com" ]] || fail "模式 3 Caddy 站点应为 CF_ORIGIN_DOMAIN"
 [[ "$(subscription_link_domain)" == "cf.example.com" ]] || fail "模式 3 订阅链接应使用订阅域名"
 [[ "$(runtime_protocol_label)" == "Reality（direct TCP 443）+ VLESS WebSocket over AWS CloudFront" ]] \
     || fail "模式 3 协议标签未对齐模式 5：$(runtime_protocol_label)"
+
+# v5.5.0 升级过渡态：已有 state.env 但无迁移标记时临时放行 443 8443，落盘标记后收敛为 443。
+install -d -m 0700 "${STATE_DIR}"
+: >"${STATE_FILE}"
+caddy_mode3_needs_legacy_8443 || fail "旧版 state.env 缺迁移标记时应启用过渡 8443"
+[[ "$(runtime_public_tcp_ports)" == "443 8443" ]] \
+    || fail "模式 3 过渡态公网端口应为 443 8443：$(runtime_public_tcp_ports)"
+: >"$(caddy_mode3_migration_marker)"
+! caddy_mode3_needs_legacy_8443 || fail "写入迁移标记后应退出过渡 8443"
+[[ "$(runtime_public_tcp_ports)" == "443" ]] \
+    || fail "模式 3 迁移完成后公网端口应收敛为 443：$(runtime_public_tcp_ports)"
+rm -f -- "${STATE_FILE}" "$(caddy_mode3_migration_marker)"
 
 # 证书只需覆盖 {DIRECT_DOMAIN, CF_ORIGIN_DOMAIN}：同域去重后不含 ACM 侧的订阅域名。
 [[ "$(certificate_required_hosts | paste -sd, -)" == "direct.example.com" ]] \
@@ -2946,21 +2961,83 @@ fi
 REALITY_PRIVATE_KEY=${FAKE_KEYPAIR_PRIVATE}
 REALITY_PUBLIC_KEY=${FAKE_KEYPAIR_PUBLIC}
 
-# 伪装页部署/回收：与 Caddy 配置同生命周期，且不得删除用户在目录里的其他文件。
-reality_deploy_camouflage_page
-[[ -s "${CAMOUFLAGE_DIR}/index.html" ]] || fail "伪装页未部署到 CAMOUFLAGE_DIR"
-grep -Fq 'Workspace Sign In' "${CAMOUFLAGE_DIR}/index.html" \
-    || fail "伪装页内容不是登录门户模板"
-printf 'keep me\n' >"${CAMOUFLAGE_DIR}/user-note.txt"
-reality_remove_camouflage_page
-[[ ! -e "${CAMOUFLAGE_DIR}/index.html" ]] || fail "回收后 index.html 仍存在"
-[[ -s "${CAMOUFLAGE_DIR}/user-note.txt" ]] || fail "回收时删除了用户自己的文件"
-rm -f -- "${CAMOUFLAGE_DIR}/user-note.txt"
-reality_remove_camouflage_page
-[[ ! -d "${CAMOUFLAGE_DIR}" ]] || fail "空目录应被回收"
+# 伪装站多模板部署、防覆写与受管回收（WP3）：
+# 1) 四种原型模板均无未替换占位符，且按原型生成对应文件与 0600 受管清单。
+for archetype in login status docs studio; do
+    rm -rf -- "${CAMOUFLAGE_DIR}" "$(camouflage_managed_manifest_file)"
+    EASY_ALL_CAMOUFLAGE_TEMPLATE="${archetype}" reality_deploy_camouflage_page
+    for req in index.html 404.html robots.txt favicon.svg assets/site.css; do
+        [[ -s "${CAMOUFLAGE_DIR}/${req}" ]] || fail "伪装原型 ${archetype} 缺少 ${req}"
+    done
+    if grep -Eq '__[A-Z_]+__' "${CAMOUFLAGE_DIR}/index.html"; then
+        fail "伪装原型 ${archetype} 存在未替换模板占位符"
+    fi
+    grep -Eq -- '--ui-[0-9a-f]{4}-accent:' "${CAMOUFLAGE_DIR}/assets/site.css" \
+        || fail "伪装原型 ${archetype} 缺少随机 CSS 变量前缀"
+    manifest_path=$(camouflage_managed_manifest_file)
+    [[ -s "${manifest_path}" ]] || fail "伪装原型 ${archetype} 未写入受管清单"
+    [[ "$(ls -ld -- "${manifest_path}" | awk '{print $1}' | sed 's/[^drwx-]//g')" == "-rw-------" ]] \
+        || fail "受管清单权限应为 0600"
+    if [[ "${archetype}" == "login" ]]; then
+        grep -Fq 'Workspace Sign In' "${CAMOUFLAGE_DIR}/index.html" \
+            || fail "login 伪装页内容不匹配"
+        [[ -s "${CAMOUFLAGE_DIR}/assets/auth.js" && -s "${CAMOUFLAGE_DIR}/login/index.html" ]] \
+            || fail "login 原型缺少 auth.js 或 login/index.html"
+    else
+        [[ ! -e "${CAMOUFLAGE_DIR}/assets/auth.js" && ! -e "${CAMOUFLAGE_DIR}/login/index.html" ]] \
+            || fail "非 login 原型 ${archetype} 不应生成登录脚本或 login 目录"
+    fi
+done
 
-# 状态文案：直连行必须给出 Reality 与伪装站回落目标，Caddy 恒有真实状态。
+# 2) 幂等非破坏：已有自定义 index.html 时绝不覆盖。
+rm -rf -- "${CAMOUFLAGE_DIR}" "$(camouflage_managed_manifest_file)"
+install -d -m 0755 "${CAMOUFLAGE_DIR}"
+printf '<html><body>Custom User Homepage</body></html>\n' >"${CAMOUFLAGE_DIR}/index.html"
+EASY_ALL_CAMOUFLAGE_TEMPLATE=status reality_deploy_camouflage_page
+[[ "$(<"${CAMOUFLAGE_DIR}/index.html")" == "<html><body>Custom User Homepage</body></html>" ]] \
+    || fail "已有自定义 index.html 时不得被伪装站部署覆盖"
+[[ ! -e "${CAMOUFLAGE_DIR}/assets/site.css" ]] \
+    || fail "跳过已有站点时不应写入模板样式文件"
+
+# 3) 受管回收：只删清单内文件与空目录，保留用户额外文件与非空目录。
+rm -rf -- "${CAMOUFLAGE_DIR}" "$(camouflage_managed_manifest_file)"
+EASY_ALL_CAMOUFLAGE_TEMPLATE=login reality_deploy_camouflage_page
+printf 'keep me\n' >"${CAMOUFLAGE_DIR}/user-note.txt"
+printf '/* user */\n' >"${CAMOUFLAGE_DIR}/assets/custom.css"
+reality_remove_camouflage_page
+for gone in index.html 404.html robots.txt favicon.svg assets/site.css assets/auth.js login/index.html; do
+    [[ ! -e "${CAMOUFLAGE_DIR}/${gone}" ]] || fail "回收后受管文件仍存在：${gone}"
+done
+[[ ! -e "$(camouflage_managed_manifest_file)" ]] || fail "回收后受管清单仍存在"
+[[ ! -d "${CAMOUFLAGE_DIR}/login" ]] || fail "空的 login 子目录应被回收"
+[[ -s "${CAMOUFLAGE_DIR}/user-note.txt" && -s "${CAMOUFLAGE_DIR}/assets/custom.css" ]] \
+    || fail "回收时误删了用户自定义文件"
+rm -f -- "${CAMOUFLAGE_DIR}/user-note.txt" "${CAMOUFLAGE_DIR}/assets/custom.css"
+reality_remove_camouflage_page
+[[ ! -d "${CAMOUFLAGE_DIR}" ]] || fail "清空用户文件后伪装站目录应被回收"
+
+# 4) 无受管清单回退回收（旧装或 uninstall_incomplete）仍只删固定受管集合、保留用户文件。
+EASY_ALL_CAMOUFLAGE_TEMPLATE=login reality_deploy_camouflage_page
+rm -f -- "$(camouflage_managed_manifest_file)"
+printf 'legacy keep\n' >"${CAMOUFLAGE_DIR}/user-note.txt"
+camouflage_remove_managed_files
+[[ ! -e "${CAMOUFLAGE_DIR}/index.html" && ! -e "${CAMOUFLAGE_DIR}/assets/auth.js" ]] \
+    || fail "无清单回退回收未删除受管文件"
+[[ -s "${CAMOUFLAGE_DIR}/user-note.txt" ]] || fail "无清单回退回收误删了用户文件"
+rm -f -- "${CAMOUFLAGE_DIR}/user-note.txt"
+camouflage_remove_managed_files
+[[ ! -d "${CAMOUFLAGE_DIR}" ]] || fail "无清单回退回收后空目录未删除"
+
+# 5) 非 Reality 模式不得触碰伪装站目录。
+install -d -m 0755 "${CAMOUFLAGE_DIR}"
+printf 'host site\n' >"${CAMOUFLAGE_DIR}/index.html"
+( PROTOCOL=combined-cloudfront; reality_remove_camouflage_page )
+[[ -s "${CAMOUFLAGE_DIR}/index.html" ]] || fail "非 Reality 模式不得删除伪装目录文件"
+rm -rf -- "${CAMOUFLAGE_DIR}"
+
+# 状态文案：单 443 回环目标、NTP 同步告警与旧 8443 迁移提示。
 systemctl() { [[ "${1:-}" != "is-active" ]] || return 3; }
+timedatectl() { printf 'no\n'; }
 require_root() { :; }
 collect_installed_state() { :; }
 show_tcp_acceleration_status() { :; }
@@ -2968,12 +3045,24 @@ cdn_traffic_counters_ready() { return 1; }
 cdn_traffic_read_usage() { printf '%s' '{"protection_offline":false}'; }
 show_cdn_traffic_protection_status() { :; }
 CDN_SUBSCRIPTION_CORRUPT=0
-rm -f -- "${CERT_FILE}"
+rm -f -- "${CERT_FILE}" "${STATE_FILE}" "$(caddy_mode3_migration_marker)"
 status_output=$(show_status 2>&1)
 [[ "${status_output}" == *"VLESS Reality"* ]] || fail "状态未标明 Reality 直连"
-[[ "${status_output}" == *"伪装站"* ]] || fail "状态未说明伪装站回落目标"
+[[ "${status_output}" == *"127.0.0.1:9443"* ]] || fail "状态未说明回环 9443 合一回落目标"
+[[ "${status_output}" == *"CloudFront 回源 HTTPS 443，本机 Caddy 9443"* ]] \
+    || fail "状态未说明模式 3 外部回源 443 与本机 Caddy 9443"
+[[ "${status_output}" == *"时间同步警告"* && "${status_output}" == *"2m 时间窗校验"* ]] \
+    || fail "NTP 未同步时状态未输出 2m 时间窗告警"
+[[ "${status_output}" != *"单 443 迁移状态"* ]] || fail "全新模式 3 不应显示旧 8443 迁移提示"
 [[ "${status_output}" != *"Caddy: 未部署"* ]] || fail "模式 3 无 link 模式，不得显示 Caddy 未部署"
 [[ "${status_output}" == *"Caddy: inactive"* ]] || fail "模式 3 应报告 Caddy 真实状态"
+
+# 旧版模式 3 过渡态下状态必须提示执行 apply-cloud 完成迁移。
+: >"${STATE_FILE}"
+legacy_status_output=$(show_status 2>&1)
+[[ "${legacy_status_output}" == *"单 443 迁移状态"* && "${legacy_status_output}" == *"apply-cloud"* ]] \
+    || fail "过渡态模式 3 未提示执行 apply-cloud 迁移单 443"
+rm -f -- "${STATE_FILE}"
 REALITY_RUNTIME
 bash "${reality_work}/run.sh" "${ROOT_DIR}" "${reality_work}" >"${reality_work}/out.log" 2>&1 || {
     cat "${reality_work}/out.log" >&2
@@ -2984,8 +3073,11 @@ bash "${reality_work}/run.sh" "${ROOT_DIR}" "${reality_work}" >"${reality_work}/
 manifest_file="${ROOT_DIR}/runtime.manifest"
 grep -Fxq 'profiles/reality-cloudfront.sh' "${manifest_file}" || fail "manifest 缺少模式 3 Profile"
 grep -Fxq 'profiles/reality-cloudflare.sh' "${manifest_file}" || fail "manifest 缺少模式 4 Profile"
-grep -Fxq 'templates/camouflage-login.html' "${manifest_file}" \
-    || fail "manifest 缺少伪装站页面模板"
+grep -Fxq 'lib/camouflage.sh' "${manifest_file}" || fail "manifest 缺少 lib/camouflage.sh"
+for camo_tpl in camouflage-login.html camouflage-status.html camouflage-docs.html camouflage-studio.html; do
+    grep -Fxq "templates/${camo_tpl}" "${manifest_file}" \
+        || fail "manifest 缺少伪装站页面模板：templates/${camo_tpl}"
+done
 while IFS= read -r relative_path; do
     [[ -n "${relative_path}" && "${relative_path}" != \#* ]] || continue
     [[ -f "${ROOT_DIR}/${relative_path}" ]] || fail "manifest 列了不存在的文件：${relative_path}"
@@ -2996,11 +3088,12 @@ for profile_path in "${ROOT_DIR}"/profiles/*.sh; do
         || fail "Profile 未纳入 manifest：${relative_path}"
 done
 
-# 42. 模式 3 从 install_all 入口走到 inputs 阶段：对齐模式 5 的输入与身份字段。
+# 42. 模式 3 从 install_all 入口走到 inputs 阶段：对齐单 443 端口预检与身份字段。
 run_reality_install_all_case() {
     local case_dir="${TMP_DIR}/reality-install-all"
     rm -rf -- "${case_dir}"
     mkdir -p "${case_dir}"
+    EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
     EASY_ALL_GUARD_STATE_DIR="${case_dir}/state" \
     EASY_ALL_GUARD_STATE_FILE="${case_dir}/state/state.env" \
     EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/certs" \
@@ -3068,8 +3161,8 @@ run_reality_install_all_case() {
 reality_install_all_output=$(run_reality_install_all_case)
 assert_contains "模式 3 安装写 CloudFront 链路标记" "${reality_install_all_output}" \
     "PROGRESS-BEGIN: reality-cloudfront cloudfront"
-assert_equal "模式 3 首轮端口预检覆盖 443/8443/10086/9443" \
-    "PRECHECK:443 8443||10086|9443" \
+assert_equal "模式 3 全新首轮端口预检覆盖 443/10086/9443（不占 8443）" \
+    "PRECHECK:443||10086|9443" \
     "$(grep -F 'PRECHECK:' <<<"${reality_install_all_output}" || true)"
 reality_install_uuid=$(uninstall_entry_value "${reality_install_all_output}" UUID)
 [[ "${reality_install_uuid}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]] \
@@ -3094,6 +3187,7 @@ run_reality_cf_install_all_case() {
     local case_dir="${TMP_DIR}/reality-cloudflare-install-all"
     rm -rf -- "${case_dir}"
     mkdir -p "${case_dir}"
+    EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
     EASY_ALL_GUARD_STATE_DIR="${case_dir}/state" \
     EASY_ALL_GUARD_STATE_FILE="${case_dir}/state/state.env" \
     EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/certs" \

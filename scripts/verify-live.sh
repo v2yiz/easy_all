@@ -83,9 +83,9 @@ trap cleanup_fixtures EXIT
 "${CADDY}" run --config "${CADDY_CONFIG}" --adapter caddyfile >"${T}/caddy.log" 2>&1 & CADDYPID=$!
 HEADER='X-Easy-All-Origin-Key: live-origin-secret-0123456789'
 for _ in $(seq 1 40); do
-    curl -sk --noproxy '*' --max-time 2 --resolve origin.example.com:8443:127.0.0.1 \
-        -H "${HEADER}" https://origin.example.com:8443/easy_all-health 2>/dev/null \
-        | grep -q 'easy_all ok' && break
+    [[ "$(curl -sk --noproxy '*' --max-time 2 -o /dev/null -w '%{http_code}' \
+        --resolve origin.example.com:8443:127.0.0.1 -H "${HEADER}" \
+        'https://origin.example.com:8443/subscribe?token=invalid' 2>/dev/null || true)" == "403" ]] && break
     sleep 0.25
 done
 
@@ -122,10 +122,14 @@ done
 [[ "${client_full_ok}" == "1" ]] \
     || { tail -5 "${T}/client-full.log" >&2; fail "sing-box 订阅配置未通过真实核心启动校验"; }
 
-[[ "$(code "${BASE[@]}" https://origin.example.com:8443/easy_all-health)" == 200 ]] || fail health
+[[ "$(code "${BASE[@]}" https://origin.example.com:8443/easy_all-health)" == 404 ]] || fail health_removed
+[[ "$(code "${BASE[@]}" 'https://origin.example.com:8443/subscribe?token=invalid')" == 403 ]] || fail invalid_token_403
 [[ "$(curl -sk --noproxy '*' --max-time 3 -o /dev/null -w '%{http_code}' \
-    --resolve origin.example.com:8443:127.0.0.1 https://origin.example.com:8443/easy_all-health || true)" == 000 ]] \
+    --resolve origin.example.com:8443:127.0.0.1 'https://origin.example.com:8443/subscribe?token=invalid' || true)" == 000 ]] \
     || fail "缺少源站头未被 abort"
+invalid_headers=$(curl -sk --noproxy '*' --max-time 10 -D - -o /dev/null "${BASE[@]}" \
+    'https://origin.example.com:8443/subscribe?token=invalid' | tr -d '\r')
+! grep -qi '^server:' <<<"${invalid_headers}" || fail server_header_present
 [[ "$(code "${BASE[@]}" "https://origin.example.com:8443/subscribe?token=${TOKEN}")" == 200 ]] || fail subscribe
 [[ "$(code "${BASE[@]}" "https://origin.example.com:8443/sub?token=${TOKEN}")" == 200 ]] || fail sub_alias
 [[ "$(code "${BASE[@]}" "https://origin.example.com:8443/subscribe?token=bad")" == 403 ]] || fail deny
