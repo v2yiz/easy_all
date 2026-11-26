@@ -381,11 +381,11 @@ xray_xhttp_extra_json() {
         uplinkHTTPMethod: "POST",
         noGRPCHeader: false,
         xmux: {
-          maxConnections: 8,
+          maxConnections: 4,
           cMaxReuseTimes: 0,
           hMaxRequestTimes: "300-600",
-          hMaxReusableSecs: "600-1200",
-          hKeepAlivePeriod: 30
+          hMaxReusableSecs: "900-1800",
+          hKeepAlivePeriod: 0
         }
     }'
 }
@@ -419,7 +419,7 @@ build_mihomo_xray_xhttp_node() {
         "    xhttp-opts:\n      host: \($host|@json)\n      path: \($path|@json)\n" +
         "      mode: stream-up\n      no-grpc-header: false\n" +
         "      uplink-http-method: POST\n      reuse-settings:\n" +
-        "        max-connections: 8\n        c-max-reuse-times: 0\n" +
-        "        h-max-request-times: \"300-600\"\n        h-max-reusable-secs: \"600-1200\"\n" +
-        "        h-keep-alive-period: 30\n"'
+        "        max-connections: 4\n        c-max-reuse-times: 0\n" +
+        "        h-max-request-times: \"300-600\"\n        h-max-reusable-secs: \"900-1800\"\n" +
+        "        h-keep-alive-period: 0\n"'
 }

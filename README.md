@@ -1,6 +1,6 @@
 # easy_all
 
-当前版本：[5.9.0](CHANGELOG.md#590-更新说明2026-11-26)
+当前版本：[5.9.1](CHANGELOG.md#591-更新说明2026-11-26)
 
 `easy_all` 是专为全新 **Debian 12/13 及 Ubuntu 22.04/24.04/26.04 LTS**（amd64 / arm64）设计的单节点代理一键安装工具。通过交互引导一键部署节点核心（sing-box / Xray）、Caddy 订阅分发、UFW 防火墙、Fail2ban 与 Skyline Speeder TCP 加速（基于 Zabbly 6.12+ LTS 内核）。
 

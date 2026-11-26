@@ -1,3 +1,13 @@
+## 5.9.1 更新说明（2026-11-26）
+
+### 问题修复
+
+- **回滚 Xray XHTTP 客户端连接池与保活参数（模式 1 / 模式 5）**（`lib/xray-runtime.sh`、`test/test_xray_render.sh`）：
+  - 将客户端 `xmux` / `reuse-settings` 恢复为稳定基线：`maxConnections=4`、`hMaxReusableSecs="900-1800"`、`hKeepAlivePeriod=0`，修复在 Cloudflare 橙云链路下开启 `hKeepAlivePeriod=30` 与提高并发连接数导致并发资源加载失败与视频播放报错的问题。
+  - 保留 `5.9.0` 中针对 Google / YouTube / Gemini 的 `UDP/443` 精准拦截（`google-quic-fallback` + `geosite-google`）与服务端 `8.8.8.8` DNS 配置。
+
+---
+
 ## 5.9.0 更新说明（2026-11-26）
 
 ### 性能优化
