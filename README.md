@@ -114,10 +114,11 @@ sudo easy_all status
 sudo easy_all subscription
 ```
 
-- **客户端支持**：推荐 **FlClash**、**Mihomo（Clash Verge Rev / Clash Nyanpasu）**、**Shadowrocket（iOS 需外区 Apple ID）**、**v2rayN**，以及 **sing-box（SFA / SFI / SFM / SFT / SFW / SFL，仅模式 2/3/4）**。
-- **自动适配**：订阅接口按 User-Agent 自动分发对应格式，支持 `&flag=singbox|clash|base64` 强制指定格式，或 `&node=all` 附带外部聚合节点。
-- **模式 1/5 客户端限制**：不生成 sing-box JSON（`&flag=singbox` 返回 `503`），请使用 Mihomo / FlClash / Stash、Shadowrocket 或 v2rayN 导入 Base64 / Mihomo 订阅。
-- 更多导入与分流排障见 [客户端使用指南](docs/client-guide.md)。
+- **Mihomo 内核客户端（全模式，推荐）**：**FlClash**（优先推荐）、**Clash Verge Rev**、**Clash Mi**（iOS 需外区 Apple ID）、**Clash Meta for Android**、**Bettbox**、**Stash** 等（内核建议 ≥ 1.19.9）。自动下发含分流规则的 Mihomo YAML 配置（iOS 自动适配低内存配置）。
+- **通用 / Xray 客户端（全模式）**：**Shadowrocket（小火箭，iOS 需外区 Apple ID）**、**v2rayN / v2rayNG** 等（默认下发通用 Base64 节点列表，不含服务端分流规则；模式 1/5 需客户端版本支持 XHTTP）。
+- **sing-box 官方客户端（仅模式 2/3/4）**：**SFA / SFI / SFM / SFT / SFW / SFL**（内核需 ≥ 1.14.0）。由于官方 sing-box 不支持 XHTTP，**模式 1/5 无法使用**（不生成 `singbox.json`，指定 `&flag=singbox` 返回 `503`）。
+- **订阅自动识别与手动参数**：按客户端 `User-Agent` 自动分发对应格式；也可追加 `&flag=clash|base64|singbox` 强制指定格式，或追加 `&node=all` 附带外部聚合节点。
+- 下载链接、各系统安装与分流排障详见 [客户端使用指南](docs/client-guide.md)。
 
 ---
 
