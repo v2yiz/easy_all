@@ -5,7 +5,7 @@
 安装模式对应关系：
 - **1 纯 CloudFlare**：橙云单域名（TCP 443，仅 Cloudflare 回源段放行）同时提供 VLESS HTTPUpgrade 节点与订阅；
 - **2 纯 CloudFront**：CloudFront CDN 节点（TCP 443），源站回源（TCP 443）；
-- **3 Reality + CloudFront**：VLESS Reality 直连（TCP 443）+ CloudFront CDN 节点（TCP 443），采用单 `443` 合一架构经回环 `127.0.0.1:9443` 分流回源与伪装站（新装无公网 `8443`）；
+- **3 Reality + CloudFront**：VLESS Reality 直连（TCP 443）+ CloudFront CDN 节点（TCP 443），采用单 `443` 合一架构经回环 `127.0.0.1:9443` 分流回源与伪装站（公网仅开放 TCP `443`）；
 - **4 Reality + CloudFlare**：VLESS Reality 直连（TCP 443，回环 `127.0.0.1:9443` 伪装站）+ 橙云节点/订阅（TCP 8443 仅 Cloudflare 回源段放行）；
 - **5 AnyTLS + CloudFront**：AnyTLS 直连节点（TCP 443）+ CloudFront 节点（TCP 443），源站回源（TCP 8443）；
 - **6 AnyTLS + CloudFlare**：AnyTLS 直连节点（TCP 443）+ 橙云节点/订阅（TCP 8443 仅 Cloudflare 回源段放行）。

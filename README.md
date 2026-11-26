@@ -1,6 +1,6 @@
 # easy_all
 
-当前版本：[5.6.2](CHANGELOG.md#562-更新说明2026-11-26)
+当前版本：[5.6.3](CHANGELOG.md#563-更新说明2026-11-26)
 
 `easy_all` 是专为全新 **Debian 12/13 及 Ubuntu 22.04/24.04/26.04 LTS**（amd64 / arm64）设计的单节点代理一键安装工具。通过控制台交互引导，一键打通 sing-box、Caddy 订阅分发、UFW 防火墙、Fail2ban 及 Skyline Speeder TCP 加速（基于 Zabbly 6.12+ LTS 内核）。
 
@@ -23,8 +23,8 @@
 2. **内存与 Swap**：安装包含内核与网络优化，内存 ≤ 1GB 的机器请确保根分区剩余 ≥ 1.5GB 以便自动创建 Swap，避免编译 Skyline 时 OOM。
 3. **安全组与防火墙**：
    - 放行 SSH 端口；
-   - 模式 2/3/4/5/6 放行公网 TCP `443`（仅模式 5 另需对公网放行 TCP `8443`；模式 3 新装采用单 `443` 合一架构，不再需要公网 `8443`）；
-   - 模式 1 的 `443` 以及模式 4/6 的 `8443` 仅对 Cloudflare 官方回源 IPv4 段放行（UFW 自动配置，云安全组需同步放行）；模式 2 的源站 `443`、模式 5 的源站 `8443` 及模式 3 经 `443` 回落至 `127.0.0.1:9443` 的源站对公网可达，由 `X-Easy-All-Origin-Key` 精确校验；模式 3/4 的回环 `127.0.0.1:9443` **不得**对公网放行。
+   - 公网仅需放行模式实际使用的业务端口：模式 2/3/4/5/6 放行 TCP `443`，仅模式 5 另需对公网放行 TCP `8443`（模式 3 采用单 `443` 合一架构，仅放行公网 TCP `443`）；
+   - 模式 1 的 `443` 以及模式 4/6 的 `8443` 仅对 Cloudflare 官方回源 IPv4 段放行（UFW 自动配置，云安全组需同步放行）；模式 2 的源站 `443`、模式 5 的源站 `8443` 及模式 3 经 `443` 回落至 `127.0.0.1:9443` 的源站对公网可达，由 `X-Easy-All-Origin-Key` 精确校验；模式 3/4 的伪装站仅监听本机回环 `127.0.0.1:9443`。
    - **回源端口不得预先全局放行**：机器上若已有 `ufw allow 443/tcp` 或 `ufw allow 8443/tcp`（来源 `Anywhere`、`Any` 或 `0.0.0.0/0`），安装会在写入防火墙规则与云资源**之前**中止，并提示先 `ufw status` 查明后移除；否则回源端口仍对全网开放，绕过 Cloudflare-only 边界。
 4. **云端凭据准备**：
    - **Cloudflare API Token**（全模式）：`Zone Read` + `DNS Edit`；模式 1/4/6 另需 `Zone Settings Read`（校验 `Full (strict)`），模式 4/6 另需 `Origin Rules Edit`，模式 1 另需 `SSL and Certificates Edit`。
@@ -71,7 +71,7 @@ $\textcolor{red}{\textbf{线路好+无可用信用卡，选模式 4 模式6(更�
 
 > **核心约定**：
 > - **域名规划**：全模式只需 **1 个根域名**（托管于同一 Cloudflare Zone），安装器会自动创建对应数量的一级子域名。
-> - **端口规范**：客户端统一连接 `443`，全模式不开放 `80`。回源端口在模式 1（`443`）与模式 4/6（`8443`）仅对 Cloudflare 官方回源 IP 放行；模式 2 的源站 `443` 与模式 5 的源站 `8443` 对公网可达，模式 3 新装采用单 `443` 合一架构（CloudFront 回源亦走 `443`，经 sing-box 透明回落至回环 `127.0.0.1:9443` 由 Caddy 按 `X-Easy-All-Origin-Key` 精确分流，不再暴露公网 `8443`）。
+> - **端口规范**：客户端统一连接 `443`，全模式公网仅开放各自业务端口（证书统一走 DNS-01）。回源端口在模式 1（`443`）与模式 4/6（`8443`）仅对 Cloudflare 官方回源 IP 放行；模式 2 的源站 `443` 与模式 5 的源站 `8443` 对公网可达；模式 3 采用单 `443` 合一架构，直连与 CloudFront 回源统一走公网 `443`，经 sing-box 透明回落至回环 `127.0.0.1:9443` 由 Caddy 按 `X-Easy-All-Origin-Key` 精确分流。
 > - **协议与证书**：CDN 节点传输按 CDN 家族区分：模式 1/4/6（橙云）为 **VLESS HTTPUpgrade**（HTTP/1.1 ALPN），模式 2/3/5（CloudFront）为 **VLESS WebSocket**；模式 3/4 直连为 **VLESS Reality**（`xtls-rprx-vision`），非 Reality 握手透明回落到本机 `127.0.0.1:9443` 的伪装站（内置 4 套中性原型模板并按实例随机变异，支持在 `/var/www/easy_all/camouflage` 放入自定义静态站点且在 `apply`/`renew-cert`/`uninstall` 中自动保留）。模式 2/3/5 直连与源站使用 Let's Encrypt（DNS-01 自动签发），模式 4/6 通过两套独立 Certbot DNS-01 lineage（`easy_all` 仅覆盖直连域名、`easy_all-cdn` 仅覆盖橙云节点域名，无需额外 Cloudflare Token 权限）隔离证书 SAN；CloudFront 客户端证书由 AWS ACM 托管，模式 1 回源使用 Cloudflare Origin CA（客户端连接 CF 边缘证书）。
 > - **Cloudflare SSL**：模式 1/4/6 要求目标 Zone 的 SSL/TLS 必须为 **Full (strict)**。
 > - **升级提示**：不支持从 4.x 直接升级，请先执行旧版 `sudo easy_all uninstall` 后重新安装。
@@ -152,10 +152,10 @@ sudo easy_all subscription
 
 ## 核心防护特性
 
-- **端口隐蔽与防爆破**：全模式不开放 80 端口（证书走 DNS-01），安装收尾可选把 SSH 端口迁移到新端口（默认 `22222`，也可选保持当前端口不变），迁移后禁用原端口（重启后生效），由 Fail2ban 实时封禁恶意爆破 IP。
+- **端口隐蔽与防爆破**：全模式证书统一走 DNS-01（公网仅开放各自业务端口），安装收尾可选把 SSH 端口迁移到新端口（默认 `22222`，也可选保持当前端口不变），迁移后禁用原端口（重启后生效），由 Fail2ban 实时封禁恶意爆破 IP。
 - **源站访问鉴权**：
   - 模式 1/4/6 回源端口在 UFW 层面仅放行 Cloudflare 官方回源网段；
-  - 模式 2/3/5 源站注入 `X-Easy-All-Origin-Key` 密钥并由 Caddy 精确校验（模式 3 经单 `443` 合一回落至回环 `127.0.0.1:9443` 按密钥分流，不暴露公网 `8443`，无头/错头直落伪装站），防探测与未授权直连。
+  - 模式 2/3/5 源站注入 `X-Easy-All-Origin-Key` 密钥并由 Caddy 精确校验（模式 3 经单 `443` 合一回落至回环 `127.0.0.1:9443` 按密钥分流，公网仅开放 TCP `443`，无头/错头直落伪装站），防探测与未授权直连。
 - **CloudFront 流量熔断保护（模式 2/3/5）**：本机内置 985 GB 近似流量计量监控，达到阈值自动熔断 CDN 访问（直连、订阅与模式 3 的伪装站不受影响），降低 AWS 超额账单风险（详见[运维指南](docs/operations-guide.md#6-cdn-流量保护985-gb-熔断仅模式-235)）。
 - **内网与恶意流量阻断**：sing-box 默认拦截回环、私有网段及元数据请求，防止节点被用于 SSRF 滥用。
 - **直连主动探测日志（模式 3/4/5/6）**：安装或 `apply` 时落一条限速（30/min）的内核 LOG 规则（前缀 `GFW_CHK:`，只记 TCP 443 SYN），配合一个 oneshot systemd 单元在重启与 UFW reload 后重放；平时不跑常驻进程，用 `sudo easy_all hellogfw` 按需做启发式分析（`hellogfw -h` 免 root）。同一时机写入的 journald drop-in 设置 `MaxRetentionSec=30day`——**这是 systemd-journald 的全局保留上限，影响主机全部日志**，超出上限的主机历史日志可能被 vacuum 且无法恢复，详见[运维指南](docs/operations-guide.md#8-直连主动探测日志分析仅模式-3456)。
