@@ -2837,6 +2837,7 @@ cloudfront cloudfront.182682.xyz
 reality-cloudfront cloudfront.182682.xyz
 cloudflare cloudflare.182682.xyz
 reality-cloudflare cloudflare.182682.xyz
+reality-cloudflare-xhttp cloudflare.182682.xyz
 EDGE_PROFILES
 # 9b. 真实非终端 stdin：收集器整体 no-op（不提示也不改配置；验收条件 6）。
 edge_cfg_none='{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[]}'
@@ -3506,6 +3507,155 @@ curl_fallback_out=$(
 ) || fail "公共 DNS 不可达时 public_dns_curl 应回退默认解析：${curl_fallback_out}"
 [[ "${curl_fallback_out}" != *"--resolve"* ]] || fail "公共 DNS 不可达时不应注入 --resolve：${curl_fallback_out}"
 assert_contains "公共 DNS 不可达时仍正常调用 curl" "${curl_fallback_out}" "https://sub.example.com/subscribe"
+
+# --- 12. 模式 5（reality-cloudflare-xhttp）：云端阶段、状态门禁与端口派生 ---------
+# design §2.5.4：模式 5 跳过 WebSockets 预检、用 Transform Rule 取代 Origin Rule，
+# 状态门禁校验源站头密钥与 Transform Rule 标识，端口预检不包含 8443。
+
+# 12a. apply_cloud_phase：strict 失败必须在任何 DNS/证书/Rule 写入前中止；
+#      strict 通过后只创建 Transform Rule，不查询 WebSockets、不调用 Origin Rule。
+run_xhttp_cloud_phase_case() { # $1=ssl 值或 403 -> stdout: 日志
+    local ssl=$1
+    local tag="${ssl//\//_}"
+    local log="${TMP_DIR}/xhttp-cloud-${tag}.log"
+    local script="${TMP_DIR}/xhttp-cloud-${tag}.sh"
+    local runtime="${TMP_DIR}/xhttp-cloud-runtime-${tag}"
+    local state="${TMP_DIR}/xhttp-cloud-state-${tag}"
+    local status=0
+    mkdir -p "${runtime}" "${state}"
+    cat >"${script}" <<XHTTP
+set -Eeuo pipefail
+export RUNTIME_TMP=$(printf '%q' "${runtime}")
+export EASY_ALL_STATE_DIR_OVERRIDE=$(printf '%q' "${state}")
+export EASY_ALL_CERT_DIR_OVERRIDE=$(printf '%q' "${state}/certs")
+export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE=$(printf '%q' "${state}/subscriptions")
+source $(printf '%q' "${ROOT_DIR}/profiles/reality-cloudflare-xhttp.sh")
+CF_ZONE=example.com
+VPS_PUBLIC_IPV4=203.0.113.10
+SUBSCRIPTION_MODE=deploy
+SUBSCRIPTION_DOMAIN=cf.example.com
+DIRECT_DOMAIN=direct.example.com
+CF_NODE_DOMAIN=cf.example.com
+ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef
+CLOUDFLARE_API_TOKEN=$(printf '%q' "${TOKEN}")
+cloudflare_api_request() {
+    printf '%s %s\n' "\$1" "\$2" >>$(printf '%q' "${log}")
+    case "\$1 \$2" in
+    "GET /zones?name=example.com&status=active&per_page=50")
+        printf '[{"name":"example.com","id":"zoneid"}]\n' ;;
+    "GET /zones/zoneid/settings/ssl")
+        [[ $(printf '%q' "${ssl}") == "403" ]] && return 1
+        printf '{"value":"%s"}\n' $(printf '%q' "${ssl}") ;;
+    *) return 1 ;;
+    esac
+}
+persist_cloudflare_token() { :; }
+dns_ensure_record() { printf 'DNS %s\n' "\$1" >>$(printf '%q' "${log}"); }
+certbot_write_cloudflare_credentials() { :; }
+cdn_issue_certificate() { printf 'CERT\n' >>$(printf '%q' "${log}"); }
+direct_ensure_origin_rule() { printf 'ORIGIN-RULE\n' >>$(printf '%q' "${log}"); }
+direct_ensure_transform_rule() { printf 'TRANSFORM-RULE\n' >>$(printf '%q' "${log}"); }
+apply_cloud_phase
+XHTTP
+    bash "${script}" >/dev/null 2>&1 || status=$?
+    printf 'STATUS=%s\n' "${status}" >>"${log}"
+    cat "${log}"
+}
+
+xhttp_strict_log=$(run_xhttp_cloud_phase_case strict)
+assert_contains "模式 5 strict：先只读查询 Zone ID" "${xhttp_strict_log}" \
+    "GET /zones?name=example.com&status=active&per_page=50"
+assert_contains "模式 5 strict：创建 DNS 记录" "${xhttp_strict_log}" "DNS cf.example.com"
+assert_contains "模式 5 strict：签发证书" "${xhttp_strict_log}" "CERT"
+assert_contains "模式 5 strict：创建 Transform Rule" "${xhttp_strict_log}" "TRANSFORM-RULE"
+assert_not_contains "模式 5 不创建 Origin Rule" "${xhttp_strict_log}" "ORIGIN-RULE"
+assert_not_contains "模式 5 不预检 WebSockets 开关" "${xhttp_strict_log}" \
+    "settings/websockets"
+assert_contains "模式 5 strict：成功结束" "${xhttp_strict_log}" "STATUS=0"
+ssl_line=$(grep -n 'settings/ssl' <<<"${xhttp_strict_log}" | head -n 1 | cut -d: -f1)
+dns_line=$(grep -n 'DNS cf.example.com' <<<"${xhttp_strict_log}" | head -n 1 | cut -d: -f1)
+[[ -n "${ssl_line}" && -n "${dns_line}" ]] || fail "模式 5 必须同时有 SSL 校验与 DNS 创建"
+((ssl_line < dns_line)) || fail "模式 5 的 SSL 校验必须早于任何写请求"
+
+for xhttp_ssl in full flexible off 403; do
+    xhttp_bad_log=$(run_xhttp_cloud_phase_case "${xhttp_ssl}")
+    assert_not_contains "模式 5 ${xhttp_ssl}：不创建 DNS" "${xhttp_bad_log}" "DNS "
+    assert_not_contains "模式 5 ${xhttp_ssl}：不签发证书" "${xhttp_bad_log}" "CERT"
+    assert_not_contains "模式 5 ${xhttp_ssl}：不创建 Transform Rule" "${xhttp_bad_log}" \
+        "TRANSFORM-RULE"
+    assert_not_contains "模式 5 ${xhttp_ssl}：非零退出" "${xhttp_bad_log}" "STATUS=0"
+done
+
+# 12b. cdn_validate_state_structure：模式 5 的源站头密钥与 Transform Rule 标识必须有效。
+run_xhttp_state_gate() { # $1=覆盖的行（name=value；空=合法）
+    local override=${1:-}
+    local dir="${TMP_DIR}/xhttp-state-$RANDOM"
+    mkdir -p "${dir}/runtime"
+    {
+        printf '%s\n' \
+            'STATE_VERSION=1' \
+            'PROTOCOL=reality-cloudflare-xhttp' \
+            'TCP_ACCELERATION=off' \
+            'VPS_PUBLIC_IPV4=203.0.113.10' \
+            'CF_ZONE=example.com' \
+            'CLOUDFLARE_ZONE_ID=zoneid' \
+            'SUBSCRIPTION_MODE=deploy' \
+            'SUB_DOWNLOAD_NAME=EASY_ALL' \
+            'OWNER_TOKEN=token-abcdefgh' \
+            'ALLOWED_TOKENS=\{\"owner\":\"token-abcdefgh\"\}' \
+            'SUBSCRIPTION_CONFIG=\{\"allowedTokens\":\{\"owner\":\"token-abcdefgh\"\}\,\"nodes\":\[\]\}' \
+            'MIHOMO_TEMPLATE_SNAPSHOT=1' \
+            'SCHEDULED_REBOOT_ENABLED=0' \
+            'SCHEDULED_REBOOT_HOUR=4' \
+            'DIRECT_DOMAIN=direct.example.com' \
+            'DIRECT_NODE_NAME=Reality' \
+            'VLESS_UUID=11111111-2222-4333-8444-555555555555' \
+            'REALITY_PRIVATE_KEY=QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE' \
+            'REALITY_PUBLIC_KEY=QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI' \
+            'REALITY_SHORT_ID=0123456789abcdef' \
+            'CF_NODE_DOMAIN=cf.example.com' \
+            'CF_NODE_PREFIX=CF' \
+            'VLESS_PATH=/vless-0123456789ab' \
+            'ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef' \
+            'CLOUDFLARE_TRANSFORM_RULESET_ID=rs1' \
+            'CLOUDFLARE_TRANSFORM_RULE_ID=rule1'
+        [[ -z "${override}" ]] || printf '%s\n' "${override}"
+    } >"${dir}/state.env"
+    RUNTIME_TMP="${dir}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${dir}" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${dir}/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${dir}/subscriptions" \
+        bash -c '
+            source "$1/profiles/reality-cloudflare-xhttp.sh"
+            load_state
+            printf "STATE-OK\n"
+        ' _ "${ROOT_DIR}" 2>&1
+}
+xhttp_state_ok=$(run_xhttp_state_gate "") || fail "模式 5 合法状态必须通过：${xhttp_state_ok}"
+assert_contains "模式 5 合法状态通过门禁" "${xhttp_state_ok}" "STATE-OK"
+# override 行追加在末尾会覆盖同名变量（state.env 逐行 source）。
+xhttp_state_bad_secret=$(run_xhttp_state_gate "ORIGIN_HEADER_SECRET=short") || true
+assert_not_contains "模式 5 源站头密钥过短必须被拒" "${xhttp_state_bad_secret}" "STATE-OK"
+assert_contains "模式 5 源站头密钥错误点名" "${xhttp_state_bad_secret}" "源站头密钥无效"
+xhttp_state_bad_ruleset=$(run_xhttp_state_gate "CLOUDFLARE_TRANSFORM_RULESET_ID=") || true
+assert_not_contains "模式 5 缺少 ruleset ID 必须被拒" "${xhttp_state_bad_ruleset}" "STATE-OK"
+assert_contains "模式 5 缺少 ruleset ID 点名" "${xhttp_state_bad_ruleset}" \
+    "必需字段：CLOUDFLARE_TRANSFORM_RULESET_ID"
+xhttp_state_bad_rule=$(run_xhttp_state_gate "CLOUDFLARE_TRANSFORM_RULE_ID=bad rule") || true
+assert_not_contains "模式 5 非法 rule ID 必须被拒" "${xhttp_state_bad_rule}" "STATE-OK"
+
+# 12c. 端口预检：模式 5 只预检 443 + 回环 10086 + 伪装回环 9443，不预检 8443。
+xhttp_ports=$(
+    bash -c '
+        source "$1/profiles/reality-cloudflare-xhttp.sh"
+        prepare_fresh_install() { printf "%s\n" "PORTS: $*"; }
+        cdn_prepare_install_ports
+    ' _ "${ROOT_DIR}" 2>&1
+) || fail "模式 5 端口预检失败：${xhttp_ports}"
+assert_contains "模式 5 端口预检包含 443" "${xhttp_ports}" "443"
+assert_contains "模式 5 端口预检包含回环 10086" "${xhttp_ports}" "10086"
+assert_contains "模式 5 端口预检包含伪装回环 9443" "${xhttp_ports}" "9443"
+assert_not_contains "模式 5 端口预检不包含 8443" "${xhttp_ports}" "8443"
 
 printf 'ok - 凭据、strict 顺序、DNS 归属、证书生效与服务编排测试通过\n'
 

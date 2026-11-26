@@ -533,7 +533,9 @@ assert_contains "runtime-core pkgs contain the Cloudflare DNS-01 plugin" \
 assert_contains "runtime-core pkgs contain iptables (mangle metering)" "${runtime_pkgs}" "iptables"
 assert_not_contains "旧栈的 xhttp 运行时已删除" \
     "$(ls "${ROOT_DIR}/lib")" "xhttp-runtime.sh"
-assert_not_contains "旧栈的 Xray 核心已删除" "$(ls "${ROOT_DIR}/lib")" "xray-core.sh"
+# 模式 5 以纯 xray-core 后端重新引入 lib/xray-core.sh；旧栈的 sing-box xhttp 渲染库仍保持删除。
+assert_contains "模式 5 的 Xray 核心库就位" "$(ls "${ROOT_DIR}/lib")" "xray-core.sh"
+assert_not_contains "旧栈的 sing-box xhttp 渲染库已删除" "$(ls "${ROOT_DIR}/lib")" "xhttp-render.sh"
 
 echo "=== 8. 订阅鉴权由 Caddy 精确匹配承担（不再生成 Nginx 路由） ==="
 auth_content=$(<"${ROOT_DIR}/lib/subscription-auth.sh")
@@ -1052,6 +1054,38 @@ assert_equal "audit: 复用失败不删用户已有文件" "1" \
     "$([[ -f "${swap_file}" ]] && printf '1' || printf '0')"
 assert_equal "audit: 复用失败不写 fstab" "0" \
     "$(awk 'END {print NR + 0}' "${swap_dir}/fstab-fail")"
+
+echo "=== 13. 模式 5 后端分派与卸载/更新边界 ==="
+runtime_core_body=$(<"${ROOT_DIR}/lib/runtime-core.sh")
+assert_contains "runtime-core 提供后端分派 xray 判定" "${runtime_core_body}" "runtime_uses_xray() {"
+for dispatch in runtime_proxy_service runtime_proxy_bin runtime_proxy_config \
+    runtime_proxy_label runtime_supports_singbox_subscription \
+    runtime_download_proxy_core runtime_write_proxy_config runtime_ensure_proxy_service; do
+    assert_contains "runtime-core 提供分派函数 ${dispatch}" "${runtime_core_body}" "${dispatch}() {"
+done
+update_core_body=$(awk '/^update_current_core\(\) \{/,/^}/' "${ROOT_DIR}/lib/runtime-core.sh")
+assert_contains "update-core 按后端下载核心" "${update_core_body}" "runtime_download_proxy_core"
+assert_contains "update-core 按后端备份/回滚核心" "${update_core_body}" "runtime_proxy_bin"
+assert_contains "update-core 按后端备份/回滚配置" "${update_core_body}" "runtime_proxy_config"
+assert_contains "update-core 不再硬编码 download_singbox" "${update_core_body}" \
+    "runtime_download_proxy_core"
+assert_not_contains "update-core 不直接调用 download_singbox" "${update_core_body}" \
+    "download_singbox"
+stop_services_body=$(awk '/^stop_services\(\) \{/,/^}/' "${ROOT_DIR}/lib/runtime-core.sh")
+assert_contains "stop_services 停用 xray 单元" "${stop_services_body}" 'XRAY_SERVICE'
+uninstall_incomplete_body=$(awk '/^uninstall_incomplete\(\) \{/,/^}/' "${ROOT_DIR}/lib/runtime-core.sh")
+assert_contains "uninstall_incomplete 删除 xray 单元" "${uninstall_incomplete_body}" 'XRAY_SERVICE_FILE'
+assert_contains "uninstall_incomplete 删除 xray 安装目录" "${uninstall_incomplete_body}" \
+    '$(dirname -- "${XRAY_BIN}")'
+snapshot_body=$(awk '/^snapshot_subscription_update\(\) \{/,/^}/' "${ROOT_DIR}/lib/runtime-core.sh")
+assert_contains "订阅事务备份当前后端配置" "${snapshot_body}" "runtime_proxy_config"
+rollback_body=$(awk '/^rollback_subscription_update\(\) \{/,/^}/' "${ROOT_DIR}/lib/runtime-core.sh")
+assert_contains "订阅事务恢复当前后端配置" "${rollback_body}" "runtime_proxy_config"
+render_files_body=$(awk '/^render_subscription_files\(\) \{/,/^}/' "${ROOT_DIR}/lib/runtime-core.sh")
+assert_contains "订阅渲染按后端跳过 sing-box JSON" "${render_files_body}" \
+    "runtime_supports_singbox_subscription"
+uninstall_all_body=$(awk '/^uninstall_all\(\) \{/,/^}/' "${ROOT_DIR}/lib/reality-cloudflare-mode.sh")
+assert_contains "模式 5 uninstall 确认文案提示 Transform Rule" "${uninstall_all_body}" "Transform Rule"
 
 echo "ok - all audit fixes verified successfully"
 

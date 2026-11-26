@@ -71,32 +71,42 @@ EASY_ALL_STATE_CLOUDFLARE_ORIGIN_RULE_FIELDS=(
     CLOUDFLARE_ORIGIN_RULESET_ID
     CLOUDFLARE_ORIGIN_RULE_ID
 )
+# 模式 5：公网单 443 合一的源站守卫密钥与 Request Header Transform Rule
+# （Cloudflare 边缘注入 X-Easy-All-Origin-Key，取代模式 4 的 8443 回源端口覆盖）。
+EASY_ALL_STATE_CLOUDFLARE_TRANSFORM_RULE_FIELDS=(
+    ORIGIN_HEADER_SECRET
+    CLOUDFLARE_TRANSFORM_RULESET_ID
+    CLOUDFLARE_TRANSFORM_RULE_ID
+)
 
 state_protocol_valid() {
     case "${1:-}" in
-    reality-cloudfront | reality-cloudflare | cloudfront | cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare | reality-cloudflare-xhttp | cloudfront | cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
 
-# 直连入口（公网 443）：模式 3/4 的 Reality 自偷入口。
+# 直连入口（公网 443）：模式 3/4/5 的 Reality 自偷入口。
 state_protocol_has_direct_entry() {
     case "${1:-}" in
-    reality-cloudfront | reality-cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare | reality-cloudflare-xhttp) return 0 ;;
     *) return 1 ;;
     esac
 }
 
 state_protocol_has_reality_entry() {
     case "${1:-}" in
-    reality-cloudfront | reality-cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare | reality-cloudflare-xhttp) return 0 ;;
     *) return 1 ;;
     esac
 }
 
 state_protocol_has_cdn_entry() {
     case "${1:-}" in
-    cloudfront | cloudflare | reality-cloudfront | reality-cloudflare) return 0 ;;
+    cloudfront | cloudflare | reality-cloudfront | reality-cloudflare \
+        | reality-cloudflare-xhttp)
+        return 0
+        ;;
     *) return 1 ;;
     esac
 }
@@ -117,7 +127,10 @@ state_protocol_uses_origin_ca() {
 state_protocol_has_subscription_site() {
     local protocol=${1:-} subscription_mode=${2:-deploy}
     case "${protocol}" in
-    cloudfront | cloudflare | reality-cloudfront | reality-cloudflare) return 0 ;;
+    cloudfront | cloudflare | reality-cloudfront | reality-cloudflare \
+        | reality-cloudflare-xhttp)
+        return 0
+        ;;
     *) return 1 ;;
     esac
 }
@@ -156,6 +169,11 @@ state_required_fields() {
     fi
     if [[ "${protocol}" == "reality-cloudflare" ]]; then
         for field in "${EASY_ALL_STATE_CLOUDFLARE_ORIGIN_RULE_FIELDS[@]}"; do
+            printf '%s\n' "${field}"
+        done
+    fi
+    if [[ "${protocol}" == "reality-cloudflare-xhttp" ]]; then
+        for field in "${EASY_ALL_STATE_CLOUDFLARE_TRANSFORM_RULE_FIELDS[@]}"; do
             printf '%s\n' "${field}"
         done
     fi

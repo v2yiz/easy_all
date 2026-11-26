@@ -1,6 +1,7 @@
 # Files installed as the easy_all runtime.
 profiles/reality-cloudfront.sh
 profiles/reality-cloudflare.sh
+profiles/reality-cloudflare-xhttp.sh
 profiles/cloudfront.sh
 profiles/cloudflare.sh
 lib/log.sh
@@ -20,9 +21,12 @@ lib/singbox-core.sh
 lib/caddy-core.sh
 lib/singbox-runtime.sh
 lib/singbox-subscription.sh
+lib/xray-core.sh
+lib/xray-runtime.sh
 lib/caddy-runtime.sh
 lib/camouflage.sh
 lib/cf-origin-rule.sh
+lib/cf-transform-rule.sh
 lib/cf-dns.sh
 lib/cdn-traffic-guard.sh
 lib/reality-cloudflare-mode.sh

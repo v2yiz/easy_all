@@ -24,9 +24,14 @@ CANDIDATE_MIN_SECONDS = 1.0
 CANDIDATE_MAX_SECONDS = 120.0
 CANDIDATE_MAX_COUNT = 2
 SINGBOX_UNIT = 'easy_all-singbox'
+XRAY_UNIT = 'easy_all-xray'
 
 KERNEL_LOG_OVERRIDE = 'HELLOGFW_KERNEL_LOG_FILE'
-SINGBOX_LOG_OVERRIDE = 'HELLOGFW_SINGBOX_LOG_FILE'
+# HELLOGFW_CORE_LOG_FILE 是当前口径；HELLOGFW_SINGBOX_LOG_FILE 保留为兼容旧测试的别名。
+CORE_LOG_OVERRIDE = 'HELLOGFW_CORE_LOG_FILE'
+LEGACY_SINGBOX_LOG_OVERRIDE = 'HELLOGFW_SINGBOX_LOG_FILE'
+CORE_UNIT_OVERRIDE = 'HELLOGFW_CORE_UNIT'
+CORE_LABEL_OVERRIDE = 'HELLOGFW_CORE_LABEL'
 
 TIMESTAMP_RE = re.compile(
     r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)(?=\s)')
@@ -34,8 +39,11 @@ TIMESTAMP_PARTS_RE = re.compile(
     r'^(?P<base>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?)(?P<tz>Z|[+-]\d{2}:?\d{2})?$')
 SRC_RE = re.compile(r'(?:^|\s)SRC=(\S+)')
 DPT_RE = re.compile(r'(?:^|\s)DPT=(\S+)')
-ALERT_RE = re.compile(r'(?i)\b(warn|error)\b')
-REALITY_FALLBACK_MARKER = 'REALITY: processed invalid connection'
+# Xray 日志行形如 `2026/11/26 10:00:00 [Warning] ...`；sing-box 用 `WARN`/`ERROR`。
+ALERT_RE = re.compile(r'(?i)\b(?:warn(?:ing)?|error)\b')
+# Reality 非授权握手的回落文案：sing-box 与 Xray 的 Reality 服务端使用同一句特征串。
+# 回落计数不要求先命中 ALERT_RE（部分核心只在 debug 级别打印这一句）。
+REALITY_FALLBACK_MARKERS = ('REALITY: processed invalid connection',)
 
 
 class InputError(Exception):
@@ -63,6 +71,8 @@ def parse_timestamp(text):
 
 def read_source(command, override_env, label):
     path = os.environ.get(override_env, '').strip()
+    if not path and override_env == CORE_LOG_OVERRIDE:
+        path = os.environ.get(LEGACY_SINGBOX_LOG_OVERRIDE, '').strip()
     if path:
         try:
             with open(path, 'r', encoding='utf-8', errors='replace') as handle:
@@ -113,6 +123,12 @@ def collect_kernel_records(text):
 
 def count_alerts(text):
     return sum(1 for line in text.splitlines() if ALERT_RE.search(line))
+
+
+def count_reality_fallbacks(text):
+    """统计 Reality 非授权握手的回落特征行（不要求行内先出现 WARN/ERROR）。"""
+    return sum(1 for line in text.splitlines()
+               if any(marker in line for marker in REALITY_FALLBACK_MARKERS))
 
 
 def count_sources(records):
@@ -167,7 +183,8 @@ def build_parser():
         description=(
             '分析直连 TCP 443 的 GFW_CHK: 内核日志。\n'
             '输出只是基于连接时序与频次的候选线索，不构成 GFW 归因证明。\n'
-            '注：模式 3（Single-443）下 CloudFront 回源流量（订阅刷新与应急 CDN）也共用 TCP 443。'),
+            '注：模式 3（Single-443）与模式 5（Reality + Cloudflare XHTTP）下 CDN 回源流量'
+            '（订阅刷新与应急 CDN）也共用 TCP 443，相关连接会混入 443 统计。'),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
@@ -191,15 +208,13 @@ def analyze(args):
         raise InputError(
             '匹配到 {} 条 GFW_CHK: DPT=443 记录，但时间戳或来源地址全部无法解析：'
             '结果不完整，未得出结论'.format(matched))
-    singbox_log = read_source(
-        ['journalctl', '-u', SINGBOX_UNIT, '--since', since, '--no-pager'],
-        SINGBOX_LOG_OVERRIDE, 'sing-box 日志')
-    alerts = count_alerts(singbox_log)
-    reality_fallbacks = (
-        sum(1 for line in singbox_log.splitlines()
-            if ALERT_RE.search(line) and REALITY_FALLBACK_MARKER in line)
-        if alerts else 0
-    )
+    core_unit = os.environ.get(CORE_UNIT_OVERRIDE, '').strip() or SINGBOX_UNIT
+    core_label = os.environ.get(CORE_LABEL_OVERRIDE, '').strip() or 'sing-box'
+    core_log = read_source(
+        ['journalctl', '-u', core_unit, '--since', since, '--no-pager'],
+        CORE_LOG_OVERRIDE, '{} 日志'.format(core_label))
+    alerts = count_alerts(core_log)
+    reality_fallbacks = count_reality_fallbacks(core_log)
 
     counts = count_sources(records)
     references = select_references(counts, args.my_ips)
@@ -218,10 +233,10 @@ def analyze(args):
         print('正常客户端参照：参照样本不足（未指定 --my-ip，且没有出现次数 >= {} 的来源）'
               .format(REF_MIN_COUNT))
     if reality_fallbacks:
-        print('sing-box 同期 WARN/ERROR：{} 条（其中 Reality 非授权回落：{} 条，含主动探测及模式 3 回源流量）'
-              .format(alerts, reality_fallbacks))
+        print('{} 同期 WARN/ERROR：{} 条（其中 Reality 非授权回落：{} 条，含主动探测及模式 3/5 回源流量）'
+              .format(core_label, alerts, reality_fallbacks))
     else:
-        print('sing-box 同期 WARN/ERROR：{} 条'.format(alerts))
+        print('{} 同期 WARN/ERROR：{} 条'.format(core_label, alerts))
     if malformed:
         print('注意：有 {} 条匹配记录的时间戳或来源地址无法解析，本结果不完整'.format(malformed))
 

@@ -1,6 +1,6 @@
 # 前置准备手册
 
-本手册介绍使用 `easy_all` 部署各个模式前，需要在域名注册商、Cloudflare 和 AWS 准备的资源与凭据：**域名注册与 Cloudflare 托管**、**Cloudflare API Token**（全模式）与 **AWS 访问密钥**（仅模式 2/3）。
+本手册介绍使用 `easy_all` 部署各个模式前，需要在域名注册商、Cloudflare 和 AWS 准备的资源与凭据：**域名注册与 Cloudflare 托管**、**Cloudflare API Token**（全模式）与 **AWS 访问密钥**（仅模式 2/3）。模式 5 还需要在 Cloudflare 面板开启 `Network -> gRPC`。
 
 ## 凭据需求一览
 
@@ -10,6 +10,7 @@
 | **模式 2 纯 CloudFront** | Zone Read + DNS Edit | **需要** |
 | **模式 3 Reality + CloudFront** | Zone Read + DNS Edit | **需要** |
 | **模式 4 Reality + CloudFlare** | Zone Read + DNS Edit + Zone Settings Read + Origin Rules Edit | 不需要 |
+| **模式 5 Reality + CloudFlare（Xray XHTTP）** | Zone Read + DNS Edit + Zone Settings Read + Transform Rules Edit | 不需要 |
 
 ---
 
@@ -58,7 +59,7 @@
 
 ### 1.4 本项目对域名的规划与要求
 
-- **全模式使用同一 Zone 下的一级子域名**：所有模式都使用同一个 Zone 下的一级子域名（如 `node.example.com`、`cf.example.com`），根域名（apex）本身只用于托管 Zone，不作为客户端节点名；多级子域名（如 `a.b.example.com`）不在 Cloudflare 默认边缘证书覆盖范围内：模式 1/4 的**订阅域名与 CDN 节点域名**在安装交互中直接拒绝；直连域名走 Certbot 签发，可用多级子域名；模式 2/3 的节点域名由 ACM 申请，需自行确认证书能否覆盖。
+- **全模式使用同一 Zone 下的一级子域名**：所有模式都使用同一个 Zone 下的一级子域名（如 `node.example.com`、`cf.example.com`），根域名（apex）本身只用于托管 Zone，不作为客户端节点名；多级子域名（如 `a.b.example.com`）不在 Cloudflare 默认边缘证书覆盖范围内：模式 1/4/5 的**订阅域名与 CDN 节点域名**在安装交互中直接拒绝；直连域名走 Certbot 签发，可用多级子域名；模式 2/3 的节点域名由 ACM 申请，需自行确认证书能否覆盖。
 - **切勿提前在控制台手动添加子域名 DNS 记录**：安装器会在运行期间通过 API 自动检查、创建和绑定对应的 A 记录或 CNAME。
 - **旧记录冲突清理**：若域名此前使用过并留有同名 A、AAAA 或 CNAME 记录，建议在安装前先在 Cloudflare 控制台手动清理冲突记录。
 
@@ -74,14 +75,16 @@
 
 | 权限分类与项目 | 适用模式 | 作用说明 |
 | :--- | :--- | :--- |
-| `Zone / Zone / Read` | 全模式 (1-4) | 读取目标 Zone 状态与 ID |
-| `DNS / Zone / Edit` | 全模式 (1-4) | 自动管理 A、CNAME 及 ACM/Certbot DNS 验证记录 |
-| `Zone Settings / Zone / Read` | 模式 1 / 模式 4 | 校验 Zone SSL/TLS 是否为 `Full (strict)` |
+| `Zone / Zone / Read` | 全模式 (1-5) | 读取目标 Zone 状态与 ID |
+| `DNS / Zone / Edit` | 全模式 (1-5) | 自动管理 A、CNAME 及 ACM/Certbot DNS 验证记录 |
+| `Zone Settings / Zone / Read` | 模式 1 / 模式 4 / 模式 5 | 校验 Zone SSL/TLS 是否为 `Full (strict)` |
 | `Origin Rules / Zone / Edit` | 模式 4 | 维护订阅/节点回源 8443 端口的 Origin Rule |
+| `Transform Rules / Zone / Edit` | 模式 5 | 维护 Request Header Transform Rule（边缘注入 `X-Easy-All-Origin-Key`） |
 | `SSL and Certificates / Zone / Edit` | 模式 1 | 签发与管理 Cloudflare Origin CA 证书 |
 
 > [!NOTE]
 > - **模式 2/3** 边缘证书由 AWS ACM 托管，Cloudflare 仅作权威 DNS，**只需 Zone Read 与 DNS Edit**。
+> - **模式 5** 除 Token 权限外，还需在 Cloudflare 控制台 **Network → gRPC** 打开（XHTTP 回源经 HTTP/2 到源站 `443`）。本工具只读校验 `Full (strict)`，不会自动修改 Zone 级 gRPC 开关；未开启时安装的公网订阅验收会失败并提示。
 > - Token 在安装时输入，以 `0600` 权限安全保存于 VPS 本机 `/etc/easy_all/cloudflare.token`。
 
 ### 2.2 控制台创建步骤
@@ -98,7 +101,7 @@
 
 ## 3. AWS 凭证准备（仅模式 2/3）
 
-模式 2 与模式 3 使用 AWS CloudFront 分发与 AWS Certificate Manager (ACM) viewer 证书。模式 1 与 4 无需 AWS 凭据。
+模式 2 与模式 3 使用 AWS CloudFront 分发与 AWS Certificate Manager (ACM) viewer 证书。模式 1、4 与 5 无需 AWS 凭据。
 
 ### 3.1 注册与登录 AWS 账号
 
@@ -106,7 +109,7 @@
 2. **首次登录选 Root user，不要选 IAM user**：打开 [AWS 管理控制台](https://console.aws.amazon.com/)，用注册时的根用户邮箱登录。如果页面默认显示 IAM 用户登录，点击 **Sign in using root user email** 切换。
 
 - **内存安全使用**：AWS 密钥在安装时输入，**仅暂存于当前进程内存，不落盘**（不写入 state、日志或订阅）；亦可通过环境变量 `AWS_ACCESS_KEY_ID` 与 `AWS_SECRET_ACCESS_KEY` 预先传入。
-- **费用保护**：本机内置 985 GB 近似流量计量保护，达到阈值自动阻断 CDN 入口（直连与模式 3/4 的伪装站不受影响），降低超额扣费风险。
+- **费用保护**：本机内置 985 GB 近似流量计量保护，达到阈值自动阻断 CDN 入口（直连与模式 3 的伪装站不受影响），降低超额扣费风险。
 
 ### 3.2 创建 IAM 策略与专用用户
 

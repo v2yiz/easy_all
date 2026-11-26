@@ -84,6 +84,12 @@ source "${RUNTIME_LIB_DIR}/camouflage.sh"
 source "${RUNTIME_LIB_DIR}/cf-dns.sh"
 # shellcheck source=lib/cf-origin-rule.sh
 source "${RUNTIME_LIB_DIR}/cf-origin-rule.sh"
+# shellcheck source=lib/cf-transform-rule.sh
+source "${RUNTIME_LIB_DIR}/cf-transform-rule.sh"
+# shellcheck source=lib/xray-core.sh
+source "${RUNTIME_LIB_DIR}/xray-core.sh"
+# shellcheck source=lib/xray-runtime.sh
+source "${RUNTIME_LIB_DIR}/xray-runtime.sh"
 # shellcheck source=lib/local-aggregation.sh
 source "${RUNTIME_LIB_DIR}/local-aggregation.sh"
 # shellcheck source=lib/scheduled-maintenance.sh
@@ -320,9 +326,79 @@ normalize_vless_path() {
 subscription_link_domain() {
     case "${PROTOCOL:-}" in
     cloudfront | reality-cloudfront) caddy_require_host SUBSCRIPTION_DOMAIN ;;
-    cloudflare | reality-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
+    cloudflare | reality-cloudflare | reality-cloudflare-xhttp) caddy_require_host CF_NODE_DOMAIN ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
+}
+
+# --- 后端分派（sing-box / xray） ---------------------------------------------
+
+# 模式 1-4 是 sing-box 后端；模式 5 是纯 xray-core 后端（不安装、不依赖 sing-box）。
+# 下面这组函数是唯一分派点：模式库、订阅链与服务管理一律经它们取核心路径/服务名/渲染入口。
+runtime_uses_xray() {
+    [[ "${BACKEND:-}" == "xray" ]]
+}
+
+runtime_proxy_service() {
+    if runtime_uses_xray; then
+        printf '%s\n' "${XRAY_SERVICE}"
+    else
+        printf '%s\n' "${SINGBOX_SERVICE}"
+    fi
+}
+
+runtime_proxy_bin() {
+    if runtime_uses_xray; then
+        printf '%s\n' "${XRAY_BIN}"
+    else
+        printf '%s\n' "${SINGBOX_BIN}"
+    fi
+}
+
+runtime_proxy_config() {
+    if runtime_uses_xray; then
+        printf '%s\n' "${XRAY_CONFIG}"
+    else
+        printf '%s\n' "${SINGBOX_CONFIG}"
+    fi
+}
+
+runtime_proxy_label() {
+    if runtime_uses_xray; then
+        printf 'xray\n'
+    else
+        printf 'sing-box\n'
+    fi
+}
+
+# sing-box 完整 JSON 订阅只属于 sing-box 后端（模式 1-4）：模式 5 一律跳过。
+runtime_supports_singbox_subscription() {
+    ! runtime_uses_xray
+}
+
+runtime_download_proxy_core() {
+    if runtime_uses_xray; then
+        download_xray
+    else
+        download_singbox
+    fi
+}
+
+runtime_write_proxy_config() {
+    local blocked=${1:-0}
+    if runtime_uses_xray; then
+        write_xray_config "${blocked}"
+    else
+        write_singbox_config "${blocked}"
+    fi
+}
+
+runtime_ensure_proxy_service() {
+    if runtime_uses_xray; then
+        install_xray_service
+    else
+        install_singbox_service "$(runtime_singbox_exec_start_pre)"
+    fi
 }
 
 # --- 模式派生的运行参数 -------------------------------------------------------
@@ -331,6 +407,7 @@ runtime_protocol_label() {
     case "${PROTOCOL:-}" in
     reality-cloudfront) printf 'Reality（direct TCP 443）+ VLESS WebSocket over AWS CloudFront' ;;
     reality-cloudflare) printf 'Reality（direct TCP 443）+ VLESS HTTPUpgrade over Cloudflare 橙云' ;;
+    reality-cloudflare-xhttp) printf 'Reality（direct TCP 443）+ VLESS XHTTP over Cloudflare 橙云（xray）' ;;
     cloudfront) printf 'VLESS WebSocket over AWS CloudFront' ;;
     cloudflare) printf 'VLESS HTTPUpgrade over Cloudflare 橙云' ;;
     *) printf '%s\n' "${PROTOCOL:-未知}" ;;
@@ -350,7 +427,10 @@ runtime_has_cdn_entry() {
 }
 
 runtime_uses_split_cdn_cert() {
-    [[ "${PROTOCOL:-}" == "reality-cloudflare" ]]
+    case "${PROTOCOL:-}" in
+    reality-cloudflare | reality-cloudflare-xhttp) return 0 ;;
+    *) return 1 ;;
+    esac
 }
 
 # 公网 TCP 业务端口（design §2）。模式 1 的 443 与模式 4 的 8443 只对 Cloudflare 段开放；
@@ -365,6 +445,7 @@ runtime_public_tcp_ports() {
         fi
         ;;
     reality-cloudflare) printf '443' ;;
+    reality-cloudflare-xhttp) printf '443' ;;
     cloudfront) printf '443' ;;
     cloudflare) printf '' ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
@@ -389,8 +470,12 @@ runtime_cdn_loopback_port() {
 runtime_caddy_site_enabled() {
     case "${PROTOCOL:-}" in
     # 模式 3：Caddy 始终运行：它同时承担 127.0.0.1:9443 的 Reality 伪装站与回环 CloudFront 源站；
-    # 模式 4：8443 橙云回源 + 9443 伪装站。
-    reality-cloudfront | reality-cloudflare | cloudfront | cloudflare) return 0 ;;
+    # 模式 4：8443 橙云回源 + 9443 伪装站；
+    # 模式 5：127.0.0.1:9443 双证书双站点（直连伪装站 + 橙云 XHTTP 回源站）。
+    reality-cloudfront | reality-cloudflare | reality-cloudflare-xhttp \
+        | cloudfront | cloudflare)
+        return 0
+        ;;
     *) return 1 ;;
     esac
 }
@@ -844,6 +929,24 @@ cdn_validate_state_structure() {
             || die "状态中的节点域名不得等于直连域名：${CF_NODE_DOMAIN}"
         [[ "${SUBSCRIPTION_MODE}" == "deploy" ]] \
             || die "状态中的订阅模式无效（模式 4 固定 deploy）：${SUBSCRIPTION_MODE}"
+    fi
+    if [[ "${protocol}" == "reality-cloudflare-xhttp" ]]; then
+        # 模式 5：公网单 443 合一，回源守卫密钥与 Transform Rule 标识都必须已落盘。
+        validate_domain "${CF_NODE_DOMAIN}" || die "状态中的节点域名无效：${CF_NODE_DOMAIN}"
+        [[ "${CF_NODE_DOMAIN}" == *".${CF_ZONE}" ]] \
+            || die "状态中的节点域名不属于 ${CF_ZONE}：${CF_NODE_DOMAIN}"
+        [[ "${CF_NODE_DOMAIN}" != "${DIRECT_DOMAIN}" ]] \
+            || die "状态中的节点域名不得等于直连域名：${CF_NODE_DOMAIN}"
+        [[ "${SUBSCRIPTION_MODE}" == "deploy" ]] \
+            || die "状态中的订阅模式无效（模式 5 固定 deploy）：${SUBSCRIPTION_MODE}"
+        [[ "${ORIGIN_HEADER_SECRET:-}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
+            || die "状态中的源站头密钥无效"
+        [[ -n "${CLOUDFLARE_TRANSFORM_RULESET_ID:-}" \
+            && "${CLOUDFLARE_TRANSFORM_RULESET_ID}" != *[[:space:]]* ]] \
+            || die "状态中的 Transform Rules ruleset ID 无效"
+        [[ -n "${CLOUDFLARE_TRANSFORM_RULE_ID:-}" \
+            && "${CLOUDFLARE_TRANSFORM_RULE_ID}" != *[[:space:]]* ]] \
+            || die "状态中的 Transform Rule ID 无效"
     fi
     cdn_derive_runtime_fields || die "状态缺少可用于派生运行时的字段"
 }
@@ -1469,8 +1572,13 @@ reality_remove_camouflage_page() {
 }
 
 # Reality keypair 必须在输入阶段之后、任何证书/配置写入之前生成并落盘。
-# 生成依赖已安装的 sing-box（generate reality-keypair）；落盘保证中断续装复用同一对密钥。
+# sing-box 后端用 `generate reality-keypair`，xray 后端用 `x25519`：两者输出格式不同，
+# 一律经各自库的解析器处理，不在这里做格式分支。
 reality_generate_keypair() {
+    if runtime_uses_xray; then
+        xray_generate_reality_keypair
+        return
+    fi
     [[ -z "${REALITY_PRIVATE_KEY:-}" || -z "${REALITY_PUBLIC_KEY:-}" ]] || return 0
     local output private public
     output=$("${SINGBOX_BIN}" generate reality-keypair 2>/dev/null) \
@@ -1510,7 +1618,7 @@ reality_prepare_runtime() {
 # write_runtime_config，由包装器派生本模式的 blocked/订阅就绪状态后调用它。
 runtime_write_config() {
     local blocked=${1:-0} subscription_ok=${2:-0}
-    write_singbox_config "${blocked}"
+    runtime_write_proxy_config "${blocked}"
     if runtime_caddy_site_enabled; then
         # 伪装站页面必须在任何 Caddy 配置写入之前就位：所有写配置的路径
         # （安装/应用/阻断/受限恢复/renew-cert）都经过这里。
@@ -1530,8 +1638,10 @@ runtime_ensure_singbox_service() {
 # 第二参数为 1 时重启 Caddy 进程：reload 只在运行中的进程内换配置，磁盘上的新二进制
 # 必须重启才会被执行（update-core 的核心替换依赖这一点）。
 runtime_apply_runtime_services() {
-    local caddy_reload_force=${1:-1} caddy_restart=${2:-0}
-    runtime_ensure_singbox_service
+    local caddy_reload_force=${1:-1} caddy_restart=${2:-0} proxy_service proxy_label
+    proxy_service=$(runtime_proxy_service)
+    proxy_label=$(runtime_proxy_label)
+    runtime_ensure_proxy_service
     if runtime_caddy_site_enabled; then
         install_caddy_service
     fi
@@ -1540,8 +1650,8 @@ runtime_apply_runtime_services() {
     systemctl daemon-reload || die "重新加载 systemd 单元失败"
     # 只 enable：紧随其后的 restart 就是启动。enable --now 会在毫秒内把同一单元启动两次，
     # 无意义地消耗 StartLimitBurst=3/120s。Caddy 冷启动同样先 enable，再单次 start。
-    systemctl enable "${SINGBOX_SERVICE}" >/dev/null 2>&1 || true
-    systemctl restart "${SINGBOX_SERVICE}" || die "重启 sing-box 服务失败"
+    systemctl enable "${proxy_service}" >/dev/null 2>&1 || true
+    systemctl restart "${proxy_service}" || die "重启 ${proxy_label} 服务失败"
     if runtime_caddy_site_enabled; then
         if [[ "${caddy_restart}" == "1" ]]; then
             systemctl enable "${CADDY_SERVICE}" >/dev/null 2>&1 || true
@@ -1608,12 +1718,13 @@ runtime_local_status() {
 # 已发布的候选配置里是否还有 CDN 入站：blocked 时渲染器省略该入站（design §7）。
 # 读不到配置时按模式要求（宁可验收更严格），不能因读失败就放宽验收。
 runtime_config_has_cdn_inbound() {
-    local config=${1:-${SINGBOX_CONFIG:-}}
+    local config=${1:-}
+    [[ -n "${config}" ]] || config=$(runtime_proxy_config)
     [[ -s "${config}" ]] || return 0
     jq -e 'any(.inbounds[]?; .tag == "vless-cdn-in")' "${config}" >/dev/null 2>&1
 }
 
-# 必需监听端口按候选配置派生：受限（blocked）时不要求 10086，模式 3 仍要求 443。
+# 必需监听端口按候选配置派生：受限（blocked）时不要求 10086，Reality 模式仍要求 443。
 runtime_singbox_required_ports() {
     local ports=""
     runtime_has_direct_entry && ports="443"
@@ -1660,17 +1771,19 @@ runtime_reality_fallback_ok() {
 }
 
 validate_protocol_runtime() {
-    local attempt port
+    local attempt port proxy_service proxy_label
+    proxy_service=$(runtime_proxy_service)
+    proxy_label=$(runtime_proxy_label)
     for attempt in 1 2 3 4 5; do
-        if systemctl is-active --quiet "${SINGBOX_SERVICE}" 2>/dev/null \
+        if systemctl is-active --quiet "${proxy_service}" 2>/dev/null \
             && runtime_ports_listening && runtime_caddy_probe_ok; then
             return 0
         fi
         sleep 2
     done
     port=$(runtime_singbox_required_ports)
-    warn "sing-box 必需监听端口：${port:-无}"
-    die "本机运行时验收失败（sing-box ${SINGBOX_SERVICE} / Caddy ${CADDY_SERVICE}）"
+    warn "${proxy_label} 必需监听端口：${port:-无}"
+    die "本机运行时验收失败（${proxy_label} ${proxy_service} / Caddy ${CADDY_SERVICE}）"
 }
 
 runtime_ports_listening() {
@@ -1685,12 +1798,20 @@ runtime_ports_listening() {
 
 runtime_base64_markers() {
     runtime_has_reality_entry && printf 'security=reality\n'
+    if runtime_uses_xray; then
+        printf 'type=xhttp\nmode=stream-up\n'
+        return 0
+    fi
     runtime_has_cdn_entry && printf 'type=%s\n' "$(singbox_cdn_transport_type)"
     return 0
 }
 
 runtime_mihomo_markers() {
     runtime_has_reality_entry && printf 'reality-opts:\n'
+    if runtime_uses_xray; then
+        printf 'network: xhttp\nmode: stream-up\n'
+        return 0
+    fi
     if runtime_has_cdn_entry; then
         printf 'network: ws\n'
         [[ "$(singbox_cdn_transport_type)" != "httpupgrade" ]] \
@@ -1855,12 +1976,14 @@ render_mihomo_base64_files() {
     chmod 0600 "${output_dir}"/*.txt "${output_dir}"/*.yaml
 }
 
-# 渲染八份订阅产物：六份 Mihomo/Base64 加 sing-box 完整 JSON；
-# JSON 候选校验失败即中止发布，已发布的旧订阅保持不变。
+# 渲染本模式的全部订阅产物：sing-box 后端为八份（六份 Mihomo/Base64 + 两份 JSON），
+# xray 后端只有六份 Mihomo/Base64（不产出 singbox*.json）。
 render_subscription_files() {
     local output_dir=$1
     render_mihomo_base64_files "${output_dir}"
-    render_singbox_subscription_files "${output_dir}"
+    runtime_supports_singbox_subscription \
+        && render_singbox_subscription_files "${output_dir}"
+    return 0
 }
 
 write_subscriptions() {
@@ -1891,8 +2014,14 @@ show_subscription() {
     done < <(jq -r 'to_entries[] | [.key,.value] | @tsv' <<<"${ALLOWED_TOKENS}")
     printf '%s\n' '  同一链接按客户端自动下发：sing-box（SFA/SFI/SFM/SFT/SFW/SFL）→ 完整 JSON；Clash/mihomo/Stash/FlClash → YAML；Shadowrocket/v2rayN/v2rayNG/NekoBox → Base64'
     printf '%s\n' '  如需强制格式：在链接后加 &flag=singbox、&flag=clash 或 &flag=base64'
-    if [[ ! -s "${SUBSCRIPTION_DIR}/singbox.json" || ! -s "${SUBSCRIPTION_DIR}/singbox-all.json" ]]; then
-        printf '%s\n' '  sing-box JSON 订阅不完整：请执行 sudo easy_all apply 后再导入'
+    if runtime_supports_singbox_subscription; then
+        if [[ ! -s "${SUBSCRIPTION_DIR}/singbox.json" || ! -s "${SUBSCRIPTION_DIR}/singbox-all.json" ]]; then
+            printf '%s\n' '  sing-box JSON 订阅不完整：请执行 sudo easy_all apply 后再导入'
+        fi
+    else
+        printf '  本模式（%s）不提供 sing-box JSON 订阅：请使用 Mihomo/FlClash/Stash 或 Shadowrocket/v2rayN（YAML/Base64 均可）\n' \
+            "$(runtime_proxy_label)"
+        printf '%s\n' '  &flag=singbox 会返回 503（未生成任何 JSON 产物）'
     fi
     if subscription_optional_variants \
         && jq -e 'any(.[]; .optional == true)' <<<"${AGGREGATION_NODES:-[]}" >/dev/null 2>&1; then
@@ -1905,10 +2034,10 @@ show_subscription() {
 snapshot_subscription_update() {
     UPDATE_SUB_BACKUP_DIR=$(make_temp_dir)
     [[ -f "${STATE_FILE}" ]] && install -m 0600 "${STATE_FILE}" "${UPDATE_SUB_BACKUP_DIR}/state.env"
-    if [[ -f "${SINGBOX_CONFIG}" ]]; then
-        install -m 0600 "${SINGBOX_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/singbox.json"
+    if [[ -f "$(runtime_proxy_config)" ]]; then
+        install -m 0600 "$(runtime_proxy_config)" "${UPDATE_SUB_BACKUP_DIR}/proxy-config"
     else
-        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/singbox.json.missing"
+        install -m 0600 /dev/null "${UPDATE_SUB_BACKUP_DIR}/proxy-config.missing"
     fi
     if [[ -f "${CADDY_CONFIG}" ]]; then
         install -m 0600 "${CADDY_CONFIG}" "${UPDATE_SUB_BACKUP_DIR}/Caddyfile"
@@ -2011,10 +2140,10 @@ rollback_subscription_update() {
             rm -f -- "${RT_TEMPLATE_SNAPSHOT_PATH}"
         fi
     fi
-    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/singbox.json" ]]; then
-        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/singbox.json" "${SINGBOX_CONFIG}"
-    elif [[ -f "${UPDATE_SUB_BACKUP_DIR}/singbox.json.missing" ]]; then
-        rm -f -- "${SINGBOX_CONFIG}"
+    if [[ -f "${UPDATE_SUB_BACKUP_DIR}/proxy-config" ]]; then
+        install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/proxy-config" "$(runtime_proxy_config)"
+    elif [[ -f "${UPDATE_SUB_BACKUP_DIR}/proxy-config.missing" ]]; then
+        rm -f -- "$(runtime_proxy_config)"
     fi
     if [[ -f "${UPDATE_SUB_BACKUP_DIR}/Caddyfile" ]]; then
         install -m 0600 "${UPDATE_SUB_BACKUP_DIR}/Caddyfile" "${CADDY_CONFIG}"
@@ -2192,16 +2321,18 @@ uninstall_incomplete() {
     remove_probe_log \
         || die "回收 TCP 443 探测日志规则与单元失败；已保留本机状态与命令，修正后重试 uninstall"
     remove_daily_reboot_schedule || warn "移除 easy_all 定时重启任务失败；请检查 root crontab"
-    rm -f -- "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}"
+    rm -f -- "${SINGBOX_SERVICE_FILE}" "${XRAY_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" \
-        "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"
+        "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" \
+        "$(dirname -- "${XRAY_BIN}")" "$(dirname -- "${CADDY_BIN}")"
     rmdir "$(dirname -- "${SUBSCRIPTION_DIR}")" 2>/dev/null || true
     success "本机内容已清理；云端资源无法自动清理，需人工核对"
 }
 
 stop_services() {
     systemctl disable --now "${SINGBOX_SERVICE}" >/dev/null 2>&1 || true
+    systemctl disable --now "${XRAY_SERVICE}" >/dev/null 2>&1 || true
     systemctl disable --now "${CADDY_SERVICE}" >/dev/null 2>&1 || true
 }
 
@@ -2210,10 +2341,14 @@ stop_services() {
 # update-core 无新增参数：重装/修复当前脚本支持的锁定版本，不追最新。
 update_current_core() {
     (($# == 0)) || die "update-core 不接受参数"
-    local backup_dir restart_allowed=1 blocked=0 have_singbox=0 have_caddy=0
+    local backup_dir restart_allowed=1 blocked=0 have_proxy=0 have_caddy=0
+    local proxy_bin proxy_config proxy_label
     require_root
     acquire_runtime_write_lock
     collect_installed_state
+    proxy_bin=$(runtime_proxy_bin)
+    proxy_config=$(runtime_proxy_config)
+    proxy_label=$(runtime_proxy_label)
     if declare -F cdn_traffic_needs_restricted_recovery >/dev/null 2>&1 \
         && cdn_traffic_needs_restricted_recovery; then
         die "CDN 流量保护仍待落实；请先执行 sudo easy_all cdn-traffic-sync 再更新核心"
@@ -2227,21 +2362,21 @@ update_current_core() {
     install -d -m 0700 "${backup_dir}"
     # 备份只用于回滚：核心文件缺失（正是 update-core 要修复的场景）时没有旧版本可备份，
     # 不能因此中止；已存在的二进制备份失败则仍按「无法回滚」中止。
-    if [[ -f "${SINGBOX_BIN}" ]]; then
-        install -m 0755 "${SINGBOX_BIN}" "${backup_dir}/sing-box" \
-            || die "备份当前 sing-box 失败；已中止核心更新"
-        have_singbox=1
+    if [[ -f "${proxy_bin}" ]]; then
+        install -m 0755 "${proxy_bin}" "${backup_dir}/proxy-core" \
+            || die "备份当前 ${proxy_label} 失败；已中止核心更新"
+        have_proxy=1
     fi
     if [[ -f "${CADDY_BIN}" ]]; then
         install -m 0755 "${CADDY_BIN}" "${backup_dir}/caddy" \
             || die "备份当前 Caddy 失败；已中止核心更新"
         have_caddy=1
     fi
-    [[ ! -f "${SINGBOX_CONFIG}" ]] \
-        || install -m 0600 "${SINGBOX_CONFIG}" "${backup_dir}/singbox.json"
+    [[ ! -f "${proxy_config}" ]] \
+        || install -m 0600 "${proxy_config}" "${backup_dir}/proxy-config"
     [[ ! -f "${CADDY_CONFIG}" ]] \
         || install -m 0600 "${CADDY_CONFIG}" "${backup_dir}/Caddyfile"
-    if ! ( download_singbox && download_caddy ); then
+    if ! ( runtime_download_proxy_core && download_caddy ); then
         restart_allowed=1
     elif declare -F cdn_traffic_protection_checkpoint >/dev/null 2>&1 \
         && ! cdn_traffic_protection_checkpoint; then
@@ -2253,20 +2388,24 @@ update_current_core() {
     ); then
         refresh_runtime_subscription_after_core_update
         release_runtime_write_lock
-        success "sing-box $(singbox_version) 与 Caddy $(caddy_version) 已更新"
+        if runtime_uses_xray; then
+            success "Xray $(xray_version) 与 Caddy $(caddy_version) 已更新"
+        else
+            success "sing-box $(singbox_version) 与 Caddy $(caddy_version) 已更新"
+        fi
         return 0
     fi
     warn "核心更新失败，正在回滚配置与运行时"
-    if ((have_singbox == 1)); then
-        install -m 0755 "${backup_dir}/sing-box" "${SINGBOX_BIN}" \
-            || die "恢复旧 sing-box 失败（本次核心更新未完成）"
+    if ((have_proxy == 1)); then
+        install -m 0755 "${backup_dir}/proxy-core" "${proxy_bin}" \
+            || die "恢复旧 ${proxy_label} 失败（本次核心更新未完成）"
     fi
     if ((have_caddy == 1)); then
         install -m 0755 "${backup_dir}/caddy" "${CADDY_BIN}" \
             || die "恢复旧 Caddy 失败（本次核心更新未完成）"
     fi
-    if [[ -f "${backup_dir}/singbox.json" ]]; then
-        install -m 0600 "${backup_dir}/singbox.json" "${SINGBOX_CONFIG}"
+    if [[ -f "${backup_dir}/proxy-config" ]]; then
+        install -m 0600 "${backup_dir}/proxy-config" "${proxy_config}"
     fi
     if [[ -f "${backup_dir}/Caddyfile" ]]; then
         install -m 0600 "${backup_dir}/Caddyfile" "${CADDY_CONFIG}"
@@ -2275,10 +2414,10 @@ update_current_core() {
         die "核心更新失败，已恢复旧版本；CDN 流量待落实，未重启旧服务，请运行 sudo easy_all cdn-traffic-sync"
     fi
     # 核心文件缺失时重建服务只会得到「重启失败」：先点名缺失，不把根因埋成服务错误。
-    [[ -x "${SINGBOX_BIN}" && -x "${CADDY_BIN}" ]] \
+    [[ -x "${proxy_bin}" && -x "${CADDY_BIN}" ]] \
         || die "核心更新失败；核心文件缺失，未重启服务；请重试 sudo easy_all update-core 重新下载"
     runtime_apply_runtime_services 1 1 || die "恢复旧核心后无法重建服务"
-    if ((have_singbox == 0 || have_caddy == 0)); then
+    if ((have_proxy == 0 || have_caddy == 0)); then
         die "核心更新失败；更新前缺失的核心没有可回滚的旧版本，已保留本次下载的二进制"
     fi
     die "核心更新失败，已恢复旧版本"

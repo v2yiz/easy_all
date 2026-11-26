@@ -23,7 +23,8 @@ assert_not_contains() {
 source "${ROOT_DIR}/lib/state.sh"
 
 [[ "${EASY_ALL_STATE_SCHEMA_VERSION}" == "1" ]] || fail "schema 必须为 1"
-for protocol in reality-cloudfront reality-cloudflare cloudfront cloudflare; do
+for protocol in reality-cloudfront reality-cloudflare reality-cloudflare-xhttp \
+    cloudfront cloudflare; do
     state_protocol_valid "${protocol}" || fail "协议应受支持：${protocol}"
 done
 for legacy in reality cdn combined combined-cloudfront combined-cloudflare anytls reality-self ""; do
@@ -109,8 +110,45 @@ assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 4 不使用 Origin C
 state_field_allows_empty reality-cloudflare deploy MIHOMO_TEMPLATE_SNAPSHOT 0 \
     && fail "模式 4 恒发布订阅，模板快照必须落盘"
 
+# 模式 5：Reality 直连 + 橙云单 443 合一（Xray XHTTP）；订阅走 Transform Rule。
+state_protocol_valid reality-cloudflare-xhttp || fail "reality-cloudflare-xhttp 应受支持"
+state_protocol_has_direct_entry reality-cloudflare-xhttp \
+    || fail "reality-cloudflare-xhttp 占用直连入口 443"
+state_protocol_has_reality_entry reality-cloudflare-xhttp \
+    || fail "reality-cloudflare-xhttp 必须要求 Reality 凭据"
+state_protocol_has_cdn_entry reality-cloudflare-xhttp \
+    || fail "reality-cloudflare-xhttp 必须有 CDN 入口"
+state_protocol_uses_cloudfront reality-cloudflare-xhttp \
+    && fail "reality-cloudflare-xhttp 不走 CloudFront 链路"
+state_protocol_uses_origin_ca reality-cloudflare-xhttp \
+    && fail "reality-cloudflare-xhttp 不使用 Origin CA"
+state_protocol_has_subscription_site reality-cloudflare-xhttp deploy \
+    || fail "reality-cloudflare-xhttp deploy 有订阅站点"
+fields=$(state_required_fields reality-cloudflare-xhttp deploy)
+for required in DIRECT_DOMAIN DIRECT_NODE_NAME VLESS_UUID REALITY_PRIVATE_KEY \
+    REALITY_PUBLIC_KEY REALITY_SHORT_ID CF_NODE_DOMAIN CF_NODE_PREFIX VLESS_PATH \
+    ORIGIN_HEADER_SECRET CLOUDFLARE_TRANSFORM_RULESET_ID CLOUDFLARE_TRANSFORM_RULE_ID; do
+    grep -Fxq "${required}" <<<"${fields}" || fail "模式 5 deploy 需要 ${required}"
+done
+assert_absent "${fields}" SUBSCRIPTION_DOMAIN "模式 5 的订阅域名由节点域名派生，不落盘"
+assert_absent "${fields}" CF_ORIGIN_DOMAIN "模式 5 没有独立源站域名"
+assert_absent "${fields}" CDN_TRAFFIC_PROTECTION_GB "模式 5 没有 985GB 熔断"
+assert_absent "${fields}" AWS_CLOUDFRONT_DISTRIBUTION_ID "模式 5 不用 AWS"
+assert_absent "${fields}" AWS_ACM_CERTIFICATE_ARN "模式 5 不用 AWS"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_CERT_ID "模式 5 不使用 Origin CA"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_RULESET_ID "模式 5 不用 Origin Rule"
+assert_absent "${fields}" CLOUDFLARE_ORIGIN_RULE_ID "模式 5 不用 Origin Rule"
+assert_absent "${fields}" ANYTLS_PASSWORD "模式 5 不得要求 AnyTLS 密码"
+[[ "$(grep -Fxc ORIGIN_HEADER_SECRET <<<"${fields}")" == "1" ]] \
+    || fail "模式 5 的 ORIGIN_HEADER_SECRET 必须恰好出现一次"
+[[ "$(grep -Fxc VLESS_UUID <<<"${fields}")" == "1" ]] \
+    || fail "模式 5 的 VLESS_UUID 必须恰好出现一次"
+state_field_allows_empty reality-cloudflare-xhttp deploy MIHOMO_TEMPLATE_SNAPSHOT 0 \
+    && fail "模式 5 恒发布订阅，模板快照必须落盘"
+
 # 字段集不得跨组重复：重复行会让 state_render 写出重复键，也让“缺失字段”判断错位。
-for protocol in reality-cloudfront reality-cloudflare cloudfront cloudflare; do
+for protocol in reality-cloudfront reality-cloudflare reality-cloudflare-xhttp \
+    cloudfront cloudflare; do
     for mode in deploy link; do
         duplicates=$(state_required_fields "${protocol}" "${mode}" | sort | uniq -d)
         [[ -z "${duplicates}" ]] || fail "${protocol}/${mode} 字段集有重复：${duplicates}"
@@ -331,6 +369,7 @@ done <<'MENU'
 2	纯 CloudFront	cloudfront
 3	Reality + CloudFront	reality-cloudfront
 4	Reality + CloudFlare	reality-cloudflare
+5	Reality + CloudFlare（Xray XHTTP，单 443 合一；不安装 sing-box）	reality-cloudflare-xhttp
 MENU
 [[ $(printf '%s\n' "${install_menu_body}" | grep -n "  1\. 纯 CloudFlare" | cut -d: -f1) \
     -lt $(printf '%s\n' "${install_menu_body}" | grep -n "  2\. 纯 CloudFront" | cut -d: -f1) ]] \
@@ -472,8 +511,9 @@ bad_msg=$(state_validate_pure_assignments "${bad_proto_state}" 2>&1 || true)
 assert_contains "协议无效时硬拒并说明原因" "${bad_msg}" "无法确定 schema 字段集"
 assert_contains "硬拒消息点名状态文件" "${bad_msg}" "${bad_proto_state}"
 
-# 5) 白名单不得误杀存量：四个协议的完整状态都要通过。
-for whitelist_proto in cloudflare cloudfront reality-cloudfront reality-cloudflare; do
+# 5) 白名单不得误杀存量：五个协议的完整状态都要通过。
+for whitelist_proto in cloudflare cloudfront reality-cloudfront reality-cloudflare \
+    reality-cloudflare-xhttp; do
     whitelist_state="${gate_dir}/whitelist-${whitelist_proto}.env"
     build_state_env "${whitelist_proto}" "${whitelist_state}"
     whitelist_out=$(gate_run_case "${whitelist_state}")

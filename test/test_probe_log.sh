@@ -484,6 +484,7 @@ assert_no_unstubbed "${dup_case}"
 
 # --- 3. 模式矩阵 -------------------------------------------------------------
 for spec in "reality-cloudflare:reality-cloudflare.sh:probe_log_enable_and_replay" \
+    "reality-cloudflare-xhttp:reality-cloudflare-xhttp.sh:probe_log_enable_and_replay" \
     "reality-cloudfront:reality-cloudfront.sh:cloudfront_probe_log_sync"; do
     name=${spec%%:*}
     rest=${spec#*:}
@@ -1047,7 +1048,74 @@ reality_fb_out=$(
         bash -c "${RUN_HELLOGFW_SNIPPET}" _ "${ROOT_DIR}" --since "24 hours ago" 2>&1
 )
 assert_contains "含 Reality 回落日志时拆分统计回落条数" "${reality_fb_out}" \
-    "sing-box 同期 WARN/ERROR：3 条（其中 Reality 非授权回落：2 条，含主动探测及模式 3 回源流量）"
+    "sing-box 同期 WARN/ERROR：3 条（其中 Reality 非授权回落：2 条，含主动探测及模式 3/5 回源流量）"
+
+# 模式 5：Xray 日志形态（[Warning]/[Error]）计入 WARN/ERROR；回落特征行不需要先有 WARN/ERROR。
+sample_xray="${TMP_DIR}/xray-core.log"
+cat >"${sample_xray}" <<'LOG'
+2026/11/26 10:00:00 [Info] transport/internet: XHTTP accepted
+2026/11/26 10:00:01 [Warning] transport/internet/reality: REALITY: processed invalid connection from 198.51.100.3
+2026/11/26 10:00:02 [Error] app/proxyman/outbound: failed to process outbound traffic
+2026/11/26 10:00:03 [Info] REALITY: processed invalid connection from 198.51.100.4
+LOG
+xray_fb_out=$(
+    HELLOGFW_IPTABLES_RULES_FILE="${rules_ok}" \
+    HELLOGFW_KERNEL_LOG_FILE="${sample_kernel}" \
+    HELLOGFW_CORE_LOG_FILE="${sample_xray}" \
+    HELLOGFW_CORE_LABEL="xray" \
+        bash -c "${RUN_HELLOGFW_SNIPPET}" _ "${ROOT_DIR}" --since "24 hours ago" 2>&1
+) || true
+assert_contains "Xray [Warning]/[Error] 计入 WARN/ERROR" "${xray_fb_out}" \
+    "xray 同期 WARN/ERROR：2 条"
+assert_contains "Xray 回落特征不依赖 ALERT_RE 前缀" "${xray_fb_out}" \
+    "其中 Reality 非授权回落：2 条"
+
+# 兼容口径：HELLOGFW_SINGBOX_LOG_FILE 仍被读取（无 HELLOGFW_CORE_LOG_FILE 时）。
+legacy_alias_out=$(
+    HELLOGFW_IPTABLES_RULES_FILE="${rules_ok}" \
+    HELLOGFW_KERNEL_LOG_FILE="${sample_kernel}" \
+    HELLOGFW_SINGBOX_LOG_FILE="${sample_xray}" \
+        bash -c "${RUN_HELLOGFW_SNIPPET}" _ "${ROOT_DIR}" --since "24 hours ago" 2>&1
+) || true
+assert_contains "HELLOGFW_SINGBOX_LOG_FILE 兼容别名仍生效" "${legacy_alias_out}" \
+    "sing-box 同期 WARN/ERROR：2 条"
+
+# 后端分派：BACKEND=xray 时读取 easy_all-xray 单元，否则 easy_all-singbox。
+fake_journal_bin="${TMP_DIR}/journal-bin-xray"
+mkdir -p "${fake_journal_bin}"
+cat >"${fake_journal_bin}/journalctl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_JOURNAL_LOG}"
+case " $* " in
+*" -u "*) cat "${FAKE_JOURNAL_STDOUT}" ;;
+esac
+exit 0
+STUB
+chmod 0755 "${fake_journal_bin}/journalctl"
+: >"${TMP_DIR}/journal-xray.log"
+backend_unit_out=$(
+    PATH="${fake_journal_bin}:${PATH}" \
+    FAKE_JOURNAL_LOG="${TMP_DIR}/journal-xray.log" \
+    FAKE_JOURNAL_STDOUT="${sample_xray}" \
+    BACKEND=xray \
+    HELLOGFW_IPTABLES_RULES_FILE="${rules_ok}" \
+    HELLOGFW_KERNEL_LOG_FILE="${sample_kernel}" \
+        bash -c "${RUN_HELLOGFW_SNIPPET}" _ "${ROOT_DIR}" --since "24 hours ago" 2>&1
+) || true
+assert_contains "BACKEND=xray 时标签为 xray" "${backend_unit_out}" "xray 同期 WARN/ERROR"
+assert_contains "BACKEND=xray 时读取 easy_all-xray 单元" \
+    "$(<"${TMP_DIR}/journal-xray.log")" "-u easy_all-xray"
+: >"${TMP_DIR}/journal-singbox.log"
+backend_singbox_out=$(
+    PATH="${fake_journal_bin}:${PATH}" \
+    FAKE_JOURNAL_LOG="${TMP_DIR}/journal-singbox.log" \
+    FAKE_JOURNAL_STDOUT="${sample_xray}" \
+    HELLOGFW_IPTABLES_RULES_FILE="${rules_ok}" \
+    HELLOGFW_KERNEL_LOG_FILE="${sample_kernel}" \
+        bash -c "${RUN_HELLOGFW_SNIPPET}" _ "${ROOT_DIR}" --since "24 hours ago" 2>&1
+) || true
+assert_contains "默认后端读取 easy_all-singbox 单元" \
+    "$(<"${TMP_DIR}/journal-singbox.log")" "-u easy_all-singbox"
 
 manual_out=$(analyze "${rules_ok}" "${sample_kernel}" --my-ip 203.0.113.10)
 assert_contains "显式 --my-ip 覆盖自动识别" "${manual_out}" \

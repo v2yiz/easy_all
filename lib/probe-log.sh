@@ -18,7 +18,7 @@ PROBE_LOG_DROPIN_NAME="99-easy_all-probe-retention.conf"
 PROBE_LOG_DIRECT_PORT="443"
 PROBE_LOG_LOG_PREFIX_MATCH='--log-prefix "GFW_CHK: "'
 PROBE_LOG_USAGE='用法：easy_all hellogfw [--since <时间范围>] [--my-ip <IPv4> ...]'
-PROBE_LOG_MODE_LIST='reality-cloudfront / reality-cloudflare'
+PROBE_LOG_MODE_LIST='reality-cloudfront / reality-cloudflare / reality-cloudflare-xhttp'
 
 # --- 固定资源路径 -------------------------------------------------------------
 # SYSTEMD_SYSTEM_DIR 与 JOURNALD_CONF_DIR 是测试/隔离覆盖口；生产默认见 design §4.1。
@@ -365,6 +365,16 @@ run_hellogfw() {
         || { printf '%s\n' '缺少 python3（请先安装 python3）' >&2; return 1; }
     [[ -f "${PROBE_LOG_HELLOGFW_PY}" ]] \
         || { printf '运行时脚本缺失：%s\n' "${PROBE_LOG_HELLOGFW_PY}" >&2; return 1; }
+    # 分析哪个核心单元的日志按当前后端派生（未加载 Profile 时按 sing-box 兜底）。
+    # HELLOGFW_CORE_LOG_FILE 给测试/离线样本用；HELLOGFW_SINGBOX_LOG_FILE 保留兼容。
+    if [[ "${BACKEND:-sing-box}" == "xray" ]]; then
+        HELLOGFW_CORE_UNIT=${HELLOGFW_CORE_UNIT:-easy_all-xray}
+        HELLOGFW_CORE_LABEL=${HELLOGFW_CORE_LABEL:-xray}
+    else
+        HELLOGFW_CORE_UNIT=${HELLOGFW_CORE_UNIT:-easy_all-singbox}
+        HELLOGFW_CORE_LABEL=${HELLOGFW_CORE_LABEL:-sing-box}
+    fi
+    export HELLOGFW_CORE_UNIT HELLOGFW_CORE_LABEL
     # help 直接转交 Python 打印帮助，跳过规则与 journal 检查。
     ((help == 1)) || probe_log_capture_rules_ok \
         || {

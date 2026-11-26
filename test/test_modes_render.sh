@@ -27,6 +27,7 @@ render_mode() {
         export EASY_ALL_STATE_DIR_OVERRIDE="${out_dir}/state"
         export EASY_ALL_CERT_DIR_OVERRIDE="${out_dir}/certs"
         export SINGBOX_CONFIG="${out_dir}/config.json"
+        export XRAY_CONFIG="${out_dir}/xray.json"
         export CADDY_CONFIG="${out_dir}/Caddyfile"
         export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${out_dir}/subscriptions"
         export CAMOUFLAGE_DIR="${out_dir}/camouflage"
@@ -67,12 +68,21 @@ render_mode() {
         if [[ "${PROTOCOL}" == "cloudflare" ]]; then
             CLOUDFLARE_ZONE_ID=zoneid
         fi
+        if [[ "${PROTOCOL}" == "reality-cloudflare-xhttp" ]]; then
+            ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef
+            CLOUDFLARE_TRANSFORM_RULESET_ID=rs1
+            CLOUDFLARE_TRANSFORM_RULE_ID=rule1
+        fi
         SUBSCRIPTION_MODE=deploy
         cdn_derive_runtime_fields || exit 1
         mkdir -p "${CERT_DIR}"
         : >"${CERT_DIR}/fullchain.pem"
         : >"${CERT_DIR}/private.key"
-        render_singbox_config "${SINGBOX_CONFIG}" 0
+        if runtime_uses_xray; then
+            render_xray_config "${XRAY_CONFIG}" 0
+        else
+            render_singbox_config "${SINGBOX_CONFIG}" 0
+        fi
         if runtime_caddy_site_enabled; then
             render_caddy_config "${CADDY_CONFIG}" 0 1
         fi
@@ -351,12 +361,116 @@ assert_not_contains "模式 4 不带 AnyTLS 节点" "${out}/nodes.yaml" 'type: a
 assert_equal "模式 4 PROXY 成员是 Reality + 橙云" \
     $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
 
+# --- 模式 5：Reality + Cloudflare XHTTP（纯 xray 后端，单 443 合一） ----------
+out="${TMP_DIR}/reality-cloudflare-xhttp"
+render_mode reality-cloudflare-xhttp "${out}"
+assert_contains "模式 5 Reality 入站" "${out}/xray.json" '"tag": "vless-reality-in"'
+assert_contains "模式 5 Reality 监听 0.0.0.0:443" "${out}/xray.json" '"listen": "0.0.0.0"'
+assert_contains "模式 5 Reality 回落回环 9443" "${out}/xray.json" '"target": "127.0.0.1:9443"'
+assert_contains "模式 5 vision 流控" "${out}/xray.json" '"flow": "xtls-rprx-vision"'
+assert_contains "模式 5 XHTTP 回环入站" "${out}/xray.json" '"tag": "vless-cdn-in"'
+assert_contains "模式 5 XHTTP 传输" "${out}/xray.json" '"network": "xhttp"'
+assert_contains "模式 5 XHTTP mode auto" "${out}/xray.json" '"mode": "auto"'
+assert_contains "模式 5 XHTTP padding 在 extra 内" "${out}/xray.json" '"xPaddingBytes": "100-1000"'
+assert_contains "模式 5 XHTTP 保活间隔在 extra 内" "${out}/xray.json" \
+    '"scStreamUpServerSecs": "20-80"'
+assert_contains "模式 5 DNS 强制 IPv4" "${out}/xray.json" '"queryStrategy": "UseIPv4"'
+[[ ! -e "${out}/config.json" ]] || fail "模式 5 不得渲染 sing-box 配置"
+assert_not_contains "模式 5 不使用 sing-box 私网标记" "${out}/xray.json" '"ip_is_private"'
+assert_contains "模式 5 全局 default_sni" "${out}/Caddyfile" "default_sni direct.example.com"
+assert_contains "模式 5 橙云 XHTTP 站 9443" "${out}/Caddyfile" "https://cf.example.com:9443 {"
+assert_contains "模式 5 直连伪装站 9443" "${out}/Caddyfile" "https://direct.example.com:9443 {"
+assert_contains "模式 5 h2c 反代" "${out}/Caddyfile" "versions h2c 2"
+assert_contains "模式 5 不缓冲" "${out}/Caddyfile" "flush_interval -1"
+assert_not_contains "模式 5 不渲染 8443" "${out}/Caddyfile" ":8443 {"
+assert_not_contains "模式 5 不下发 Subscription-Userinfo" "${out}/Caddyfile" "Subscription-Userinfo"
+assert_contains "模式 5 直连节点是 Reality" "${out}/links.txt" 'security=reality'
+assert_contains "模式 5 橙云节点是 XHTTP" "${out}/links.txt" 'type=xhttp&'
+assert_contains "模式 5 橙云节点 mode=stream-up" "${out}/links.txt" '&mode=stream-up&'
+assert_not_contains "模式 5 节点不泄露源站密钥" "${out}/links.txt" \
+    '0123456789abcdef0123456789abcdef'
+assert_contains "模式 5 Mihomo reality-opts" "${out}/nodes.yaml" 'reality-opts:'
+assert_contains "模式 5 Mihomo XHTTP 传输" "${out}/nodes.yaml" 'network: xhttp'
+assert_contains "模式 5 Mihomo MLKEM 开关" "${out}/nodes.yaml" 'support-x25519mlkem768: true'
+assert_contains "模式 5 协议标签" "${out}/label.txt" 'XHTTP'
+assert_equal "模式 5 Base64 标记" $'security=reality\ntype=xhttp\nmode=stream-up' \
+    "$(<"${out}/markers-base64.txt")"
+assert_equal "模式 5 Mihomo 标记" $'reality-opts:\nnetwork: xhttp\nmode: stream-up' \
+    "$(<"${out}/markers-mihomo.txt")"
+assert_equal "模式 5 PROXY 成员是 Reality + 橙云" \
+    $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
+
+# 六产物订阅：不产出 singbox*.json；优选地址只换连接地址；iOS 变体去嗅探；不泄露源站密钥。
+m5_subs="${TMP_DIR}/xhttp-subs"
+mkdir -p "${m5_subs}/runtime" "${m5_subs}/out"
+(
+    export RUNTIME_TMP="${m5_subs}/runtime"
+    export EASY_ALL_STATE_DIR_OVERRIDE="${m5_subs}/state"
+    export EASY_ALL_CERT_DIR_OVERRIDE="${m5_subs}/certs"
+    export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${m5_subs}/published"
+    export XRAY_CONFIG="${m5_subs}/xray.json"
+    export CADDY_CONFIG="${m5_subs}/Caddyfile"
+    export CAMOUFLAGE_DIR="${m5_subs}/camouflage"
+    # shellcheck source=/dev/null
+    source "${ROOT_DIR}/profiles/reality-cloudflare-xhttp.sh"
+    CF_ZONE=example.com
+    VPS_PUBLIC_IPV4=203.0.113.10
+    SUB_DOWNLOAD_NAME=EASY_ALL
+    ALLOWED_TOKENS='{"owner":"token-abcdefgh"}'
+    SUBSCRIPTION_CONFIG=$(jq -cn --argjson t "${ALLOWED_TOKENS}" \
+        '{allowedTokens:$t,nodes:[],cdnEdgeAddress:"edge9.cloudflare.182682.xyz"}')
+    CLOUDFLARE_ZONE_ID=zoneid
+    DIRECT_DOMAIN=direct.example.com
+    DIRECT_NODE_NAME="🇺🇸直连"
+    VLESS_UUID=11111111-2222-4333-8444-555555555555
+    REALITY_PRIVATE_KEY=QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE
+    REALITY_PUBLIC_KEY=QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI
+    REALITY_SHORT_ID=0123456789abcdef
+    CF_NODE_DOMAIN=cf.example.com
+    CF_NODE_PREFIX="🇺🇸CF"
+    VLESS_PATH=/vless-0123456789ab
+    ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef
+    CLOUDFLARE_TRANSFORM_RULESET_ID=rs1
+    CLOUDFLARE_TRANSFORM_RULE_ID=rule1
+    SUBSCRIPTION_MODE=deploy
+    cdn_derive_runtime_fields || exit 1
+    cdn_apply_subscription_config "${SUBSCRIPTION_CONFIG}" || exit 1
+    render_subscription_files "${m5_subs}/out" || exit 1
+) || fail "模式 5 订阅渲染失败"
+for artifact in base64.txt base64-all.txt mihomo.yaml mihomo-all.yaml \
+    mihomo-ios.yaml mihomo-ios-all.yaml; do
+    [[ -s "${m5_subs}/out/${artifact}" ]] || fail "模式 5 缺少订阅产物：${artifact}"
+done
+[[ ! -e "${m5_subs}/out/singbox.json" && ! -e "${m5_subs}/out/singbox-all.json" ]] \
+    || fail "模式 5 不得生成 sing-box JSON 订阅"
+openssl base64 -d -A <"${m5_subs}/out/base64.txt" >"${m5_subs}/out/base64.decoded" \
+    || fail "模式 5 Base64 订阅无法解码"
+assert_contains "模式 5 Base64 含 Reality 直连节点" "${m5_subs}/out/base64.decoded" \
+    'security=reality'
+assert_contains "模式 5 Base64 含 XHTTP 节点" "${m5_subs}/out/base64.decoded" 'type=xhttp&'
+assert_contains "模式 5 Base64 使用 cdnEdgeAddress 连接" "${m5_subs}/out/base64.decoded" \
+    '@edge9.cloudflare.182682.xyz:443?'
+assert_contains "模式 5 Base64 的 SNI 仍是节点域名" "${m5_subs}/out/base64.decoded" \
+    '&sni=cf.example.com&'
+assert_contains "模式 5 Mihomo 含 XHTTP 节点" "${m5_subs}/out/mihomo.yaml" 'network: xhttp'
+assert_contains "模式 5 Mihomo 含 reality-opts" "${m5_subs}/out/mihomo.yaml" 'reality-opts:'
+assert_contains "模式 5 Mihomo 使用 cdnEdgeAddress" "${m5_subs}/out/mihomo.yaml" \
+    'edge9.cloudflare.182682.xyz'
+assert_equal "模式 5 iOS 变体剥离嗅探段" "0" \
+    "$(grep -c '^sniffer:' "${m5_subs}/out/mihomo-ios.yaml" || true)"
+for artifact in "${m5_subs}"/out/*; do
+    if grep -Fq -- '0123456789abcdef0123456789abcdef' "${artifact}"; then
+        fail "模式 5 订阅产物泄露源站密钥：${artifact##*/}"
+    fi
+done
+
 # --- 全四模式公共反指纹断言（WP1） -------------------------------------------
-for mode_out in cloudfront cloudflare reality-cloudfront reality-cloudflare; do
+for mode_out in cloudfront cloudflare reality-cloudfront reality-cloudflare \
+    reality-cloudflare-xhttp; do
     out="${TMP_DIR}/${mode_out}"
     assert_contains "${mode_out} Caddy 去除 Server 响应头" "${out}/Caddyfile" 'header -Server'
     assert_not_contains "${mode_out} Caddy 禁止 /easy_all-health" "${out}/Caddyfile" '/easy_all-health'
     assert_not_contains "${mode_out} Caddy 禁止 easy_all ok 横幅" "${out}/Caddyfile" 'easy_all ok'
 done
 
-printf 'ok - 四模式渲染测试通过\n'
+printf 'ok - 全部模式渲染测试通过\n'

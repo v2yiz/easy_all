@@ -80,7 +80,9 @@ CDN_EDGE_ALNUM="0123456789abcdefghijklmnopqrstuvwxyz"
 cdn_edge_mode_suffix() {
     case "${PROTOCOL:-}" in
     cloudfront | reality-cloudfront) printf '%s' "${CDN_EDGE_CLOUDFRONT_SUFFIX}" ;;
-    cloudflare | reality-cloudflare) printf '%s' "${CDN_EDGE_CLOUDFLARE_SUFFIX}" ;;
+    cloudflare | reality-cloudflare | reality-cloudflare-xhttp)
+        printf '%s' "${CDN_EDGE_CLOUDFLARE_SUFFIX}"
+        ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
@@ -433,6 +435,11 @@ install_service_file_path() {
     printf '%s' "${EASY_ALL_GUARD_SERVICE_FILE:-${SINGBOX_SERVICE_FILE:-/etc/systemd/system/easy_all-singbox.service}}"
 }
 
+# 模式 5 的服务单元是 easy_all-xray.service（不安装 sing-box）：残留识别与清理必须同时看它。
+install_xray_service_file_path() {
+    printf '%s' "${EASY_ALL_GUARD_XRAY_SERVICE_FILE:-${XRAY_SERVICE_FILE:-/etc/systemd/system/easy_all-xray.service}}"
+}
+
 install_caddy_config_path() {
     printf '%s' "${EASY_ALL_GUARD_CADDY_CONFIG:-${CADDY_CONFIG:-/etc/easy_all/caddy/Caddyfile}}"
 }
@@ -480,9 +487,11 @@ install_state_dir_only_empty_fq_chain() {
 # 已安装（存在状态文件）时返回 1：残留判定只服务于「未安装」场景。
 install_residue_reason() {
     local state_dir state_file service_file caddy_config progress stage state_entries
+    local xray_service_file
     state_dir=$(install_state_dir_path)
     state_file=$(install_state_file_path)
     service_file=$(install_service_file_path)
+    xray_service_file=$(install_xray_service_file_path)
     caddy_config=$(install_caddy_config_path)
     progress=$(install_progress_file)
     [[ ! -f "${state_file}" ]] || return 1
@@ -503,6 +512,9 @@ install_residue_reason() {
     fi
     if [[ -f "${service_file}" ]]; then
         reasons+=("残留服务单元 ${service_file}")
+    fi
+    if [[ -f "${xray_service_file}" ]]; then
+        reasons+=("残留服务单元 ${xray_service_file}")
     fi
     if [[ -f "${caddy_config}" ]]; then
         reasons+=("残留 Caddy 配置 ${caddy_config}")
@@ -584,6 +596,7 @@ profile_script_for() {
     case "${1:-}" in
     reality-cloudfront) printf 'reality-cloudfront.sh' ;;
     reality-cloudflare) printf 'reality-cloudflare.sh' ;;
+    reality-cloudflare-xhttp) printf 'reality-cloudflare-xhttp.sh' ;;
     cloudfront) printf 'cloudfront.sh' ;;
     cloudflare) printf 'cloudflare.sh' ;;
     *) return 1 ;;
@@ -682,6 +695,8 @@ persist_install_identity() {
         --arg cf_expires "${CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:-}" \
         --arg cf_ruleset "${CLOUDFLARE_ORIGIN_RULESET_ID:-}" \
         --arg cf_rule "${CLOUDFLARE_ORIGIN_RULE_ID:-}" \
+        --arg transform_ruleset "${CLOUDFLARE_TRANSFORM_RULESET_ID:-}" \
+        --arg transform_rule "${CLOUDFLARE_TRANSFORM_RULE_ID:-}" \
         '{
             schema: $schema,
             profile: $profile,
@@ -715,7 +730,9 @@ persist_install_identity() {
             cloudflare_origin_cert_id: $cf_cert,
             cloudflare_origin_cert_expires_on: $cf_expires,
             cloudflare_origin_ruleset_id: $cf_ruleset,
-            cloudflare_origin_rule_id: $cf_rule
+            cloudflare_origin_rule_id: $cf_rule,
+            cloudflare_transform_ruleset_id: $transform_ruleset,
+            cloudflare_transform_rule_id: $transform_rule
         }' >"${tmp}"; then
         chmod 0600 "${tmp}"
         if mv -f -- "${tmp}" "${file}"; then
@@ -755,7 +772,9 @@ load_install_identity() {
         CLOUDFLARE_ORIGIN_CERT_ID:cloudflare_origin_cert_id \
         CLOUDFLARE_ORIGIN_CERT_EXPIRES_ON:cloudflare_origin_cert_expires_on \
         CLOUDFLARE_ORIGIN_RULESET_ID:cloudflare_origin_ruleset_id \
-        CLOUDFLARE_ORIGIN_RULE_ID:cloudflare_origin_rule_id; do
+        CLOUDFLARE_ORIGIN_RULE_ID:cloudflare_origin_rule_id \
+        CLOUDFLARE_TRANSFORM_RULESET_ID:cloudflare_transform_ruleset_id \
+        CLOUDFLARE_TRANSFORM_RULE_ID:cloudflare_transform_rule_id; do
         name=${pair%%:*}
         key=${pair#*:}
         value=$(jq -r --arg k "${key}" '.[$k] // empty' "${file}") || return 1
@@ -805,6 +824,7 @@ resume_partial_install() {
             || warn "没有可复用的安装身份（中断早于身份落盘），本次会使用新生成的值"
     fi
     systemctl stop "${SINGBOX_SERVICE:-easy_all-singbox.service}" >/dev/null 2>&1 || true
+    systemctl stop "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 || true
     systemctl stop "${CADDY_SERVICE:-easy_all-caddy.service}" >/dev/null 2>&1 || true
     INSTALL_RESUME=1
     export INSTALL_RESUME
@@ -818,7 +838,7 @@ install_marker_chain_matches() {
     # 模式 3 与模式 2 共用 cloudfront 链路（计量/启动门禁与持久阻断都按链判定）；
     # 模式 4 与模式 1 共用 cloudflare 链路（橙云回源与 Origin Rule）。
     reality-cloudfront | cloudfront) expected=cloudfront ;;
-    cloudflare | reality-cloudflare) expected=cloudflare ;;
+    cloudflare | reality-cloudflare | reality-cloudflare-xhttp) expected=cloudflare ;;
     *) return 1 ;;
     esac
     [[ "$(install_progress_field CHAIN 2>/dev/null || true)" == "${expected}" ]]
@@ -892,6 +912,7 @@ cleanup_partial_install_local() {
         stop_protocol_services
     else
         systemctl disable --now "${SINGBOX_SERVICE:-easy_all-singbox.service}" >/dev/null 2>&1 || true
+        systemctl disable --now "${XRAY_SERVICE:-easy_all-xray.service}" >/dev/null 2>&1 || true
         systemctl disable --now "${CADDY_SERVICE:-easy_all-caddy.service}" >/dev/null 2>&1 || true
     fi
     if [[ -f "${backup_dir}/pre-install-complete" ]]; then

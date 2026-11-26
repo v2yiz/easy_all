@@ -204,6 +204,37 @@ rm -f -- "${EASY_ALL_GUARD_CADDY_CONFIG}"
 assert_equal "clean host has no residue" "1" \
     "$(install_residue_reason >/dev/null 2>&1 && echo 0 || echo 1)"
 
+# 5c. 模式 5：easy_all-xray.service 与 sing-box 单元一样属于安装残留判定对象。
+xray_residue_dir="${TMP_DIR}/xray-residue-units"
+mkdir -p "${xray_residue_dir}"
+(
+    EASY_ALL_GUARD_STATE_DIR="${TMP_DIR}/xray-residue-state" \
+    EASY_ALL_GUARD_STATE_FILE="${TMP_DIR}/xray-residue-state/state.env" \
+    EASY_ALL_GUARD_SERVICE_FILE="${xray_residue_dir}/easy_all-singbox.service" \
+    EASY_ALL_GUARD_XRAY_SERVICE_FILE="${xray_residue_dir}/easy_all-xray.service" \
+    EASY_ALL_GUARD_CADDY_CONFIG="${TMP_DIR}/xray-residue-caddy/Caddyfile" \
+    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${TMP_DIR}/xray-residue-progress.env" \
+        bash -c '
+            source "$1/lib/log.sh"
+            source "$1/lib/profile-common.sh"
+            : >"${EASY_ALL_GUARD_XRAY_SERVICE_FILE}"
+            install_residue_reason
+        ' _ "${ROOT_DIR}" 2>&1
+) >"${TMP_DIR}/xray-residue.out" || true
+assert_contains "easy_all-xray 单元属于安装残留" "$(<"${TMP_DIR}/xray-residue.out")" \
+    "残留服务单元"
+assert_contains "残留点名 easy_all-xray.service" "$(<"${TMP_DIR}/xray-residue.out")" \
+    "easy_all-xray.service"
+
+# 5d. 续装与残留清理都必须停用 easy_all-xray.service（模式 5 的服务单元）。
+profile_common_body=$(<"${ROOT_DIR}/lib/profile-common.sh")
+resume_body=$(awk '/^resume_partial_install\(\) \{/,/^}/' "${ROOT_DIR}/lib/profile-common.sh")
+assert_contains "续装停用 easy_all-xray.service" "${resume_body}" 'easy_all-xray.service'
+cleanup_local_body=$(awk '/^cleanup_partial_install_local\(\) \{/,/^}/' \
+    "${ROOT_DIR}/lib/profile-common.sh")
+assert_contains "残留清理停用 easy_all-xray.service" "${cleanup_local_body}" \
+    'easy_all-xray.service'
+
 # 5b. 旧 FQ helper 把开机快照放在了业务 STATE_DIR/backups/qdisc：卸载后只剩这条
 #     严格空链时不能把机器当成“未完成安装”（否则永远无法重新安装）。
 residue_present() {
@@ -841,6 +872,93 @@ assert_contains "cdn_prepare_install_ports 保持原定义未被 install_all 覆
     "${install_all_output}" "CDN-PREPARE-OVERWRITTEN: no"
 assert_not_contains "install_all 不得把端口预检调用写成嵌套函数定义" \
     "${install_all_output}" "CDN-PREPARE-OVERWRITTEN: yes"
+# 26d-2. 模式 5：首轮端口预检只覆盖 443 + 回环 10086 + 伪装回环 9443（无 8443），
+#        进度标记按 reality-cloudflare-xhttp + cloudflare 链写入。
+run_install_all_case_xhttp() {
+    local case_dir="${TMP_DIR}/install-all-xhttp"
+    rm -rf -- "${case_dir}"
+    mkdir -p "${case_dir}"
+    EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/subscriptions" \
+    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${case_dir}/progress/install-progress.env" \
+    RUNTIME_TMP="${case_dir}/runtime" \
+        bash -c '
+            set -Eeuo pipefail
+            # shellcheck source=/dev/null
+            source "$1/profiles/reality-cloudflare-xhttp.sh"
+            require_root() { :; }
+            acquire_runtime_write_lock() { :; }
+            require_systemd() { :; }
+            check_platform() { :; }
+            report_host_init_state() { :; }
+            ensure_swap() { :; }
+            install_failure_begin() { :; }
+            install_progress_begin() { printf "PROGRESS-BEGIN: %s %s\n" "$1" "$2"; }
+            install_progress_stage() { :; }
+            prepare_fresh_install() { printf "PREPARE-PORTS: %s\n" "$*"; }
+            snapshot_fresh_install() { :; }
+            install_packages() { :; }
+            install_certbot_deploy_hook() { :; }
+            choose_tcp_acceleration() { :; }
+            configure_tcp_acceleration() { :; }
+            configure_daily_reboot() { :; }
+            configure_ipv4_only() { :; }
+            collect_direct_install_inputs() { printf "INPUTS-STAGE\n"; exit 0; }
+            install_all_definition=$(declare -f install_all | grep -v "^    \[\[ -t 0 \]\]")
+            eval "${install_all_definition}"
+            install_all
+        ' _ "${ROOT_DIR}" 2>&1
+}
+install_all_xhttp_output=$(run_install_all_case_xhttp)
+assert_contains "模式 5 安装执行首轮端口预检" "${install_all_xhttp_output}" \
+    "PREPARE-PORTS: 443"
+assert_contains "模式 5 端口预检包含回环 10086" "${install_all_xhttp_output}" "10086"
+assert_contains "模式 5 端口预检包含伪装回环 9443" "${install_all_xhttp_output}" "9443"
+assert_not_contains "模式 5 端口预检不包含 8443" "${install_all_xhttp_output}" "8443"
+assert_contains "模式 5 安装写安装进度标记" "${install_all_xhttp_output}" \
+    "PROGRESS-BEGIN: reality-cloudflare-xhttp cloudflare"
+assert_contains "模式 5 安装进入输入阶段" "${install_all_xhttp_output}" "INPUTS-STAGE"
+
+# 26d-3. validate_protocol_runtime 必须按后端检查服务单元：模式 5 检查 easy_all-xray.service。
+validate_script="${TMP_DIR}/validate-protocol-xhttp.sh"
+cat >"${validate_script}" <<'VALIDATE'
+set -Eeuo pipefail
+source "$1/profiles/reality-cloudflare-xhttp.sh"
+systemctl() {
+    case "$1" in
+    is-active) [[ "$3" == "easy_all-xray.service" ]] && return 0 || return 3 ;;
+    esac
+    return 0
+}
+runtime_ports_listening() { return 0; }
+runtime_caddy_probe_ok() { return 0; }
+sleep() { :; }
+validate_protocol_runtime
+printf "VALIDATE-OK\n"
+VALIDATE
+validate_xhttp_out=$(bash "${validate_script}" "${ROOT_DIR}" 2>&1) || true
+assert_contains "模式 5 运行时验收检查 easy_all-xray.service" "${validate_xhttp_out}" "VALIDATE-OK"
+
+validate_script_fail="${TMP_DIR}/validate-protocol-xhttp-fail.sh"
+cat >"${validate_script_fail}" <<'VALIDATE'
+set -Eeuo pipefail
+source "$1/profiles/reality-cloudflare-xhttp.sh"
+systemctl() {
+    case "$1" in
+    is-active) [[ "$3" == "easy_all-xray.service" ]] && return 3 || return 0 ;;
+    esac
+    return 0
+}
+runtime_ports_listening() { return 0; }
+runtime_caddy_probe_ok() { return 0; }
+sleep() { :; }
+validate_protocol_runtime
+VALIDATE
+validate_xhttp_fail=$(bash "${validate_script_fail}" "${ROOT_DIR}" 2>&1) || true
+assert_contains "模式 5 服务不活跃时验收失败" "${validate_xhttp_fail}" "本机运行时验收失败"
+assert_contains "模式 5 失败文案点名 xray" "${validate_xhttp_fail}" "xray 必需监听端口"
+
 
 # 17) 安装失败诊断：在独立脚本里复现生产路径（set -e + ERR/EXIT 陷阱）
 # 不放在 $( ) 里直接 set -e：bash 默认在命令替换中清除 errexit，ERR 陷阱语义会随版本漂移。
@@ -1312,6 +1430,33 @@ download_singbox() {
 }
 install_singbox_service() { :; }
 STUB
+cat >"${verify_stub_repo}/lib/xray-core.sh" <<'STUB'
+EASY_ALL_XRAY_CORE_LOADED=1
+XRAY_VERSION=26.11.9
+xray_version() { printf '%s\n' "${XRAY_VERSION}"; }
+xray_binary_version() { [[ -x "$1" ]] && printf '%s\n' "${XRAY_VERSION}"; }
+xray_installed_version() { xray_binary_version "${XRAY_BIN}"; }
+download_xray() {
+    install -d -m 0755 "$(dirname "${XRAY_BIN}")"
+    cat >"${XRAY_BIN}" <<'CORE'
+#!/bin/sh
+case "${1:-}" in
+version)
+    printf 'Xray 26.11.9 (Xray, Penetrates Everything.) test\n'
+    ;;
+x25519)
+    # 真实 v26.11.9 的三行输出：第三行 Hash32 必须被解析器跳过，不得当作公钥。
+    printf 'PrivateKey: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n'
+    printf 'Password (PublicKey): BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n'
+    printf 'Hash32: HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH\n'
+    ;;
+esac
+exit 0
+CORE
+    chmod 0755 "${XRAY_BIN}"
+}
+install_xray_service() { :; }
+STUB
 cat >"${verify_stub_repo}/lib/caddy-core.sh" <<'STUB'
 EASY_ALL_CADDY_CORE_LOADED=1
 CADDY_VERSION=2.11.9
@@ -1332,6 +1477,7 @@ verify_success_output=$(
     RUNTIME_TMP= \
     EASY_ALL_DOWNLOAD_CORES=1 \
     SINGBOX_BIN="${TMP_DIR}/verify-core-bin/sing-box" \
+    XRAY_BIN="${TMP_DIR}/verify-core-bin/xray" \
     CADDY_BIN="${TMP_DIR}/verify-core-bin/caddy" \
         bash "${verify_stub_repo}/scripts/verify-cores.sh" 2>&1
 ) || fail "verify-cores 成功路径未通过：${verify_success_output}"
@@ -1890,9 +2036,11 @@ assert_contains "模式 4 清单点名节点/订阅 A 记录" "${entry_combined_
 assert_uninstall_entry_cleanup "模式 4" "${entry_combined_cf_dir}"
 assert_contains "模式 4 拒绝删除宿主命令路径" \
     "$(<"${entry_combined_cf_dir}/refusals.log")" "/usr/local/bin/easy_all"
+# 模式 4/5 共用的清理主体同时回收 easy_all-xray 单元与 Xray 安装目录（模式 4 下不存在，属安全空操作）。
 assert_refusals_within "模式 4" "${entry_combined_cf_dir}/refusals.log" \
     "/usr/local/bin/easy_all" "/usr/local/lib/easy_all" \
-    "/var/www/easy_all/camouflage/index.html"
+    "/var/www/easy_all/camouflage/index.html" \
+    "/etc/systemd/system/easy_all-xray.service" "/etc/easy_all/xray"
 
 entry_cloudflare_dir="${TMP_DIR}/uninstall-entry/cloudflare"
 entry_cloudflare_output=$(run_uninstall_entry cloudflare cloudflare cloudflare "easy_all cloudflare" 0 0)
@@ -1979,7 +2127,9 @@ assert_contains "云端失败时仍报告本机卸载完成" "${entry_fail_outpu
 assert_uninstall_entry_cleanup "云端失败" "${entry_fail_dir}"
 # 失败场景也按白名单上限核对：允许未执行到的删除不出现在日志，但不允许白名单外的宿主路径。
 assert_refusals_within "云端失败" "${entry_fail_dir}/refusals.log" \
-    "/usr/local/bin/easy_all" "/usr/local/lib/easy_all"
+    "/usr/local/bin/easy_all" "/usr/local/lib/easy_all" \
+    "/var/www/easy_all/camouflage/index.html" \
+    "/etc/systemd/system/easy_all-xray.service" "/etc/easy_all/xray"
 
 entry_both_dir="${TMP_DIR}/uninstall-entry/both-fail"
 entry_both_output=$(ENTRY_IPTABLES_FAIL=1 run_uninstall_entry both-fail reality-cloudfront reality-cloudfront \

@@ -18,30 +18,50 @@ source "${CADDY_RUNTIME_LIB_DIR}/caddy-core.sh"
 
 caddy_require_protocol() {
     case "${PROTOCOL:-}" in
-    reality-cloudfront | reality-cloudflare | cloudfront | cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare | reality-cloudflare-xhttp \
+        | cloudfront | cloudflare)
+        return 0
+        ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
 
 caddy_protocol_has_cdn() {
     case "${PROTOCOL:-}" in
-    cloudfront | cloudflare | reality-cloudfront | reality-cloudflare) return 0 ;;
+    cloudfront | cloudflare | reality-cloudfront | reality-cloudflare \
+        | reality-cloudflare-xhttp)
+        return 0
+        ;;
     esac
     return 1
 }
 
 caddy_protocol_needs_origin_guard() {
     case "${PROTOCOL:-}" in
+    cloudfront | reality-cloudfront | reality-cloudflare-xhttp) return 0 ;;
+    esac
+    return 1
+}
+
+# 下发 Subscription-Userinfo 响应头的只有 CloudFront 链路（模式 2/3）。
+# 橙云模式（1/4/5）没有 985GB 计量，不得输出空的 Userinfo 头。
+caddy_protocol_has_subscription_userinfo() {
+    case "${PROTOCOL:-}" in
     cloudfront | reality-cloudfront) return 0 ;;
     esac
     return 1
 }
 
-# Reality 自偷入口（模式 3/4）：只有这两个模式提供 9443 伪装站。
+# 模式 5 的单一谓词：同时决定双站点单 443 布局、全局 default_sni 与 h2c XHTTP 路由。
+caddy_protocol_uses_xhttp() {
+    [[ "${PROTOCOL:-}" == "reality-cloudflare-xhttp" ]]
+}
+
+# Reality 自偷入口（模式 3/4/5）：只有这三个模式提供 9443 伪装站。
 # 本文件会被测试直接 source（不经 runtime-core），因此不调用 runtime_has_reality_entry。
 caddy_protocol_has_reality() {
     case "${PROTOCOL:-}" in
-    reality-cloudfront | reality-cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare | reality-cloudflare-xhttp) return 0 ;;
     esac
     return 1
 }
@@ -51,9 +71,12 @@ caddy_protocol_uses_unified_reality_site() {
     [[ "${PROTOCOL:-}" == "reality-cloudfront" ]]
 }
 
-# 模式 4 双证书 SAN 隔离：直连 443/9443 与橙云 8443 使用各自独立证书。
+# 双证书 SAN 隔离：模式 4 的橙云 8443 回源与模式 5 的橙云 9443 双站点都使用独立证书。
 caddy_protocol_uses_split_cdn_cert() {
-    [[ "${PROTOCOL:-}" == "reality-cloudflare" ]]
+    case "${PROTOCOL:-}" in
+    reality-cloudflare | reality-cloudflare-xhttp) return 0 ;;
+    esac
+    return 1
 }
 
 caddy_mode3_migration_marker() {
@@ -111,13 +134,14 @@ caddy_site_host() {
     caddy_require_protocol
     case "${PROTOCOL}" in
     cloudfront | reality-cloudfront) caddy_require_host CF_ORIGIN_DOMAIN ;;
-    cloudflare | reality-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
+    cloudflare | reality-cloudflare | reality-cloudflare-xhttp) caddy_require_host CF_NODE_DOMAIN ;;
     esac
 }
 
 caddy_site_port() {
     case "${PROTOCOL:-}" in
     reality-cloudfront) printf '9443\n' ;;
+    reality-cloudflare-xhttp) printf '9443\n' ;;
     reality-cloudflare) printf '8443\n' ;;
     cloudfront | cloudflare) printf '443\n' ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
@@ -202,6 +226,11 @@ caddy_render_global_options() {
     printf '{\n'
     printf '\tadmin unix/%s\n' "${CADDY_ADMIN_SOCKET}"
     printf '\tauto_https off\n'
+    # 模式 5：空 SNI / 裸 IP 探测只拿到直连主证书；两个站点块都是精确主机名，
+    # 未知 SNI 无通配块故直接拒绝，绝不向外暴露 CDN_CERT_FILE 的 SAN。
+    if caddy_protocol_uses_xhttp; then
+        printf '\tdefault_sni %s\n' "$(caddy_require_host DIRECT_DOMAIN)"
+    fi
     printf '\tservers {\n'
     printf '\t\tprotocols h1 h2\n'
     printf '\t}\n'
@@ -271,7 +300,7 @@ caddy_render_subscription_handler() {
     printf '\t\t\t\trespond @easy_all_sub_bad_method 405\n'
     printf '\t\t\t\t@easy_all_sub_denied expression !({query.token} in %s)\n' "${tokens}"
     printf '\t\t\t\trespond @easy_all_sub_denied 403\n'
-    if caddy_protocol_needs_origin_guard; then
+    if caddy_protocol_has_subscription_userinfo; then
         printf '\t\t\t\theader Subscription-Userinfo "{file.%s}"\n' "$(caddy_subscription_userinfo_file)"
     fi
     if [[ "${subscription_ok}" != "1" ]]; then
@@ -317,18 +346,35 @@ caddy_render_subscription_handler() {
 }
 
 # 源站业务路由片段（VLESS 代理路径 + 订阅路由 + 兜底 404）；不提供 /easy_all-health。
+# 模式 5 的代理路径改为 XHTTP（h2c 反代 + 不缓冲），其余模式保持原有 HTTP 反代。
 caddy_render_origin_routes() {
     local blocked=$1 subscription_ok=$2 indent=${3:-$'\t\t'}
     if caddy_protocol_has_cdn; then
         caddy_validate_vless_path "${VLESS_PATH:-}" \
             || die "VLESS_PATH 无效，无法生成精确代理路径：${VLESS_PATH:-空}"
-        printf '%shandle %s {\n' "${indent}" "${VLESS_PATH}"
-        if [[ "${blocked}" == "1" ]]; then
-            printf '%s\trespond 503\n' "${indent}"
+        if caddy_protocol_uses_xhttp; then
+            printf '%s@easy_all_xhttp path %s %s/*\n' "${indent}" "${VLESS_PATH}" "${VLESS_PATH}"
+            printf '%shandle @easy_all_xhttp {\n' "${indent}"
+            if [[ "${blocked}" == "1" ]]; then
+                printf '%s\trespond 503\n' "${indent}"
+            else
+                printf '%s\treverse_proxy 127.0.0.1:10086 {\n' "${indent}"
+                printf '%s\t\ttransport http {\n' "${indent}"
+                printf '%s\t\t\tversions h2c 2\n' "${indent}"
+                printf '%s\t\t}\n' "${indent}"
+                printf '%s\t\tflush_interval -1\n' "${indent}"
+                printf '%s\t}\n' "${indent}"
+            fi
+            printf '%s}\n\n' "${indent}"
         else
-            printf '%s\treverse_proxy 127.0.0.1:10086\n' "${indent}"
+            printf '%shandle %s {\n' "${indent}" "${VLESS_PATH}"
+            if [[ "${blocked}" == "1" ]]; then
+                printf '%s\trespond 503\n' "${indent}"
+            else
+                printf '%s\treverse_proxy 127.0.0.1:10086\n' "${indent}"
+            fi
+            printf '%s}\n\n' "${indent}"
         fi
-        printf '%s}\n\n' "${indent}"
     fi
     caddy_render_subscription_handler "${subscription_ok}"
     printf '%shandle {\n' "${indent}"
@@ -448,7 +494,34 @@ caddy_render_unified_reality_site() {
     printf '}\n'
 }
 
-# 外层 route 顺序：CloudFront 密钥守卫 → 精确代理路径 → 精确订阅入口 → 404（无 /easy_all-health）。
+# 模式 5 橙云回源站：监听 127.0.0.1:9443，使用只覆盖 CF_NODE_DOMAIN 的独立证书。
+# 外层 route 首位按精确 X-Easy-All-Origin-Key 分流（命中进业务，未命中静默落伪装站，
+# 严禁 abort）：缺头/错头的主动探测只能看到一个真实 TLS 站点。
+caddy_render_split_origin_reality_site() {
+    local blocked=$1 subscription_ok=$2
+    local host port
+    host=$(caddy_require_host CF_NODE_DOMAIN) || exit 1
+    port=$(caddy_reality_camouflage_port)
+    caddy_validate_origin_secret "${ORIGIN_HEADER_SECRET:-}" \
+        || die "源站头密钥格式无效，无法生成 Caddy 守卫"
+    printf 'https://%s:%s {\n' "${host}" "${port}"
+    printf '\tbind 127.0.0.1\n'
+    printf '\ttls %s %s\n' "$(caddy_origin_cert_file)" "$(caddy_origin_key_file)"
+    printf '\theader -Server\n\n'
+    printf '\troute {\n'
+    printf '\t\t@easy_all_valid_origin expression {http.request.header.X-Easy-All-Origin-Key} == \x27%s\x27\n' \
+        "${ORIGIN_HEADER_SECRET}"
+    printf '\t\thandle @easy_all_valid_origin {\n'
+    caddy_render_origin_routes "${blocked}" "${subscription_ok}" $'\t\t\t'
+    printf '\t\t}\n'
+    printf '\t\thandle {\n'
+    caddy_render_camouflage_routes $'\t\t\t'
+    printf '\t\t}\n'
+    printf '\t}\n'
+    printf '}\n'
+}
+
+# 外层 route 顺序：源站密钥守卫 → 精确代理路径 → 精确订阅入口 → 404（无 /easy_all-health）。
 render_caddy_config() {
     local dest=$1 blocked=${2:-0} subscription_ok=${3:-1}
     local host port
@@ -463,7 +536,12 @@ render_caddy_config() {
         || die "Mihomo 下载文件名无效：${SUB_DOWNLOAD_NAME:-空}"
     {
         caddy_render_global_options
-        if caddy_protocol_uses_unified_reality_site; then
+        if caddy_protocol_uses_xhttp; then
+            # 模式 5：两个回环 9443 站点块（直连伪装站 + 橙云 XHTTP 回源站），无公网 Caddy 端口。
+            caddy_render_camouflage_site
+            printf '\n'
+            caddy_render_split_origin_reality_site "${blocked}" "${subscription_ok}"
+        elif caddy_protocol_uses_unified_reality_site; then
             caddy_render_unified_reality_site "${blocked}" "${subscription_ok}"
             if caddy_mode3_needs_legacy_8443; then
                 printf '\n'
@@ -489,6 +567,15 @@ caddy_site_block_lines() { # $1=文件 $2=端口
         inside && $0 == "}" { exit }
         !inside && index($0, "https://") == 1 && index($0, port " {") > 0 \
             && substr($0, length($0)) == "{" { inside = 1; next }
+        inside { print }
+    ' "$1"
+}
+
+# 按 host + port 精确提取站点块：模式 5 的两个块都在回环 9443，只能靠主机名区分。
+caddy_site_block_lines_for_host() { # $1=文件 $2=host $3=端口
+    awk -v address="https://$2:$3 {" '
+        inside && $0 == "}" { exit }
+        !inside && $0 == address { inside = 1; next }
         inside { print }
     ' "$1"
 }
@@ -645,9 +732,84 @@ caddy_reality_origin_structure_ok() { # $1=站点块行
     return 0
 }
 
+# 模式 5 直连主机站点块：只挂伪装站，仅用直连主证书，无源站守卫/代理/订阅入口。
+caddy_xhttp_direct_site_structure_ok() { # $1=站点块行（直连主机）
+    local camo=$1
+    caddy_reality_camouflage_structure_ok "${camo}" || return 1
+    grep -Fq "tls ${CERT_FILE} ${KEY_FILE}" <<<"${camo}" || return 1
+    return 0
+}
+
+# 模式 5 橙云主机站点块：回环绑定 + 独立橙云证书 + 首位源站密钥守卫 + h2c XHTTP 反代。
+caddy_xhttp_origin_site_structure_ok() { # $1=站点块行（橙云主机）
+    local origin=$1 valid_line valid_handle_line xhttp_line sub_line page_line file_server_count header
+    grep -Fq 'bind 127.0.0.1' <<<"${origin}" || return 1
+    if grep -Fq 'bind 0.0.0.0' <<<"${origin}"; then
+        return 1
+    fi
+    grep -Fq "tls ${CDN_CERT_FILE} ${CDN_KEY_FILE}" <<<"${origin}" || return 1
+    grep -Fq 'header -Server' <<<"${origin}" || return 1
+    grep -Fq "@easy_all_valid_origin expression {http.request.header.X-Easy-All-Origin-Key} == '" \
+        <<<"${origin}" || return 1
+    grep -Fq '@easy_all_sub path /subscribe /sub' <<<"${origin}" || return 1
+    grep -Fq '@easy_all_camo_page {' <<<"${origin}" || return 1
+    grep -Fq "@easy_all_xhttp path ${VLESS_PATH} ${VLESS_PATH}/*" <<<"${origin}" || return 1
+    # 就绪态必须声明 h2c 且不缓冲；阻断态只允许 respond 503，不得留下反代与 h2c 声明。
+    if grep -Fq 'reverse_proxy 127.0.0.1:10086' <<<"${origin}"; then
+        grep -Fq 'versions h2c 2' <<<"${origin}" || return 1
+        grep -Fq 'flush_interval -1' <<<"${origin}" || return 1
+    else
+        grep -Fq 'respond 503' <<<"${origin}" || return 1
+    fi
+    if grep -Eq '/easy_all-health|easy_all ok' <<<"${origin}"; then
+        return 1
+    fi
+    if grep -Eq 'abort @easy_all_bad_origin|handle /[^[:space:]]*\*|path /(subscribe|sub)\*' \
+        <<<"${origin}"; then
+        return 1
+    fi
+    for header in 'Cache-Control "no-store"' 'X-Frame-Options "DENY"' \
+        'X-Content-Type-Options "nosniff"' 'Referrer-Policy "same-origin"'; do
+        grep -Fq "${header}" <<<"${origin}" || return 1
+    done
+    valid_line=$(grep -n '@easy_all_valid_origin expression' <<<"${origin}" | head -n 1 | cut -d: -f1)
+    valid_handle_line=$(grep -n '^[[:space:]]*handle @easy_all_valid_origin {' <<<"${origin}" \
+        | head -n 1 | cut -d: -f1)
+    xhttp_line=$(grep -n '^[[:space:]]*@easy_all_xhttp path ' <<<"${origin}" | head -n 1 | cut -d: -f1)
+    sub_line=$(grep -n '^[[:space:]]*handle @easy_all_sub {' <<<"${origin}" | head -n 1 | cut -d: -f1)
+    page_line=$(grep -n '^[[:space:]]*handle @easy_all_camo_page {' <<<"${origin}" | head -n 1 | cut -d: -f1)
+    [[ -n "${valid_line}" && -n "${valid_handle_line}" && -n "${xhttp_line}" \
+        && -n "${sub_line}" && -n "${page_line}" ]] || return 1
+    ((valid_line < valid_handle_line && valid_handle_line < xhttp_line \
+        && xhttp_line < sub_line && sub_line < page_line)) || return 1
+    # 伪装站恒含 1 个 file_server；订阅就绪时再加 1 个（合计 2），未就绪时为 1。
+    file_server_count=$(grep -c '^[[:space:]]*file_server[[:space:]]*$' <<<"${origin}" || true)
+    ((file_server_count == 1 || file_server_count == 2)) || return 1
+    return 0
+}
+
 caddy_reality_structure_ok() {
     local file=$1 camo origin site_blocks
     site_blocks=$(grep -Ec '^https://.*:[0-9]+ \{$' "${file}")
+    if caddy_protocol_uses_xhttp; then
+        # 模式 5：两个回环 9443 站点块（直连伪装站 + 橙云 XHTTP 回源站），全局 default_sni 锁定直连证书。
+        grep -Fq "default_sni ${DIRECT_DOMAIN}" "${file}" || return 1
+        if grep -Fq 'bind 0.0.0.0' "${file}"; then
+            return 1
+        fi
+        if grep -Fq 'Subscription-Userinfo' "${file}"; then
+            return 1
+        fi
+        camo=$(caddy_site_block_lines_for_host "${file}" "${DIRECT_DOMAIN}" \
+            "$(caddy_reality_camouflage_port)")
+        origin=$(caddy_site_block_lines_for_host "${file}" "${CF_NODE_DOMAIN}" \
+            "$(caddy_reality_camouflage_port)")
+        [[ -n "${camo}" && -n "${origin}" ]] || return 1
+        caddy_xhttp_direct_site_structure_ok "${camo}" || return 1
+        caddy_xhttp_origin_site_structure_ok "${origin}" || return 1
+        ((site_blocks == 2)) || return 1
+        return 0
+    fi
     if caddy_protocol_uses_unified_reality_site; then
         camo=$(caddy_site_block_lines "${file}" "$(caddy_reality_camouflage_port)")
         [[ -n "${camo}" ]] || return 1

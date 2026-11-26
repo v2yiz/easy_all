@@ -696,6 +696,160 @@ for split_proto in reality-cloudflare; do
     fi
 done
 
+# --- 模式 5：Reality + Cloudflare XHTTP（单 443 合一，双 9443 站点） -----------
+# 全局 default_sni 锁直连证书；两个回环 9443 站点块：直连只有伪装站，橙云以源站密钥分流
+# XHTTP 与订阅（缺头/错头静默回落，严禁 abort）。
+render_xhttp_caddy() { # $1=文件 [$2=blocked] [$3=subscription_ok]
+    ( PROTOCOL=reality-cloudflare-xhttp render_caddy_config "$1" "${2:-0}" "${3:-1}" ) \
+        || fail "模式 5 渲染失败：${1##*/}"
+}
+xhttp_ready_file="${TMP_DIR}/Caddyfile-reality-cloudflare-xhttp-ready"
+xhttp_blocked_file="${TMP_DIR}/Caddyfile-reality-cloudflare-xhttp-blocked"
+xhttp_unready_file="${TMP_DIR}/Caddyfile-reality-cloudflare-xhttp-unready"
+render_xhttp_caddy "${xhttp_ready_file}" 0 1
+render_xhttp_caddy "${xhttp_blocked_file}" 1 1
+render_xhttp_caddy "${xhttp_unready_file}" 0 0
+xhttp_ready=$(<"${xhttp_ready_file}")
+xhttp_direct=$(caddy_site_block_lines_for_host "${xhttp_ready_file}" direct.example.com 9443)
+xhttp_cdn=$(caddy_site_block_lines_for_host "${xhttp_ready_file}" cf.example.com 9443)
+
+assert_equal "模式 5 站点主机/端口是橙云节点域名 9443" "cf.example.com 9443" \
+    "$( export PROTOCOL=reality-cloudflare-xhttp
+        printf '%s %s' "$(caddy_site_host)" "$(caddy_site_port)" )"
+assert_contains "模式 5 全局 default_sni 锁直连证书" "${xhttp_ready}" "default_sni direct.example.com"
+assert_equal "模式 5 只渲染两个顶层站点块（都在 9443）" "2" \
+    "$(grep -Ec '^https://.*:9443 \{$' <<<"${xhttp_ready}")"
+assert_not_contains "模式 5 不渲染 8443" "${xhttp_ready}" ":8443 {"
+assert_not_contains "模式 5 不绑定公网地址" "${xhttp_ready}" "bind 0.0.0.0"
+assert_not_contains "模式 5 不出现 /easy_all-health" "${xhttp_ready}" "/easy_all-health"
+assert_not_contains "模式 5 不下发 Subscription-Userinfo" "${xhttp_ready}" "Subscription-Userinfo"
+assert_not_contains "模式 5 不使用 abort 守卫" "${xhttp_ready}" "abort @easy_all_bad_origin"
+assert_equal "模式 5 两个站点块都带 header -Server" "2" \
+    "$(grep -cF 'header -Server' <<<"${xhttp_ready}" || true)"
+
+# 直连主机块：只有伪装站，使用直连主证书，无源站守卫/代理/订阅入口。
+[[ -n "${xhttp_direct}" ]] || fail "模式 5 缺少直连 9443 站点块"
+assert_contains "直连块只绑回环" "${xhttp_direct}" "bind 127.0.0.1"
+assert_contains "直连块使用直连主证书" "${xhttp_direct}" "tls ${CERT_FILE} ${KEY_FILE}"
+assert_contains "直连块含伪装站路由" "${xhttp_direct}" "handle @easy_all_camo_page {"
+assert_contains "直连块屏蔽点文件" "${xhttp_direct}" "@easy_all_camo_dotfiles path */.*"
+assert_not_contains "直连块无订阅入口" "${xhttp_direct}" "@easy_all_sub"
+assert_not_contains "直连块无源站守卫" "${xhttp_direct}" "X-Easy-All-Origin-Key"
+assert_not_contains "直连块无反代" "${xhttp_direct}" "reverse_proxy"
+assert_equal "直连块只有伪装站一处 file_server" "1" \
+    "$(grep -c '^[[:space:]]*file_server[[:space:]]*$' <<<"${xhttp_direct}" || true)"
+
+# 橙云主机块：独立橙云证书 + 首位源站密钥守卫 + h2c XHTTP 反代 + 精确订阅入口。
+[[ -n "${xhttp_cdn}" ]] || fail "模式 5 缺少橙云 9443 站点块"
+assert_contains "橙云块只绑回环" "${xhttp_cdn}" "bind 127.0.0.1"
+assert_contains "橙云块使用独立 CDN 证书" "${xhttp_cdn}" "tls ${CDN_CERT_FILE} ${CDN_KEY_FILE}"
+assert_contains "橙云块去除 Server 头" "${xhttp_cdn}" "header -Server"
+assert_contains "橙云块精确源站密钥 matcher" "${xhttp_cdn}" \
+    "@easy_all_valid_origin expression {http.request.header.X-Easy-All-Origin-Key} == '${ORIGIN_HEADER_SECRET}'"
+assert_contains "橙云块源站分支 handle" "${xhttp_cdn}" "handle @easy_all_valid_origin {"
+assert_contains "XHTTP 代理路径是精确受控前缀" "${xhttp_cdn}" \
+    "@easy_all_xhttp path ${VLESS_PATH} ${VLESS_PATH}/*"
+assert_contains "XHTTP 反代回环 10086" "${xhttp_cdn}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "XHTTP 使用 h2c" "${xhttp_cdn}" "versions h2c 2"
+assert_contains "XHTTP 不缓冲响应" "${xhttp_cdn}" "flush_interval -1"
+assert_contains "橙云块订阅入口" "${xhttp_cdn}" "@easy_all_sub path /subscribe /sub"
+assert_contains "橙云块含伪装站路由" "${xhttp_cdn}" "handle @easy_all_camo_page {"
+assert_not_contains "橙云块不使用 abort 守卫" "${xhttp_cdn}" "abort @easy_all_bad_origin"
+assert_not_contains "橙云块禁止通配 handle" "${xhttp_cdn}" "handle ${VLESS_PATH}*"
+assert_not_contains "橙云块禁止订阅前缀匹配" "${xhttp_cdn}" "path /subscribe*"
+assert_contains "橙云块伪装缓存头" "${xhttp_cdn}" 'header Cache-Control "no-store"'
+assert_equal "橙云块就绪态两处 file_server（订阅 + 伪装）" "2" \
+    "$(grep -c '^[[:space:]]*file_server[[:space:]]*$' <<<"${xhttp_cdn}" || true)"
+
+xhttp_cdn_file="${TMP_DIR}/xhttp-cdn-block"
+caddy_site_block_lines_for_host "${xhttp_ready_file}" cf.example.com 9443 >"${xhttp_cdn_file}"
+assert_before "源站守卫先于 XHTTP 路径" \
+    "$(line_of "${xhttp_cdn_file}" '@easy_all_valid_origin expression')" \
+    "$(line_of "${xhttp_cdn_file}" "@easy_all_xhttp path ${VLESS_PATH}")"
+assert_before "源站守卫先于订阅入口" \
+    "$(line_of "${xhttp_cdn_file}" '@easy_all_valid_origin expression')" \
+    "$(line_of "${xhttp_cdn_file}" 'handle @easy_all_sub {')"
+assert_before "XHTTP 路径先于伪装站" \
+    "$(line_of "${xhttp_cdn_file}" "@easy_all_xhttp path ${VLESS_PATH}")" \
+    "$(line_of "${xhttp_cdn_file}" 'handle @easy_all_camo_page {')"
+
+# blocked：只砍 XHTTP 反代（503），订阅与伪装站照旧。
+blocked_xhttp_cdn=$(caddy_site_block_lines_for_host "${xhttp_blocked_file}" cf.example.com 9443)
+assert_contains "模式 5 blocked 代理路径 503" "${blocked_xhttp_cdn}" "respond 503"
+assert_not_contains "模式 5 blocked 不反代回环" "${blocked_xhttp_cdn}" "reverse_proxy"
+assert_contains "模式 5 blocked 保留订阅入口" "${blocked_xhttp_cdn}" "@easy_all_sub path /subscribe /sub"
+assert_contains "模式 5 blocked 保留伪装站" "${blocked_xhttp_cdn}" "handle @easy_all_camo_page {"
+
+# 订阅未就绪：订阅分支 503，只剩伪装站 1 处 file_server。
+unready_xhttp_cdn=$(caddy_site_block_lines_for_host "${xhttp_unready_file}" cf.example.com 9443)
+assert_contains "模式 5 订阅未就绪时 503" "${unready_xhttp_cdn}" "respond 503"
+assert_not_contains "模式 5 订阅未就绪时不下发产物" "${unready_xhttp_cdn}" "rewrite *"
+assert_equal "模式 5 订阅未就绪时只剩伪装站一处 file_server" "1" \
+    "$(grep -c '^[[:space:]]*file_server[[:space:]]*$' <<<"${unready_xhttp_cdn}" || true)"
+
+# 结构校验正负例（无真实 caddy 时走结构断言）。
+(
+    CADDY_BIN=${TMP_DIR}/absent/caddy
+    PROTOCOL=reality-cloudflare-xhttp
+    validate_caddy_config "${xhttp_ready_file}" || exit 1
+    validate_caddy_config "${xhttp_blocked_file}" || exit 1
+    validate_caddy_config "${xhttp_unready_file}" || exit 1
+    # 负例：缺少 default_sni。
+    sed '/default_sni/d' "${xhttp_ready_file}" >"${TMP_DIR}/xhttp-no-sni"
+    validate_caddy_config "${TMP_DIR}/xhttp-no-sni" >/dev/null 2>&1 && exit 1
+    # 负例：缺少 h2c 版本声明。
+    sed '/versions h2c 2/d' "${xhttp_ready_file}" >"${TMP_DIR}/xhttp-no-h2c"
+    validate_caddy_config "${TMP_DIR}/xhttp-no-h2c" >/dev/null 2>&1 && exit 1
+    # 负例：缺少 flush_interval。
+    sed '/flush_interval -1/d' "${xhttp_ready_file}" >"${TMP_DIR}/xhttp-no-flush"
+    validate_caddy_config "${TMP_DIR}/xhttp-no-flush" >/dev/null 2>&1 && exit 1
+    # 负例：橙云块绑定 0.0.0.0。
+    awk '/^https:\/\/cf.example.com:9443 \{$/{seen=1} seen && /bind 127.0.0.1/{sub(/bind 127.0.0.1/, "bind 0.0.0.0")} {print}' \
+        "${xhttp_ready_file}" >"${TMP_DIR}/xhttp-public"
+    validate_caddy_config "${TMP_DIR}/xhttp-public" >/dev/null 2>&1 && exit 1
+    # 负例：直连块出现订阅入口。
+    awk '
+        /^https:\/\/direct.example.com:9443 \{$/ {direct = 1}
+        /^https:\/\/cf.example.com:9443 \{$/ {direct = 0}
+        {print}
+        direct && /^[[:space:]]*root \* / {print "\t\t@easy_all_sub path /subscribe /sub"}
+    ' "${xhttp_ready_file}" >"${TMP_DIR}/xhttp-direct-sub"
+    validate_caddy_config "${TMP_DIR}/xhttp-direct-sub" >/dev/null 2>&1 && exit 1
+    # 负例：XHTTP 路径变成通配。
+    sed "s|@easy_all_xhttp path ${VLESS_PATH} ${VLESS_PATH}/\*|@easy_all_xhttp path ${VLESS_PATH}*|" \
+        "${xhttp_ready_file}" >"${TMP_DIR}/xhttp-wildcard"
+    validate_caddy_config "${TMP_DIR}/xhttp-wildcard" >/dev/null 2>&1 && exit 1
+    # 负例：多出第三个站点块。
+    cp "${xhttp_ready_file}" "${TMP_DIR}/xhttp-three-blocks"
+    cat >>"${TMP_DIR}/xhttp-three-blocks" <<'EXTRA'
+https://extra.example.com:10443 {
+	bind 127.0.0.1
+	tls /x /y
+	header -Server
+	route {
+		respond 404
+	}
+}
+EXTRA
+    validate_caddy_config "${TMP_DIR}/xhttp-three-blocks" >/dev/null 2>&1 && exit 1
+    exit 0
+) || fail "模式 5 结构校验行为不符合预期"
+
+# 双证书 SAN 隔离：仅存在旧共享证书时橙云块平滑回退主证书（与模式 4 同口径）。
+xhttp_fallback_file="${TMP_DIR}/Caddyfile-xhttp-fallback"
+(
+    PROTOCOL=reality-cloudflare-xhttp
+    CERT_FILE="${split_certs}/fullchain.pem"
+    KEY_FILE="${split_certs}/private.key"
+    CDN_CERT_FILE="${split_certs}/cdn-fullchain.pem"
+    CDN_KEY_FILE="${split_certs}/cdn-private.key"
+    rm -f -- "${CDN_CERT_FILE}" "${CDN_KEY_FILE}"
+    render_caddy_config "${xhttp_fallback_file}" 0 1
+) || fail "模式 5 回退渲染失败"
+assert_contains "模式 5 回退态橙云块使用旧主证书" \
+    "$(caddy_site_block_lines_for_host "${xhttp_fallback_file}" cf.example.com 9443)" \
+    "tls ${split_certs}/fullchain.pem ${split_certs}/private.key"
+
 # --- 输入校验 ---------------------------------------------------------------
 if (PROTOCOL=cloudfront; CF_ORIGIN_DOMAIN=""; render_caddy_config "${TMP_DIR}/x" 0 1) >/dev/null 2>&1; then
     fail "模式 2 缺少源站域名必须失败"

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 真核心 HTTP/代理链路门禁（design §13）：起真实 sing-box + Caddy，验证模式 2 的
-# 源站守卫、订阅矩阵与 Caddy→VLESS WebSocket 代理链路。
+# 源站守卫、订阅矩阵与 Caddy→VLESS WebSocket 代理链路；
+# 提供 XRAY_BIN 时再起真实 Xray（CI 必传），验证模式 5 的双证书 SNI 隔离、橙云源站守卫
+# 回落与 Caddy h2c → Xray XHTTP（stream-up）代理数据面。
 # 模式 3/4 的 Reality 直连与单 443 回落需要额外的 Reality 客户端握手，其服务端与
 # 订阅配置由 verify-cores.sh / test_core_e2e.mjs 用真实核心校验覆盖。
 # 需要 root（绑定 443/10086）与锁定版本核心；缺核心/端口/进程失败即非零，不跳过。
@@ -9,12 +11,17 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 SB=${SINGBOX_BIN:-/etc/easy_all/sing-box/sing-box}
+XR=${XRAY_BIN:-}
 CADDY=${CADDY_BIN:-/etc/easy_all/caddy/caddy}
 [[ "$(id -u)" -eq 0 ]] || { printf 'verify-live 需要 root（端口 443）：请用 sudo 运行\n' >&2; exit 2; }
 [[ -x "${SB}" ]] || { printf '缺少 sing-box：%s\n' "${SB}" >&2; exit 1; }
 [[ -x "${CADDY}" ]] || { printf '缺少 Caddy：%s\n' "${CADDY}" >&2; exit 1; }
+if [[ -n "${XR}" && ! -x "${XR}" ]]; then
+    printf 'XRAY_BIN 不可执行：%s\n' "${XR}" >&2
+    exit 1
+fi
 
-for port in 443 10086 18081 18082 19090; do
+for port in 443 10086 18081 18082 18091 19090; do
     if command -v ss >/dev/null 2>&1 && ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q .; then
         printf 'verify-live: 端口 %s 已被占用；请先停止占用进程\n' "${port}" >&2
         exit 1
@@ -23,11 +30,11 @@ done
 T=$(mktemp -d "${TMPDIR:-/tmp}/easy-all-live.XXXXXX")
 cleanup_fixtures() {
     local pid
-    for pid in ${SBPID:-} ${CADDYPID:-} ${CPID1:-} ${CPID2:-} ${CPID3:-}; do
+    for pid in ${SBPID:-} ${XRAYPID:-} ${CADDYPID:-} ${CPID1:-} ${CPID2:-} ${CPID3:-} ${CPID4:-}; do
         [[ -n "${pid}" ]] && kill "${pid}" >/dev/null 2>&1 || true
     done
     sleep 0.3
-    for pid in ${SBPID:-} ${CADDYPID:-} ${CPID1:-} ${CPID2:-} ${CPID3:-}; do
+    for pid in ${SBPID:-} ${XRAYPID:-} ${CADDYPID:-} ${CPID1:-} ${CPID2:-} ${CPID3:-} ${CPID4:-}; do
         [[ -n "${pid}" ]] && kill -9 "${pid}" >/dev/null 2>&1 || true
     done
     rm -rf -- "${T}"
@@ -208,4 +215,192 @@ for port in 18081; do
     done
     [[ "${status}" == "200" ]] || { tail -5 "${T}/client-ws.log" >&2; fail "proxy ${port} 返回 ${status:-无}"; }
 done
-printf 'ok - 真核心 HTTP/代理链路（Caddy→VLESS WebSocket）\n'
+
+# --- 模式 5：Reality + Cloudflare XHTTP（单 443 合一，纯 xray + Caddy） ----------
+# 需要真实 Xray（CI 必传 XRAY_BIN）；本机自备 Xray 时同样运行，不提供时显式跳过。
+if [[ -z "${XR}" ]]; then
+    printf 'skip - 模式 5 live 冒烟（未提供 XRAY_BIN；CI 必须提供）\n'
+else
+    # 模式 2 的 sing-box/Caddy 占用 443 与 10086：先停掉再起模式 5。
+    kill "${SBPID}" "${CADDYPID}" >/dev/null 2>&1 || true
+    wait "${SBPID}" "${CADDYPID}" 2>/dev/null || true
+    for _ in $(seq 1 40); do
+        if command -v ss >/dev/null 2>&1 \
+            && ! ss -H -ltn "sport = :443" 2>/dev/null | grep -q .; then
+            break
+        fi
+        sleep 0.25
+    done
+
+    M5="${T}/m5"
+    mkdir -p "${M5}/certs" "${M5}/subs" "${M5}/camo" "${M5}/runtime"
+    M5_DIRECT=direct5.example.com
+    M5_CDN=cf5.example.com
+    M5_PATH=/vless-m5abcdef1234
+    M5_UUID=11111111-2222-4333-8444-555555555555
+    M5_SECRET=m5-origin-secret-0123456789abcdef
+    M5_TOKEN=tok-live-m5-aaaaaaaa
+    openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=${M5_DIRECT}" \
+        -addext "subjectAltName=DNS:${M5_DIRECT}" \
+        -keyout "${M5}/certs/private.key" -out "${M5}/certs/fullchain.pem" >/dev/null 2>&1
+    openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=${M5_CDN}" \
+        -addext "subjectAltName=DNS:${M5_CDN}" \
+        -keyout "${M5}/certs/cdn-private.key" -out "${M5}/certs/cdn-fullchain.pem" >/dev/null 2>&1
+    chmod 0600 "${M5}/certs/private.key" "${M5}/certs/cdn-private.key"
+    printf 'camouflage-index\n' >"${M5}/camo/index.html"
+    for f in base64.txt base64-all.txt mihomo.yaml mihomo-all.yaml mihomo-ios.yaml mihomo-ios-all.yaml; do
+        printf '%s\n' "${f}" >"${M5}/subs/${f}"
+    done
+
+    # 正式渲染器生成服务端与 Caddy 配置（独立进程：Profile 常量是 readonly）。
+    RUNTIME_TMP="${M5}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${M5}/state" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${M5}/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${M5}/subs" \
+    CAMOUFLAGE_DIR="${M5}/camo" \
+    XRAY_CONFIG="${M5}/xray.json" \
+    CADDY_CONFIG="${M5}/Caddyfile" \
+    XRAY_BIN="${XR}" CADDY_BIN="${CADDY}" \
+        bash -c '
+set -Eeuo pipefail
+export RUNTIME_TMP EASY_ALL_STATE_DIR_OVERRIDE EASY_ALL_CERT_DIR_OVERRIDE \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE CAMOUFLAGE_DIR XRAY_CONFIG CADDY_CONFIG
+source "$1/profiles/reality-cloudflare-xhttp.sh"
+CF_ZONE=example.com
+VPS_PUBLIC_IPV4=203.0.113.10
+SUB_DOWNLOAD_NAME=EASY_ALL
+ALLOWED_TOKENS="{\"owner\":\"$2\"}"
+SUBSCRIPTION_CONFIG=$(jq -cn --argjson t "${ALLOWED_TOKENS}" "{allowedTokens:\$t,nodes:[]}")
+CLOUDFLARE_ZONE_ID=zoneid
+SUBSCRIPTION_MODE=deploy
+DIRECT_DOMAIN=$3
+DIRECT_NODE_NAME=direct
+VLESS_UUID=$4
+REALITY_PRIVATE_KEY=QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE
+REALITY_PUBLIC_KEY=QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI
+REALITY_SHORT_ID=0123456789abcdef
+CF_NODE_DOMAIN=$5
+CF_NODE_PREFIX=CF
+VLESS_PATH=$6
+ORIGIN_HEADER_SECRET=$7
+CLOUDFLARE_TRANSFORM_RULESET_ID=rs-easy-all-live
+CLOUDFLARE_TRANSFORM_RULE_ID=rule-easy-all-live
+cdn_derive_runtime_fields
+render_xray_config "${XRAY_CONFIG}" 0
+validate_xray_config "${XRAY_CONFIG}"
+render_caddy_config "${CADDY_CONFIG}" 0 1
+validate_caddy_config "${CADDY_CONFIG}"
+' _ "${ROOT_DIR}" "${M5_TOKEN}" "${M5_DIRECT}" "${M5_UUID}" "${M5_CDN}" "${M5_PATH}" "${M5_SECRET}" \
+        || fail "模式 5 配置渲染或核心校验失败"
+
+    "${XR}" run -config "${M5}/xray.json" >"${M5}/xray.log" 2>&1 & XRAYPID=$!
+    "${CADDY}" run --config "${M5}/Caddyfile" --adapter caddyfile >"${M5}/caddy.log" 2>&1 & CADDYPID=$!
+    M5_HEADER="X-Easy-All-Origin-Key: ${M5_SECRET}"
+    ready=0
+    for _ in $(seq 1 40); do
+        if [[ "$(curl -sk --noproxy '*' --max-time 2 -o /dev/null -w '%{http_code}' \
+            --resolve "${M5_CDN}:9443:127.0.0.1" -H "${M5_HEADER}" \
+            "https://${M5_CDN}:9443/subscribe?token=invalid" 2>/dev/null || true)" == "403" ]]; then
+            ready=1
+            break
+        fi
+        sleep 0.25
+    done
+    if [[ "${ready}" != "1" ]]; then
+        tail -5 "${M5}/xray.log" >&2 || true
+        tail -5 "${M5}/caddy.log" >&2 || true
+        fail "模式 5 的 Xray 或 Caddy 未就绪"
+    fi
+
+    # ① 双证书 SNI 隔离：空 SNI 拿直连主证书，未知 SNI 拿不到任何证书，cf 主机拿到橙云证书，
+    #    任何情况下都不得把 CDN_CERT_FILE 的 SAN 暴露给非 cf 主机名。
+    m5_san() {
+        timeout 10 openssl s_client -connect 127.0.0.1:9443 "$@" </dev/null 2>/dev/null \
+            | openssl x509 -noout -ext subjectAltName 2>/dev/null || true
+    }
+    empty_san=$(m5_san)
+    grep -Fq "DNS:${M5_DIRECT}" <<<"${empty_san}" || fail "空 SNI 未返回直连主证书"
+    ! grep -Fq "DNS:${M5_CDN}" <<<"${empty_san}" || fail "空 SNI 泄露了橙云证书 SAN"
+    unknown_san=$(m5_san -servername unknown.example.com)
+    ! grep -Fq "DNS:${M5_CDN}" <<<"${unknown_san}" || fail "未知 SNI 泄露了橙云证书 SAN"
+    ! grep -Fq "DNS:${M5_DIRECT}" <<<"${unknown_san}" || fail "未知 SNI 不应拿到直连主证书"
+    cdn_san=$(m5_san -servername "${M5_CDN}")
+    grep -Fq "DNS:${M5_CDN}" <<<"${cdn_san}" || fail "cf 主机名未拿到橙云证书"
+    ! grep -Fq "DNS:${M5_DIRECT}" <<<"${cdn_san}" || fail "橙云证书泄露了直连证书 SAN"
+
+    # ② 缺头/错头的公网 443（经 Xray Reality 回落）只能看到伪装站：无 403、无 Server 头。
+    m5_code() { curl -sk --noproxy '*' --max-time 10 -o /dev/null -w '%{http_code}' "$@"; }
+    for probe_path in "${M5_PATH}" "${M5_PATH}/probe" /subscribe; do
+        [[ "$(m5_code --resolve "${M5_CDN}:443:127.0.0.1" "https://${M5_CDN}${probe_path}")" == "404" ]] \
+            || fail "模式 5 缺头探测未落伪装站：${probe_path}"
+    done
+    [[ "$(m5_code --resolve "${M5_CDN}:443:127.0.0.1" \
+        -H 'X-Easy-All-Origin-Key: wrong-secret-0123456789' "https://${M5_CDN}${M5_PATH}")" == "404" ]] \
+        || fail "模式 5 错头探测未落伪装站"
+    guard_headers=$(curl -sk --noproxy '*' --max-time 10 -D - -o /dev/null \
+        --resolve "${M5_CDN}:443:127.0.0.1" "https://${M5_CDN}${M5_PATH}" | tr -d '\r')
+    ! grep -qi '^server:' <<<"${guard_headers}" || fail "模式 5 回落响应出现 Server 头"
+    ! grep -qi '^subscription-userinfo:' <<<"${guard_headers}" \
+        || fail "模式 5 不得下发 Subscription-Userinfo"
+
+    # ③ 带正确源站头的回环 9443：订阅矩阵可用，flag=singbox 恒 503。
+    m5_sub() { curl -sk --noproxy '*' --max-time 10 "${M5_BASE[@]}" "$@"; }
+    M5_BASE=(--resolve "${M5_CDN}:9443:127.0.0.1" -H "${M5_HEADER}")
+    [[ "$(m5_sub "https://${M5_CDN}:9443/subscribe?token=${M5_TOKEN}")" == "base64.txt" ]] \
+        || fail "模式 5 Base64 订阅未下发"
+    [[ "$(m5_sub "https://${M5_CDN}:9443/subscribe?flag=clash&token=${M5_TOKEN}")" == "mihomo.yaml" ]] \
+        || fail "模式 5 Mihomo 订阅未下发"
+    [[ "$(m5_sub "https://${M5_CDN}:9443/subscribe?flag=base64&token=${M5_TOKEN}")" == "base64.txt" ]] \
+        || fail "模式 5 显式 flag=base64 未生效"
+    [[ "$(m5_code "${M5_BASE[@]}" "https://${M5_CDN}:9443/subscribe?token=invalid")" == "403" ]] \
+        || fail "模式 5 非法 Token 未返回 403"
+    singbox_headers=$(curl -sk --noproxy '*' --max-time 10 -D - -o /dev/null "${M5_BASE[@]}" \
+        "https://${M5_CDN}:9443/subscribe?flag=singbox&token=${M5_TOKEN}" | tr -d '\r')
+    [[ "$(awk 'NR==1 {print $2}' <<<"${singbox_headers}")" == "503" ]] \
+        || fail "模式 5 的 flag=singbox 必须返回 503"
+    ! grep -qi '^subscription-userinfo:' <<<"${singbox_headers}" \
+        || fail "模式 5 的 sing-box 分支不得下发 Subscription-Userinfo"
+
+    # ④ 双 Xray 实例：Caddy h2c → Xray XHTTP（stream-up）代理数据面。
+    # 客户端在 extra.headers 里模拟 Cloudflare 边缘注入的源站头（真实边缘由 Transform Rule 注入）。
+    jq -n --arg uuid "${M5_UUID}" --arg host "${M5_CDN}" --arg path "${M5_PATH}" \
+        --arg secret "${M5_SECRET}" '
+        {
+          log: {loglevel: "warning"},
+          inbounds: [{tag: "socks-in", protocol: "socks", listen: "127.0.0.1", port: 18091,
+                      settings: {udp: false}}],
+          outbounds: [{
+            protocol: "vless",
+            settings: {vnext: [{address: "127.0.0.1", port: 9443,
+                                users: [{id: $uuid, encryption: "none"}]}]},
+            streamSettings: {
+              network: "xhttp",
+              security: "tls",
+              tlsSettings: {serverName: $host, allowInsecure: true, alpn: ["h2"]},
+              xhttpSettings: {
+                path: $path, host: $host, mode: "stream-up",
+                extra: {headers: {"X-Easy-All-Origin-Key": $secret},
+                        noGRPCHeader: false, uplinkHTTPMethod: "POST"}
+              }
+            }
+          }]
+        }' >"${M5}/client.json"
+    "${XR}" run -config "${M5}/client.json" >"${M5}/client.log" 2>&1 & CPID4=$!
+    m5_proxy_status=""
+    for _ in $(seq 1 20); do
+        m5_proxy_status=$(env -u NO_PROXY -u no_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+            -u http_proxy -u https_proxy -u all_proxy \
+            curl -sS --max-time 10 -x "socks5h://127.0.0.1:18091" \
+            -o /dev/null -w '%{http_code}' https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+        [[ "${m5_proxy_status}" == "200" ]] && break
+        sleep 1
+    done
+    if [[ "${m5_proxy_status}" != "200" ]]; then
+        kill -0 "${CPID4}" 2>/dev/null || { tail -5 "${M5}/client.log" >&2 || true; }
+        tail -5 "${M5}/xray.log" >&2 || true
+        fail "模式 5 XHTTP 代理链路返回 ${m5_proxy_status:-无}"
+    fi
+    printf 'ok - 模式 5 真核心 live 冒烟（双证书 SNI 隔离 / 源站守卫回落 / 订阅矩阵 / Caddy h2c → Xray XHTTP）\n'
+fi
+
+printf 'ok - 真核心 HTTP/代理链路（Caddy→VLESS WebSocket / 模式 5 Xray XHTTP）\n'

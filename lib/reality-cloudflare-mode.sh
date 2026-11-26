@@ -20,7 +20,8 @@ readonly CDN_PUBLIC_ACCEPT_SECONDS="${CDN_PUBLIC_ACCEPT_SECONDS_OVERRIDE:-10}"
 
 cdn_derive_runtime_fields() {
     [[ -n "${DIRECT_DOMAIN:-}" ]] || return 1
-    BACKEND=sing-box
+    # BACKEND 由 Profile 声明（模式 1-4 为 sing-box，模式 5 为 xray）：这里不硬编码覆写。
+    BACKEND=${BACKEND:-sing-box}
     # 橙云节点域名同时是 transport Host、订阅域名与证书名；固定 deploy。
     [[ -n "${CF_NODE_DOMAIN:-}" ]] || return 1
     SUBSCRIPTION_MODE=deploy
@@ -64,12 +65,25 @@ collect_direct_install_inputs() {
         "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME:-${DEFAULT_SUB_DOWNLOAD_NAME}}")")
     cdn_derive_runtime_fields || die "运行时字段派生失败：缺少直连域名或 CDN 节点域名"
     # Token 收集/校验/持久化是各模式共用的（lib/cf-dns.sh）：下一进程可直接复用已存值。
-    cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑；deploy 还需 Zone Settings 只读 + Origin Rules 编辑）'
-    # Reality short_id 在输入阶段确定；keypair 依赖已安装的 sing-box，留到 core 阶段生成。
+    if runtime_uses_xray; then
+        # 模式 5 的橙云链路靠 Request Header Transform Rule 注入源站守卫头，
+        # XHTTP 回源还依赖 Zone 级 gRPC（本工具只读校验，不代改全区设置）。
+        cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑 + Zone Settings 只读 + Transform Rules 编辑）'
+        info "请确认已在 Cloudflare 面板开启 Network -> gRPC（XHTTP 回源依赖）；本工具不会自动修改该设置"
+    else
+        cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑；deploy 还需 Zone Settings 只读 + Origin Rules 编辑）'
+    fi
+    # Reality short_id 在输入阶段确定；keypair 依赖已安装的核心，留到 core 阶段生成。
     # 身份由 install_all 紧接着落盘。
     REALITY_SHORT_ID=${REALITY_SHORT_ID:-$(openssl rand -hex 8)}
     [[ "${REALITY_SHORT_ID}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
         || die "Reality short_id 无效：${REALITY_SHORT_ID}"
+    # 模式 5 的源站守卫密钥先于云端写入落盘：续装直接沿用，不产生孤儿 Transform Rule。
+    if runtime_uses_xray; then
+        ORIGIN_HEADER_SECRET=${ORIGIN_HEADER_SECRET:-$(openssl rand -hex 24)}
+        [[ "${ORIGIN_HEADER_SECRET}" =~ ^[A-Za-z0-9._~-]{16,128}$ ]] \
+            || die "源站头密钥无效：ORIGIN_HEADER_SECRET"
+    fi
     # 模式 4（直连 + 橙云）先问优选前缀，再问订阅配置。
     collect_cdn_edge_address
     SUBSCRIPTION_CONFIG=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}") \
@@ -152,6 +166,34 @@ direct_remove_origin_rule() {
         "${CLOUDFLARE_ORIGIN_RULE_ID}"
 }
 
+# 模式 5：橙云边缘给精确 http.host 注入 X-Easy-All-Origin-Key（取代 8443 回源端口覆盖）。
+# 公网 443 与橙云回源共用同一端口，回源流量靠这条头与伪装流量区分。
+direct_ensure_transform_rule() {
+    local ids ruleset_id rule_id
+    subscription_enabled || return 0
+    direct_ensure_zone_id
+    ids=$(cloudflare_ensure_transform_rule "${CLOUDFLARE_ZONE_ID}" "${SUBSCRIPTION_DOMAIN}" \
+        "${ORIGIN_HEADER_SECRET}") \
+        || die "创建/更新 Cloudflare Request Header Transform Rule 失败；未建立订阅回源"
+    ruleset_id=$(printf '%s\n' "${ids}" | sed -n '1p')
+    rule_id=$(printf '%s\n' "${ids}" | sed -n '2p')
+    [[ -n "${ruleset_id}" && -n "${rule_id}" ]] \
+        || die "Cloudflare 未返回 Transform Rule 的 ruleset/rule ID"
+    CLOUDFLARE_TRANSFORM_RULESET_ID=${ruleset_id}
+    CLOUDFLARE_TRANSFORM_RULE_ID=${rule_id}
+}
+
+direct_remove_transform_rule() {
+    [[ -n "${CLOUDFLARE_TRANSFORM_RULESET_ID:-}" && -n "${CLOUDFLARE_TRANSFORM_RULE_ID:-}" ]] \
+        || return 0
+    local zone_id=${CLOUDFLARE_ZONE_ID:-}
+    [[ -n "${zone_id}" ]] \
+        || zone_id=$(cloudflare_lookup_parent_zone "${CF_ZONE}" || true)
+    [[ -n "${zone_id}" ]] || { warn "缺少 Zone ID；跳过 Transform Rule 清理"; return 1; }
+    cloudflare_remove_transform_rule "${zone_id}" "${CLOUDFLARE_TRANSFORM_RULESET_ID}" \
+        "${CLOUDFLARE_TRANSFORM_RULE_ID}"
+}
+
 # --- 证书 ---------------------------------------------------------------------
 
 # 证书由 runtime-core 的 DNS-01 路径分别签发：
@@ -217,10 +259,17 @@ write_runtime_config() {
 
 build_node_links() {
     local extra
-    build_reality_link
-    printf '\n'
-    build_vless_ws_link
-    printf '\n'
+    if runtime_uses_xray; then
+        build_xray_reality_link
+        printf '\n'
+        build_xray_xhttp_link
+        printf '\n'
+    else
+        build_reality_link
+        printf '\n'
+        build_vless_ws_link
+        printf '\n'
+    fi
     extra=$(aggregation_node_links)
     [[ -z "${extra}" ]] || printf '%s\n' "${extra}"
     return 0
@@ -228,10 +277,17 @@ build_node_links() {
 
 build_mihomo_nodes() {
     local extra
-    build_mihomo_reality_node
-    printf '\n'
-    build_mihomo_ws_node
-    printf '\n'
+    if runtime_uses_xray; then
+        build_mihomo_xray_reality_node
+        printf '\n'
+        build_mihomo_xray_xhttp_node
+        printf '\n'
+    else
+        build_mihomo_reality_node
+        printf '\n'
+        build_mihomo_ws_node
+        printf '\n'
+    fi
     extra=$(aggregation_mihomo_nodes)
     [[ -z "${extra}" ]] || printf '%s\n' "${extra}"
     return 0
@@ -311,8 +367,9 @@ refresh_runtime_subscription() {
         return 0
     }
     direct_write_subscriptions
-    validate_singbox_subscription_runtime
+    runtime_supports_singbox_subscription && validate_singbox_subscription_runtime
     save_state
+    return 0
 }
 
 direct_subscription_artifacts_ready() {
@@ -369,15 +426,64 @@ direct_public_subscription_ok() {
     [[ "${status}" == "403" ]]
 }
 
+# 模式 5 公网直连 443 的源站守卫行为验收：
+# 缺头/错头时，经 Xray 透传回落只能看到伪装站——代理路径与订阅入口必须是伪装站的 404
+# （不是 403/503），首页 200 且与磁盘伪装站逐字节一致，且全程不出现 Server 响应头。
+direct_public_origin_guard_ok() {
+    local path code camo_code headers_file body_file port
+    port=$(caddy_reality_camouflage_port)
+    headers_file="${RUNTIME_TMP}/public-guard.headers"
+    body_file="${RUNTIME_TMP}/public-guard.body"
+    # 缺头：代理路径、其子路径与订阅入口都只能命中伪装站路由。
+    for path in "${VLESS_PATH}" "${VLESS_PATH}/probe" /subscribe; do
+        code=$(public_dns_curl -o /dev/null -w '%{http_code}' \
+            --resolve "${CF_NODE_DOMAIN}:443:${VPS_PUBLIC_IPV4}" \
+            "https://${CF_NODE_DOMAIN}${path}") || return 1
+        camo_code=$(curl --proto '=https' --noproxy '*' -sS \
+            --connect-timeout 5 --max-time 20 -o /dev/null -w '%{http_code}' \
+            --resolve "${DIRECT_DOMAIN}:${port}:127.0.0.1" \
+            "https://${DIRECT_DOMAIN}:${port}${path}") || return 1
+        [[ "${code}" == "${camo_code}" ]] || return 1
+    done
+    # 错头：守卫是精确等值比较，不是「有没有这个头」。
+    code=$(public_dns_curl -o /dev/null -w '%{http_code}' \
+        --resolve "${CF_NODE_DOMAIN}:443:${VPS_PUBLIC_IPV4}" \
+        --header 'X-Easy-All-Origin-Key: easy-all-invalid-origin-key' \
+        "https://${CF_NODE_DOMAIN}${VLESS_PATH}") || return 1
+    [[ "${code}" == "404" ]] || return 1
+    # 首页必须与磁盘伪装站逐字节一致，且不暴露 Server 头。
+    code=$(public_dns_curl -D "${headers_file}" -o "${body_file}" -w '%{http_code}' \
+        --resolve "${CF_NODE_DOMAIN}:443:${VPS_PUBLIC_IPV4}" \
+        "https://${CF_NODE_DOMAIN}/") || return 1
+    [[ "${code}" == "200" ]] || return 1
+    ! grep -Eqi '^server:' "${headers_file}" || return 1
+    ! grep -Eqi '^subscription-userinfo:' "${headers_file}" || return 1
+    cmp -s "${body_file}" "${CAMOUFLAGE_DIR}/index.html" || return 1
+    # 订阅路径不得泄露任何订阅标记（伪装站 404 是空响应）。
+    public_dns_curl --resolve "${CF_NODE_DOMAIN}:443:${VPS_PUBLIC_IPV4}" \
+        "https://${CF_NODE_DOMAIN}/subscribe" >"${body_file}" || return 1
+    ! grep -Fq -- 'proxies:' "${body_file}" || return 1
+    ! grep -Fq -- 'vless://' "${body_file}" || return 1
+    return 0
+}
+
 direct_validate_public_runtime() {
     local attempt
     subscription_enabled || return 0
     wait_for_dns_a_record "${SUBSCRIPTION_DOMAIN}" "" public \
         || die "订阅域名尚未解析：${SUBSCRIPTION_DOMAIN}；请检查橙云 A 记录后重试"
     for ((attempt = 1; attempt <= CDN_PUBLIC_ACCEPT_ATTEMPTS; attempt++)); do
-        direct_public_subscription_ok && return 0
+        if direct_public_subscription_ok; then
+            if ! runtime_uses_xray; then
+                return 0
+            fi
+            direct_public_origin_guard_ok && return 0
+        fi
         ((attempt == CDN_PUBLIC_ACCEPT_ATTEMPTS)) || sleep "${CDN_PUBLIC_ACCEPT_SECONDS}"
     done
+    if runtime_uses_xray; then
+        die "订阅公网验收失败（已重试 ${CDN_PUBLIC_ACCEPT_ATTEMPTS} 次）：请确认 ${SUBSCRIPTION_DOMAIN} 为橙云 A、SSL 为 Full (strict)、Network -> gRPC 已开启、Request Header Transform Rule 已注入 X-Easy-All-Origin-Key；修复后执行 sudo easy_all apply-cloud"
+    fi
     die "订阅公网验收失败（已重试 ${CDN_PUBLIC_ACCEPT_ATTEMPTS} 次）：请确认 ${SUBSCRIPTION_DOMAIN} 为橙云 A、SSL 为 Full (strict)、Origin Rule 回源 8443 已生效；修复后执行 sudo easy_all apply-cloud"
 }
 
@@ -410,15 +516,24 @@ show_status() {
     printf '模式: %s\n' "${CDN_MODE_LABEL}"
     printf '协议: %s\n' "$(runtime_protocol_label)"
     show_tcp_acceleration_status
-    printf '直连域名: %s（VLESS Reality，TCP 443 公网；伪装站 127.0.0.1:9443）\n' "${DIRECT_DOMAIN}"
-    show_ntp_sync_warning
-    if subscription_enabled; then
-        printf '节点/订阅域名: %s（橙云 A，Caddy 8443 仅 Cloudflare 回源段，同时提供 HTTPUpgrade 节点与订阅）\n' \
+    if runtime_uses_xray; then
+        printf '直连域名: %s（VLESS Reality，TCP 443 公网；伪装站 127.0.0.1:9443）\n' "${DIRECT_DOMAIN}"
+        show_ntp_sync_warning
+        printf '节点/订阅域名: %s（橙云 A，默认回源公网 443；Caddy 127.0.0.1:9443 双站点同时提供 XHTTP 节点与订阅）\n' \
             "${SUBSCRIPTION_DOMAIN}"
-        printf 'Origin Rule: ruleset %s / rule %s\n' \
-            "${CLOUDFLARE_ORIGIN_RULESET_ID:-未知}" "${CLOUDFLARE_ORIGIN_RULE_ID:-未知}"
+        printf 'Transform Rule: ruleset %s / rule %s（边缘注入 X-Easy-All-Origin-Key）\n' \
+            "${CLOUDFLARE_TRANSFORM_RULESET_ID:-未知}" "${CLOUDFLARE_TRANSFORM_RULE_ID:-未知}"
     else
-        printf '订阅: 未部署（link；仅输出节点）\n'
+        printf '直连域名: %s（VLESS Reality，TCP 443 公网；伪装站 127.0.0.1:9443）\n' "${DIRECT_DOMAIN}"
+        show_ntp_sync_warning
+        if subscription_enabled; then
+            printf '节点/订阅域名: %s（橙云 A，Caddy 8443 仅 Cloudflare 回源段，同时提供 HTTPUpgrade 节点与订阅）\n' \
+                "${SUBSCRIPTION_DOMAIN}"
+            printf 'Origin Rule: ruleset %s / rule %s\n' \
+                "${CLOUDFLARE_ORIGIN_RULESET_ID:-未知}" "${CLOUDFLARE_ORIGIN_RULE_ID:-未知}"
+        else
+            printf '订阅: 未部署（link；仅输出节点）\n'
+        fi
     fi
     if [[ -s "${CERT_FILE}" ]]; then
         cert_enddate=$(openssl x509 -in "${CERT_FILE}" -noout -enddate 2>/dev/null | sed -n 's/^notAfter=//p')
@@ -436,8 +551,8 @@ show_status() {
     else
         printf '橙云回源证书: 缺失；请执行 sudo easy_all renew-cert\n'
     fi
-    printf 'sing-box: '
-    systemctl is-active --quiet "${SINGBOX_SERVICE}" 2>/dev/null \
+    printf '%s: ' "$(runtime_proxy_label)"
+    systemctl is-active --quiet "$(runtime_proxy_service)" 2>/dev/null \
         && printf 'active\n' || printf 'inactive\n'
     printf 'Caddy: '
     if subscription_enabled; then
@@ -473,7 +588,7 @@ apply_easy_all() {
     if subscription_enabled; then
         direct_write_subscriptions
         validate_subscription_runtime
-        validate_singbox_subscription_runtime
+        runtime_supports_singbox_subscription && validate_singbox_subscription_runtime
     fi
     save_state
     cdn_commit_local_runtime
@@ -491,13 +606,23 @@ apply_cloud_phase() {
     direct_ensure_zone_id
     if subscription_enabled; then
         cloudflare_ensure_zone_ssl_strict
-        # 模式 4 的橙云节点走 HTTPUpgrade（握手仍发 Upgrade: websocket）：Zone 关闭 WebSockets 时链路必失败。
-        cloudflare_ensure_zone_websockets_on
+        if runtime_uses_xray; then
+            # 模式 5 用 XHTTP（HTTP/2）而非 WebSocket：不预检 WebSockets 开关，
+            # XHTTP 回源依赖的 Zone 级 gRPC 仍只在面板由用户开启（本工具只读不写）。
+            info "XHTTP 回源依赖 Cloudflare Zone 的 Network -> gRPC 已在面板开启（本工具不自动修改全区设置）"
+        else
+            # 模式 4 的橙云节点走 HTTPUpgrade（握手仍发 Upgrade: websocket）：Zone 关闭 WebSockets 时链路必失败。
+            cloudflare_ensure_zone_websockets_on
+        fi
     fi
     direct_ensure_dns
     certbot_write_cloudflare_credentials
     cdn_issue_certificate
-    direct_ensure_origin_rule
+    if runtime_uses_xray; then
+        direct_ensure_transform_rule
+    else
+        direct_ensure_origin_rule
+    fi
 }
 
 apply_cloud_resources() {
@@ -517,7 +642,7 @@ apply_cloud_resources() {
     if subscription_enabled; then
         direct_write_subscriptions
         validate_subscription_runtime
-        validate_singbox_subscription_runtime
+        runtime_supports_singbox_subscription && validate_singbox_subscription_runtime
         direct_validate_public_runtime
     fi
     save_state
@@ -554,7 +679,7 @@ update_subscription() {
         write_runtime_config
         runtime_reload_caddy
         validate_subscription_runtime
-        validate_singbox_subscription_runtime
+        runtime_supports_singbox_subscription && validate_singbox_subscription_runtime
     fi
     save_state
     commit_subscription_update
@@ -622,10 +747,11 @@ cdn_local_uninstall_common() {
         warn "卸载未完成：移除 easy_all 定时重启任务失败，本机状态与命令已保留；修正 root crontab 后重试 uninstall"
         return 1
     fi
-    rm -f -- "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}"
+    rm -f -- "${SINGBOX_SERVICE_FILE}" "${XRAY_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" \
-        "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"
+        "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" \
+        "$(dirname -- "${XRAY_BIN}")" "$(dirname -- "${CADDY_BIN}")"
     rmdir "$(dirname -- "${SUBSCRIPTION_DIR}")" 2>/dev/null || true
 }
 
@@ -635,8 +761,13 @@ cdn_print_cloud_inventory() {
     if subscription_enabled; then
         printf '  节点/订阅 A 记录（橙云）: %s -> %s\n' "${SUBSCRIPTION_DOMAIN:-未知}" \
             "${VPS_PUBLIC_IPV4:-未知}" >&2
-        printf '  Origin Rule: %s / %s\n' "${CLOUDFLARE_ORIGIN_RULESET_ID:-未知}" \
-            "${CLOUDFLARE_ORIGIN_RULE_ID:-未知}" >&2
+        if runtime_uses_xray; then
+            printf '  Transform Rule: %s / %s\n' "${CLOUDFLARE_TRANSFORM_RULESET_ID:-未知}" \
+                "${CLOUDFLARE_TRANSFORM_RULE_ID:-未知}" >&2
+        else
+            printf '  Origin Rule: %s / %s\n' "${CLOUDFLARE_ORIGIN_RULESET_ID:-未知}" \
+                "${CLOUDFLARE_ORIGIN_RULE_ID:-未知}" >&2
+        fi
     fi
 }
 
@@ -680,8 +811,13 @@ direct_purge_cloud_resources() {
             || { warn "删除 Cloudflare 记录失败：${host}"; failed=1; }
     done
     if subscription_enabled; then
-        (direct_remove_origin_rule) \
-            || { warn "删除 Origin Rule 未完成"; failed=1; }
+        if runtime_uses_xray; then
+            (direct_remove_transform_rule) \
+                || { warn "删除 Transform Rule 未完成"; failed=1; }
+        else
+            (direct_remove_origin_rule) \
+                || { warn "删除 Origin Rule 未完成"; failed=1; }
+        fi
     fi
     return "${failed}"
 }
@@ -695,7 +831,11 @@ uninstall_all() {
     if [[ "${FORCE:-0}" != "1" ]]; then
         [[ -t 0 ]] || die "非交互卸载必须显式设置 FORCE=1"
         if subscription_enabled; then
-            read_bilingual '删除 easy_all 本机服务、状态和证书，以及 easy_all 创建的 Cloudflare DNS 与 Origin Rule？[y/N]:' answer
+            if runtime_uses_xray; then
+                read_bilingual '删除 easy_all 本机服务、状态和证书，以及 easy_all 创建的 Cloudflare DNS 与 Transform Rule？[y/N]:' answer
+            else
+                read_bilingual '删除 easy_all 本机服务、状态和证书，以及 easy_all 创建的 Cloudflare DNS 与 Origin Rule？[y/N]:' answer
+            fi
         else
             read_bilingual '删除 easy_all 本机服务、状态和证书，以及 easy_all 创建的直连 A 记录？[y/N]:' answer
         fi
@@ -726,9 +866,10 @@ cleanup_partial_install() {
     remove_certbot_deploy_hook || true
     certificate_remove_lineage || true
     remove_daily_reboot_schedule || true
-    for path in "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}" \
-        "${SUBSCRIPTION_DIR}" \
-        "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"; do
+    for path in "${SINGBOX_SERVICE_FILE}" "${XRAY_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" \
+        "${COMMAND_PATH}" "${SUBSCRIPTION_DIR}" "${COMMAND_INSTALL_DIR}" \
+        "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${XRAY_BIN}")" \
+        "$(dirname -- "${CADDY_BIN}")"; do
         [[ -n "${path}" ]] || continue
         rm -rf -- "${path}" 2>/dev/null || { warn "删除残留失败：${path}"; failed=1; }
     done
@@ -753,9 +894,10 @@ rollback_fresh_install() {
     install_progress_clear
 }
 
-# 首轮端口预检：模式 4 的直连/橙云回源/回环端口必然使用。
+# 首轮端口预检：端口一律按运行时派生，不写死模式编号。
 cdn_prepare_install_ports() {
-    # 模式 4：443 直连、8443 橙云回源、回环 10086 与 9443 伪装回环都必须空闲。
+    # 模式 4：443 直连、8443 橙云回源（CF-only）、回环 10086 与 9443 伪装回环；
+    # 模式 5：443 直连、回环 10086 与 9443（无 8443、无 CF-only 端口，空串由预检跳过）。
     prepare_fresh_install "$(runtime_public_tcp_ports)" "$(runtime_cloudflare_only_port)" \
         "$(runtime_cdn_loopback_port)" "$(caddy_reality_camouflage_port)"
 }
@@ -788,12 +930,13 @@ install_all() {
     configure_ipv4_only
     install_progress_stage inputs
     collect_direct_install_inputs
-    # 身份在创建任何云端资源前落盘，中断后可续装。Reality 的 keypair 依赖已下载的
-    # sing-box（generate reality-keypair），由 core 阶段的 cdn_prepare_direct_runtime
-    # 补齐并再次落盘；第二次落盘只补 Origin Rule 的 ruleset/rule ID。
+    # 身份在创建任何云端资源前落盘，中断后可续装。Reality 的 keypair 依赖已下载的核心
+    # （模式 4 为 sing-box generate reality-keypair，模式 5 为 xray x25519），由 core 阶段的
+    # cdn_prepare_direct_runtime 补齐并再次落盘；第二次落盘只补 Origin Rule（模式 4）或
+    # Transform Rule（模式 5）的 ruleset/rule ID。
     persist_install_identity || die "无法落盘安装身份；在创建云端资源前停止安装"
     install_progress_stage core
-    download_singbox
+    runtime_download_proxy_core
     download_caddy
     cdn_prepare_direct_runtime
     install_progress_stage services
@@ -803,7 +946,11 @@ install_all() {
     direct_ensure_zone_id
     if subscription_enabled; then
         cloudflare_ensure_zone_ssl_strict
-        cloudflare_ensure_zone_websockets_on
+        if runtime_uses_xray; then
+            info "XHTTP 回源依赖 Cloudflare Zone 的 Network -> gRPC 已在面板开启（本工具不自动修改全区设置）"
+        else
+            cloudflare_ensure_zone_websockets_on
+        fi
     fi
     configure_runtime_ufw
     direct_ensure_dns
@@ -815,7 +962,11 @@ install_all() {
     runtime_apply_runtime_services
     validate_protocol_runtime
     cdn_validate_direct_runtime
-    direct_ensure_origin_rule
+    if runtime_uses_xray; then
+        direct_ensure_transform_rule
+    else
+        direct_ensure_origin_rule
+    fi
     persist_install_identity || die "无法落盘安装身份；已保留云端资源"
     install_progress_stage subscription
     if subscription_enabled; then
@@ -823,7 +974,7 @@ install_all() {
         write_runtime_config
         runtime_reload_caddy
         validate_subscription_runtime
-        validate_singbox_subscription_runtime
+        runtime_supports_singbox_subscription && validate_singbox_subscription_runtime
         direct_validate_public_runtime
     fi
     install_progress_stage state

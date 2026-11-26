@@ -1683,6 +1683,57 @@ fi
 assert_equal "purge-cloud: 持续 429 只重试 2 次（请求数有界）" "3" \
     "$(grep -c 'zones?status=active' "${CALLS}")"
 
+# 8.9 模式 5：Request Header Transform Rule（http_request_late_transform）按 ref/表达式清理，
+#     被清空的 ruleset 才删除，仍含他人规则的 ruleset 与归属不明的规则一律保留。
+write_fixture "${FIXTURE_ROOT}/xhttp/zone-example.com.json" <<'EOF'
+{"success":true,"result":[{"id":"z1","name":"example.com","account":{"id":"a1"}}]}
+EOF
+write_fixture "${FIXTURE_ROOT}/xhttp/dns-z1.json" <<'EOF'
+{"success":true,"result":[
+{"id":"dns-cf-example-com","name":"cf.example.com","comment":"easy_all reality-cloudflare-xhttp"}
+]}
+EOF
+write_fixture "${FIXTURE_ROOT}/xhttp/rulesets-z1.json" <<'EOF'
+{"success":true,"result":[{"id":"rs-xform"},{"id":"rs-shared"}]}
+EOF
+# 已清空的 transform ruleset：没有规则可删，ruleset 本身按名称前缀回收。
+write_fixture "${FIXTURE_ROOT}/xhttp/ruleset-rs-xform.json" <<'EOF'
+{"success":true,"result":{"id":"rs-xform","name":"easy_all-transform-rules",
+"phase":"http_request_late_transform","rules":[]}}
+EOF
+write_fixture "${FIXTURE_ROOT}/xhttp/ruleset-rs-shared.json" <<'EOF'
+{"success":true,"result":{"id":"rs-shared","name":"easy_all-shared",
+"phase":"http_request_late_transform","rules":[
+{"id":"r-shared","ref":"easy_all-2db43f5c841d1663","expression":"http.host eq \"cf.example.com\"",
+ "action":"rewrite","action_parameters":{"headers":{"X-Easy-All-Origin-Key":{"operation":"set","value":"y"}}}},
+{"id":"r-foreign","ref":"someone-else","expression":"http.host eq \"cf.example.com\"",
+ "action":"rewrite"}
+]}}
+EOF
+write_fixture "${FIXTURE_ROOT}/xhttp/certs-z1.json" <<'EOF'
+{"success":true,"result":[]}
+EOF
+CALLS="${TMP_DIR}/domain-xhttp-calls.log"
+OUT="${TMP_DIR}/domain-xhttp.out"
+ERR="${TMP_DIR}/domain-xhttp.err"
+run_purge_domain "${CALLS}" "${OUT}" "${ERR}" "${FIXTURE_ROOT}/xhttp" cf.example.com \
+    || fail "purge-cloud: 模式 5 Transform Rule 清理应成功：$(tail -n 3 "${ERR}")"
+expected_xhttp=$(
+    cat <<'EOF'
+/zones/z1/dns_records/dns-cf-example-com
+/zones/z1/rulesets/rs-shared/rules/r-shared
+/zones/z1/rulesets/rs-xform
+EOF
+)
+assert_equal "purge-cloud: Transform Rule 删除集合" "${expected_xhttp}" \
+    "$(deleted_paths "${CALLS}")"
+assert_equal "purge-cloud: 仍含他人规则的 ruleset 保留" "0" \
+    "$(grep -cE 'DELETE .*/rulesets/rs-shared$' "${CALLS}" || true)"
+assert_equal "purge-cloud: 非本工具规则保留" "0" \
+    "$(grep -c 'r-foreign' "${CALLS}" || true)"
+assert_contains "purge-cloud: 清空后的 transform ruleset 被删除" "$(<"${OUT}")" \
+    "已删除 Ruleset：easy_all-transform-rules"
+
 printf 'ok - purge-cloud\n'
 
 # A31 阶段一：本文件必须真的跑过断言（不校验条数，只拦「一个都没跑」）。

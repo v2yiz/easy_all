@@ -7,19 +7,20 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       SINGBOX_BIN: ${{ github.workspace }}/.cores/sing-box
+      XRAY_BIN: ${{ github.workspace }}/.cores/xray
       CADDY_BIN: ${{ github.workspace }}/.cores/caddy
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - name: Install locked cores (sing-box 1.14.4 / Caddy 2.11.9)
+      - name: Install locked cores (sing-box 1.14.4 / Xray 26.11.9 / Caddy 2.11.9)
         run: EASY_ALL_DOWNLOAD_CORES=1 bash scripts/verify-cores.sh
       - name: Run end-to-end tests
         run: npm test
       - name: Run real-core gate
         run: npm run test:cores
-      - name: Run live HTTP/proxy gate (Caddy→VLESS WS)
-        run: sudo env SINGBOX_BIN="$SINGBOX_BIN" CADDY_BIN="$CADDY_BIN" bash scripts/verify-live.sh
+      - name: Run live HTTP/proxy gate (Caddy→VLESS WS / mode 5 Xray XHTTP)
+        run: sudo env SINGBOX_BIN="$SINGBOX_BIN" XRAY_BIN="$XRAY_BIN" CADDY_BIN="$CADDY_BIN" bash scripts/verify-live.sh
       - name: Run Linux mangle metering gate
         run: sudo bash scripts/verify-linux-metering.sh

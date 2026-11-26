@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 真核心门禁（design §6 H / §13）：用锁定的真实 sing-box 与 Caddy 校验正式生成的配置。
+# 真核心门禁（design §6 H / §13）：用锁定的真实 sing-box / Xray 与 Caddy 校验正式生成的配置。
 # 缺核心、版本不符、配置校验或端口监听失败都失败——不跳过。
 #
 # 本脚本只做核心级校验（sing-box check / caddy validate / 真实监听冒烟）；
@@ -27,12 +27,14 @@ die() {
 # 在 root（容器/CI）下污染宿主机系统目录。显式传入 SINGBOX_BIN/CADDY_BIN 时仍按调用方指定。
 if [[ "${EASY_ALL_DOWNLOAD_CORES:-0}" == "1" ]]; then
     SINGBOX_BIN=${SINGBOX_BIN:-${WORK_DIR}/cores/sing-box}
+    XRAY_BIN=${XRAY_BIN:-${WORK_DIR}/cores/xray}
     CADDY_BIN=${CADDY_BIN:-${WORK_DIR}/cores/caddy}
 else
     SINGBOX_BIN=${SINGBOX_BIN:-/etc/easy_all/sing-box/sing-box}
+    XRAY_BIN=${XRAY_BIN:-/etc/easy_all/xray/xray}
     CADDY_BIN=${CADDY_BIN:-/etc/easy_all/caddy/caddy}
 fi
-export SINGBOX_BIN CADDY_BIN
+export SINGBOX_BIN XRAY_BIN CADDY_BIN
 
 # CI 无系统安装的核心：EASY_ALL_DOWNLOAD_CORES=1 时按 design §6 下载并校验锁定版本，
 # 摘要/清单不符同样失败（不降级为“跳过”）。
@@ -47,18 +49,23 @@ if [[ "${EASY_ALL_DOWNLOAD_CORES:-0}" == "1" ]]; then
     source "${ROOT_DIR}/lib/log.sh"
     # shellcheck source=lib/singbox-core.sh
     source "${ROOT_DIR}/lib/singbox-core.sh"
+    # shellcheck source=lib/xray-core.sh
+    source "${ROOT_DIR}/lib/xray-core.sh"
     # shellcheck source=lib/caddy-core.sh
     source "${ROOT_DIR}/lib/caddy-core.sh"
     download_singbox || die "下载/校验锁定 sing-box 失败"
+    download_xray || die "下载/校验锁定 Xray 失败"
     download_caddy || die "下载/校验锁定 Caddy 失败"
     SINGBOX_BIN=${SINGBOX_BIN}
+    XRAY_BIN=${XRAY_BIN}
     CADDY_BIN=${CADDY_BIN}
-    export SINGBOX_BIN CADDY_BIN
+    export SINGBOX_BIN XRAY_BIN CADDY_BIN
 fi
 
 [[ -x "${SINGBOX_BIN}" ]] || die "缺少真实 sing-box 可执行文件（${SINGBOX_BIN}）；本门禁不跳过"
+[[ -x "${XRAY_BIN}" ]] || die "缺少真实 Xray 可执行文件（${XRAY_BIN}）；本门禁不跳过"
 [[ -x "${CADDY_BIN}" ]] || die "缺少真实 Caddy 可执行文件（${CADDY_BIN}）；本门禁不跳过"
-export SINGBOX_BIN CADDY_BIN
+export SINGBOX_BIN XRAY_BIN CADDY_BIN
 
 # shellcheck source=lib/log.sh
 source "${ROOT_DIR}/lib/log.sh"
@@ -66,13 +73,32 @@ source "${ROOT_DIR}/lib/log.sh"
 source "${ROOT_DIR}/lib/state.sh"
 # shellcheck source=lib/singbox-core.sh
 source "${ROOT_DIR}/lib/singbox-core.sh"
+# shellcheck source=lib/xray-core.sh
+source "${ROOT_DIR}/lib/xray-core.sh"
+# shellcheck source=lib/xray-runtime.sh
+source "${ROOT_DIR}/lib/xray-runtime.sh"
 # shellcheck source=lib/caddy-core.sh
 source "${ROOT_DIR}/lib/caddy-core.sh"
 
 [[ "$(singbox_binary_version "${SINGBOX_BIN}")" == "$(singbox_version)" ]] \
     || die "sing-box 版本不是锁定版本 $(singbox_version)"
+[[ "$(xray_binary_version "${XRAY_BIN}")" == "$(xray_version)" ]] \
+    || die "Xray 版本不是锁定版本 $(xray_version)"
 [[ "$(caddy_binary_version "${CADDY_BIN}")" == "v$(caddy_version)" ]] \
     || die "Caddy 版本不是锁定版本 v$(caddy_version)"
+
+# x25519 实跑解析：真实核心的输出形态必须能被正式解析器接受（三形态兼容；第三行 Hash32 必须跳过、绝不误作公钥）。
+x25519_output=$("${XRAY_BIN}" x25519 2>/dev/null) \
+    || die "xray x25519 执行失败"
+xray_parse_reality_keypair "${x25519_output}" \
+    || die "xray x25519 的真实输出无法解析（$(printf '%s' "${x25519_output}" | head -n 3 | paste -sd'|' -)）"
+[[ -n "${REALITY_PRIVATE_KEY}" && -n "${REALITY_PUBLIC_KEY}" ]] \
+    || die "xray x25519 解析后密钥为空"
+[[ "${REALITY_PRIVATE_KEY}" != "${REALITY_PUBLIC_KEY}" ]] \
+    || die "xray x25519 解析出同一对密钥"
+x25519_again=$("${XRAY_BIN}" x25519 2>/dev/null) || die "xray x25519 第二次执行失败"
+xray_parse_reality_keypair "${x25519_again}" || die "xray x25519 第二次输出无法解析"
+unset REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY
 
 render_mode() {
     local profile=$1 out=$2
@@ -83,6 +109,7 @@ render_mode() {
         export EASY_ALL_CERT_DIR_OVERRIDE="${out}/certs"
         export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${out}/subscriptions"
         export SINGBOX_CONFIG="${out}/config.json"
+        export XRAY_CONFIG="${out}/xray.json"
         export CADDY_CONFIG="${out}/Caddyfile"
         mkdir -p "${RUNTIME_TMP}"
         # shellcheck source=/dev/null
@@ -111,6 +138,12 @@ render_mode() {
             VLESS_UUID=11111111-2222-3333-4444-555555555555
             VLESS_PATH=/vless-0123456789ab
         fi
+        if [[ "${PROTOCOL}" == "reality-cloudflare-xhttp" ]]; then
+            # 模式 5：源站守卫密钥 + Transform Rule 标识（云端资源在真核心门禁里不创建）。
+            ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef
+            CLOUDFLARE_TRANSFORM_RULESET_ID=rs-easy-all-test
+            CLOUDFLARE_TRANSFORM_RULE_ID=rule-easy-all-test
+        fi
         if state_protocol_uses_cloudfront "${PROTOCOL}"; then
             # 模式 3 的源站域名复用直连域名（一个名字、一条灰云 A、一份 LE 证书）。
             CF_ORIGIN_DOMAIN=${DIRECT_DOMAIN:-origin.example.com}
@@ -132,11 +165,16 @@ render_mode() {
                 -keyout "${CDN_KEY_FILE}" -out "${CDN_CERT_FILE}" >/dev/null 2>&1 || exit 1
             chmod 0600 "${CDN_KEY_FILE}"
         fi
-        render_singbox_config "${SINGBOX_CONFIG}" 0
-        validate_singbox_config "${SINGBOX_CONFIG}" || exit 1
-        # 客户端订阅同样是正式产物：真实核心必须接受渲染出的完整 JSON。
-        install -d -m 0700 "${out}/subscriptions"
-        render_singbox_subscription_files "${out}/subscriptions" || exit 1
+        if runtime_uses_xray; then
+            render_xray_config "${XRAY_CONFIG}" 0
+            validate_xray_config "${XRAY_CONFIG}" || exit 1
+        else
+            render_singbox_config "${SINGBOX_CONFIG}" 0
+            validate_singbox_config "${SINGBOX_CONFIG}" || exit 1
+            # 客户端订阅同样是正式产物：真实核心必须接受渲染出的完整 JSON。
+            install -d -m 0700 "${out}/subscriptions"
+            render_singbox_subscription_files "${out}/subscriptions" || exit 1
+        fi
         if runtime_caddy_site_enabled; then
             render_caddy_config "${CADDY_CONFIG}" 0 1
             validate_caddy_config "${CADDY_CONFIG}" || exit 1
@@ -145,9 +183,10 @@ render_mode() {
     printf 'ok - %s 配置通过真实核心校验\n' "${profile}"
 }
 
-for profile in reality-cloudfront reality-cloudflare cloudfront cloudflare; do
+for profile in reality-cloudfront reality-cloudflare reality-cloudflare-xhttp \
+    cloudfront cloudflare; do
     render_mode "${profile}" "${WORK_DIR}/${profile}"
 done
 
-printf 'ok - verify-cores 完成（sing-box %s / Caddy %s）\n' \
-    "$(singbox_version)" "$(caddy_version)"
+printf 'ok - verify-cores 完成（sing-box %s / Xray %s / Caddy %s）\n' \
+    "$(singbox_version)" "$(xray_version)" "$(caddy_version)"

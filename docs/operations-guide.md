@@ -6,7 +6,8 @@
 - **1 纯 CloudFlare**：橙云单域名（TCP 443，仅 Cloudflare 回源段放行）同时提供 VLESS HTTPUpgrade 节点与订阅；
 - **2 纯 CloudFront**：CloudFront CDN 节点（TCP 443），源站回源（TCP 443）；
 - **3 Reality + CloudFront**：VLESS Reality 直连（TCP 443）+ CloudFront CDN 节点（TCP 443），采用单 `443` 合一架构经回环 `127.0.0.1:9443` 分流回源与伪装站（公网仅开放 TCP `443`）；
-- **4 Reality + CloudFlare**：VLESS Reality 直连（TCP 443，回环 `127.0.0.1:9443` 伪装站）+ 橙云节点/订阅（TCP 8443 仅 Cloudflare 回源段放行）。
+- **4 Reality + CloudFlare**：VLESS Reality 直连（TCP 443，回环 `127.0.0.1:9443` 伪装站）+ 橙云节点/订阅（TCP 8443 仅 Cloudflare 回源段放行）；
+- **5 Reality + CloudFlare（Xray XHTTP）**：VLESS Reality 直连（TCP 443）+ 橙云 VLESS XHTTP 节点/订阅（TCP 443），采用单 `443` 合一架构经回环 `127.0.0.1:9443` 双证书双站点分流，由 Transform Rule 注入 `X-Easy-All-Origin-Key`（纯 Xray 后端，公网仅开放 TCP `443`）。
 
 ---
 
@@ -21,14 +22,15 @@ sudo easy_all self-update
 - 仅支持 `STATE_VERSION=1` 的环境；4.x（schema 0）不可直接升级，须先卸载后重装。
 
 ### 1.2 `apply`：纯本机重建配置
-更新代码或修改本地配置后，刷新 sing-box / Caddy / 订阅：
+更新代码或修改本地配置后，刷新 sing-box（模式 5 为 Xray）/ Caddy / 订阅：
 ```bash
 sudo easy_all apply
 ```
-- **仅本机重建**：重新渲染并应用 sing-box 配置、Caddyfile、UFW 端口与订阅产物（六份 Mihomo/Base64 + `singbox.json` / `singbox-all.json`），并平滑重启服务。
+- **仅本机重建**：重新渲染并应用核心配置（模式 1–4 为 sing-box，模式 5 为 Xray）、Caddyfile、UFW 端口与订阅产物（六份 Mihomo/Base64；模式 1–4 另有 `singbox.json` / `singbox-all.json`，模式 5 不生成 JSON），并平滑重启服务。
 - **不调用云管理 API**：不改写 DNS，不请求证书签发。唯一外部网络访问为拉取公开的 Cloudflare 官方 IPv4 段（模式 1/4）与 Origin CA 根证书（模式 1），无需账号凭据。
 - **模式 3/4（Reality）重建与伪装站保留**：没有 `link` 模式；模式 3 为单 `443` 合一架构，Caddy 仅监听回环 `127.0.0.1:9443` 同时承载伪装站与 CloudFront 回源/订阅（旧版 v5.5.0 升级后若尚未执行 `apply-cloud`，`apply` 会暂保留兼容 `8443` 站点与放行并提示迁移，避免线上回源 `502`）；模式 4 的 `8443` 橙云回源/订阅站点与 `127.0.0.1:9443` 伪装站始终一起重建。只要 `/var/www/easy_all/camouflage/index.html` 已非空，无论是首次生成的实例变体还是用户自行放置的自定义静态站点，`apply` 与 `renew-cert` 均不会覆盖。
 - **模式 4 证书平滑兼容**：从旧版合并 SAN 证书升级后若仅运行 `apply` 尚未执行 `renew-cert`，`8443` 橙云回源会暂沿用现用证书并输出提示，建议随后执行 `sudo easy_all renew-cert` 完成双证书 SAN 隔离。
+- **模式 5（Xray XHTTP）重建**：`apply` 重写 `${XRAY_CONFIG}` 与 Caddyfile（`127.0.0.1:9443` 双站点 + 全局 `default_sni`），六产物订阅不变；`flag=singbox` 恒返回 503（本模式不生成 JSON）。
 - 处于保护待落实状态（`blocked=true` 且 `enforced=false`）时，自动执行受限安全恢复，防止带着开放配置启动服务。
 
 ### 1.3 `apply-cloud`：同步云端资源
@@ -38,6 +40,7 @@ sudo easy_all apply-cloud
 ```
 - **模式 1（Cloudflare 橙云）**：校验 `Full (strict)` 与 `WebSockets` → 同步橙云节点 A 记录 → 签发/复用 Origin CA 证书 → 本机重建并验收 → 吊销旧证书。
 - **模式 4（Reality 直连 + 橙云）**：校验 Zone SSL 为 `Full (strict)` 与 `WebSockets` → 同步直连灰云 A 记录与橙云节点 A 记录 → 通过双 Certbot DNS-01 lineage（`easy_all` 仅覆盖直连域名、`easy_all-cdn` 仅覆盖橙云节点域名，共用现有 Cloudflare Token 权限）签发/复用独立 Let's Encrypt 证书 → 配置 `8443` 端口 Origin Rule → 本机重建并验收。
+- **模式 5（Reality 直连 + 橙云 Xray XHTTP）**：校验 Zone SSL 为 `Full (strict)`（**不**预检 WebSockets，XHTTP 走 HTTP/2；需在面板开启 `Network -> gRPC`）→ 同步直连灰云 A 记录与橙云节点 A 记录（橙云回源公网 `443`）→ 签发/复用双证书 lineage → 通过单规则端点创建或更新 Request Header Transform Rule（`http_request_late_transform`，边缘注入 `X-Easy-All-Origin-Key`）→ 本机重建并验收（含公网 `443` 的守卫回落探测）。
 - **模式 2/3（CloudFront）**：
   1. 读取 Cloudflare Token 与 AWS 凭据（凭据仅暂存内存）；
   2. 同步源站灰云 A 记录（模式 3 的源站域名复用直连域名，另含直连 A 记录）；
@@ -58,12 +61,12 @@ sudo easy_all apply-cloud
 | `sudo easy_all subscription` | 查看各节点的详细连接参数与用户专属订阅链接 |
 | `sudo easy_all show` | 输出各节点详细参数、VLESS 分享链接与客户端配置片段 |
 | `sudo easy_all apply` | **纯本机重建**：刷新服务配置与订阅产物（不请求云端 API） |
-| `sudo easy_all apply-cloud` | **同步云端资源**：收敛 DNS 解析、证书、CloudFront 分发与 Origin Rule |
+| `sudo easy_all apply-cloud` | **同步云端资源**：收敛 DNS 解析、证书、CloudFront 分发、Origin Rule 或 Transform Rule |
 | `sudo easy_all edit-sub` | 交互式管理用户 Token 与外部聚合节点（可修改/删除 `cdnEdgeAddress` 优选地址） |
 | `sudo easy_all renew-cert` | 重新签发或轮换 TLS 证书（模式 1 轮换 Origin CA；其余模式走 Certbot） |
-| `sudo easy_all hellogfw` | （仅模式 3/4）分析直连 TCP 443 主动探测日志线索；`hellogfw -h` 免 root |
+| `sudo easy_all hellogfw` | （仅模式 3/4/5）分析直连 TCP 443 主动探测日志线索；`hellogfw -h` 免 root |
 | `sudo easy_all cdn-traffic-sync` | （仅模式 2/3）手动采样 CDN 流量并同步落实熔断状态 |
-| `sudo easy_all update-core` | 重新安装或修复锁定版本的 sing-box 与 Caddy 核心 |
+| `sudo easy_all update-core` | 重新安装或修复锁定版本的核心（模式 1–4 为 sing-box + Caddy，模式 5 为 Xray + Caddy） |
 | `sudo easy_all self-update` | 从 GitHub 更新 `easy_all` 脚本自身（`--dev` 切换开发分支） |
 | `sudo easy_all cleanup-partial` | 清理安装中断留下的本机临时残留（未安装状态使用，不碰云端） |
 | `sudo easy_all purge-cloud` | 独立清理当前域名下的 easy_all Cloudflare 与 CloudFront/ACM 资源 |
@@ -90,12 +93,13 @@ sudo easy_all apply-cloud
 | 服务单元 | 职能说明 |
 | :--- | :--- |
 | `easy_all-singbox.service` | 核心入站：VLESS Reality `0.0.0.0:443`（模式 3 转发非 Reality 握手与 CloudFront 回源流量到 `127.0.0.1:9443`，模式 4 转发非 Reality 握手到 `127.0.0.1:9443`）、VLESS CDN 入站 `127.0.0.1:10086`（模式 1/4 为 `httpupgrade`，模式 2/3 为 `ws`） |
-| `easy_all-caddy.service` | 订阅与 CDN 回源站点（模式 1/2 监听 `443`；模式 3 仅监听回环 `127.0.0.1:9443` 按 `X-Easy-All-Origin-Key` 统一分流回源/订阅与伪装站，旧装未执行 `apply-cloud` 迁移前暂保留 `8443` 兼容；模式 4 监听 `8443` 并在 `127.0.0.1:9443` 提供独立伪装站） |
+| `easy_all-xray.service` | （仅模式 5）核心入站：VLESS Reality `0.0.0.0:443`（非 Reality 握手转发到 `127.0.0.1:9443`）与 VLESS XHTTP `127.0.0.1:10086`；`Environment=XRAY_LOCATION_ASSET` 指向安装目录 |
+| `easy_all-caddy.service` | 订阅与 CDN 回源站点（模式 1/2 监听 `443`；模式 3 仅监听回环 `127.0.0.1:9443` 按 `X-Easy-All-Origin-Key` 统一分流回源/订阅与伪装站，旧装未执行 `apply-cloud` 迁移前暂保留 `8443` 兼容；模式 4 监听 `8443` 并在 `127.0.0.1:9443` 提供独立伪装站；模式 5 在 `127.0.0.1:9443` 提供双证书双站点：直连伪装站 + 橙云 XHTTP 回源站，全局 `default_sni` 锁直连证书） |
 | `easy_all-cdn-traffic-guard.timer` | （仅模式 2/3）每 15 秒采样计量规则并落实流量阻断 |
-| `easy_all-probe-log.service` | （仅模式 3/4）oneshot，重启/`apply` 时重放直连 TCP 443 的限速 `GFW_CHK:` 内核 LOG 规则 |
+| `easy_all-probe-log.service` | （仅模式 3/4/5）oneshot，重启/`apply` 时重放直连 TCP 443 的限速 `GFW_CHK:` 内核 LOG 规则 |
 
-- **查看日志**：`sudo journalctl -u easy_all-singbox -u easy_all-caddy -u easy_all-cdn-traffic-guard -f`。
-- **重启服务**：核心可用 `sudo systemctl restart easy_all-singbox`；Caddy 请统一通过 `sudo easy_all apply` 重载以保证配置校验完整。
+- **查看日志**：`sudo journalctl -u easy_all-singbox -u easy_all-caddy -u easy_all-cdn-traffic-guard -f`（模式 5 把 `easy_all-singbox` 换成 `easy_all-xray`）。
+- **重启服务**：核心可用 `sudo systemctl restart easy_all-singbox`（模式 5 为 `sudo systemctl restart easy_all-xray`）；Caddy 请统一通过 `sudo easy_all apply` 重载以保证配置校验完整。
 
 ### 4.2 节点域名与凭据变更
 - **域名与节点名变更**：节点域名与节点名均与状态深度绑定，改名须执行 `sudo easy_all uninstall` 后重新安装并更新客户端订阅；若仅修改 CDN 优选连接地址，直接通过 `sudo easy_all edit-sub` 修改即可，无需重装。
@@ -107,7 +111,7 @@ sudo easy_all renew-cert
 ```
 - **模式 1**：强制轮换 Cloudflare Origin CA 证书。先签发并部署新证书，通过本机严格 TLS 验收后才吊销旧证书。
 - **模式 2/3**：通过 Cloudflare DNS-01 重新签发 `easy_all` lineage 的 Let's Encrypt 证书，通过本机证书指纹验收后平滑替换。
-- **模式 4（双 Certbot DNS-01 隔离）**：分别维护两套独立 lineage——`easy_all` 仅覆盖直连域名（`/etc/easy_all/certs/fullchain.pem`，供 `443` 直连与模式 4 伪装站），`easy_all-cdn` 仅覆盖橙云节点域名（`/etc/easy_all/certs/cdn-fullchain.pem`，供 `8443` 橙云回源），彻底隔离证书 SAN；两套 lineage 共用现有 `/etc/easy_all/cloudflare.ini` 凭据，**无需额外 Cloudflare Token 权限**。**v5.5.0 升级拆分**：旧版合并 SAN 证书的节点执行一次 `sudo easy_all renew-cert`（或 `apply-cloud`）即可自动缩容重签并拆分为独立双证书。
+- **模式 4/5（双 Certbot DNS-01 隔离）**：分别维护两套独立 lineage——`easy_all` 仅覆盖直连域名（`/etc/easy_all/certs/fullchain.pem`，供 `443` 直连与模式 4/5 的伪装站），`easy_all-cdn` 仅覆盖橙云节点域名（`/etc/easy_all/certs/cdn-fullchain.pem`，模式 4 供 `8443` 橙云回源、模式 5 供 `127.0.0.1:9443` 的橙云 XHTTP 站点），彻底隔离证书 SAN；两套 lineage 共用现有 `/etc/easy_all/cloudflare.ini` 凭据，**无需额外 Cloudflare Token 权限**。**v5.5.0 升级拆分**：旧版合并 SAN 证书的节点执行一次 `sudo easy_all renew-cert`（或 `apply-cloud`）即可自动缩容重签并拆分为独立双证书。
 - **模式 2/3 的 ACM viewer 证书**不归 `renew-cert` 管，由 AWS 自动续期；但证书处于 `FAILED`/`VALIDATION_TIMED_OUT`/`REVOKED`/`EXPIRED` 等终态时，安装与 `apply-cloud` 会直接失败并点名 ARN：重申请会被幂等 Token 取回同一张证书，需先到 AWS 控制台（`us-east-1`）删除后重试。
 
 ---
@@ -118,7 +122,7 @@ sudo easy_all renew-cert
 sudo easy_all edit-sub
 ```
 - **配置结构**：接收包含 `allowedTokens`（用户 Token 字典）与 `nodes`（外部聚合节点数组）的 JSON 配置，省略项即被移除。
-- **CDN 优选地址配置**（模式 1–4）：顶层添加可选字段 `"cdnEdgeAddress": "优选域名"`（如 `"cdnEdgeAddress": "m3q8a1w7zr.cloudfront.182682.xyz"`），保存后订阅产物即刻更新生效，无需 `apply-cloud`。删除该字段则恢复为默认连接节点域名。
+- **CDN 优选地址配置**（模式 1–5）：顶层添加可选字段 `"cdnEdgeAddress": "优选域名"`（如 `"cdnEdgeAddress": "m3q8a1w7zr.cloudfront.182682.xyz"`），保存后订阅产物即刻更新生效，无需 `apply-cloud`。删除该字段则恢复为默认连接节点域名。
 - **路径与鉴权**：Caddy 仅精准匹配 `/subscribe` 与 `/sub`，其余路径一律 `404`；带非法或重复 Token 的请求均返回 `403`。
 - **熔断时修复**：若在流量熔断期间执行 `edit-sub`，脚本将自动在保持 CDN 阻断的状态下更新订阅，保障服务安全。
 
@@ -169,24 +173,24 @@ sudo easy_all edit-sub
 ```bash
 sudo easy_all uninstall
 ```
-- 自动清理 easy_all 本机服务、配置文件、证书、定时器与业务防火墙放行；保留系统内核、Swap、SSH 端口放行及 Fail2ban 基础防护。模式 3/4 卸载时仅按受管清单删除本工具生成的伪装站文件与空目录，保留用户在 `/var/www/easy_all/camouflage` 下自行放置的静态站点文件。
-- 默认自动尝试清理关联的云端资源（DNS 记录、Origin Rule、CloudFront 分发与 ACM 证书）。
+- 自动清理 easy_all 本机服务、配置文件、证书、定时器与业务防火墙放行；保留系统内核、Swap、SSH 端口放行及 Fail2ban 基础防护。模式 3/4/5 卸载时仅按受管清单删除本工具生成的伪装站文件与空目录，保留用户在 `/var/www/easy_all/camouflage` 下自行放置的静态站点文件。
+- 默认自动尝试清理关联的云端资源（DNS 记录、Origin Rule、Transform Rule、CloudFront 分发与 ACM 证书）。
 
 ### 7.2 独立云端清理（`purge-cloud`）
 若 VPS 已销毁或状态丢失，可使用独立命令清理账户内 easy_all 标记的残留资源：
 ```bash
 sudo easy_all purge-cloud --domain example.com
 ```
-- **Cloudflare**：根据注释与前缀自动清理 easy_all 相关的 DNS 记录、Origin Rule 及 Origin CA 证书。
+- **Cloudflare**：根据注释与前缀自动清理 easy_all 相关的 DNS 记录、Origin Rule、Transform Rule 及 Origin CA 证书。
 - **CloudFront / ACM**：提供 AWS 凭据且已安装 aws CLI 时自动联动清理：安全禁用并删除对应 Comment 且别名严格匹配的分发，并删除对应未在用的 ACM 证书。计划阶段仍被分发占用的证书不会被放弃：分发删除后会逐个复核，确认已无 `InUseBy`、归属与域名均在范围内才删除；仍被其他分发占用的照旧保留。
 - **分页上限**：环境变量 `EASY_ALL_PURGE_MAX_PAGES` 控制列表扫描上限（默认 100 页 × 100 条），超限安全中止。
 - **收敛等待**：`EASY_ALL_PURGE_AWS_WAIT_ATTEMPTS`（默认 60）与 `EASY_ALL_PURGE_AWS_WAIT_SECONDS`（默认 10）控制分发禁用传播与证书 `InUseBy` 收敛的轮询次数与间隔；删除失败的分发不计入等待对象，仍被存活资源占用的证书会直接保留。
 
 ---
 
-## 8. 直连主动探测日志分析（仅模式 3/4）
+## 8. 直连主动探测日志分析（仅模式 3/4/5）
 
-模式 3/4 的直连入口都监听公网 TCP `443`，安装与 `apply` 会在 iptables `filter INPUT` 的**第 1 条**插入一条限速 `LOG` 规则，把新建连接的来源记到内核日志（前缀 `GFW_CHK: `，`30/min`、burst `60`）。它只记 IPv4 的 SYN 包，不记 payload、TLS 内容或连接时长，也不改变 `ACCEPT`/`DROP` 判定。
+模式 3/4/5 的直连入口都监听公网 TCP `443`，安装与 `apply` 会在 iptables `filter INPUT` 的**第 1 条**插入一条限速 `LOG` 规则，把新建连接的来源记到内核日志（前缀 `GFW_CHK: `，`30/min`、burst `60`）。它只记 IPv4 的 SYN 包，不记 payload、TLS 内容或连接时长，也不改变 `ACCEPT`/`DROP` 判定。
 
 ```bash
 # 默认时间窗（24 hours ago）
@@ -203,7 +207,7 @@ easy_all hellogfw --help
 ```
 
 - **没有 `--port`**：直连端口固定 `443`；旧调用与未知参数直接非零退出。
-- **输出内容**：时间窗、匹配的 SYN 记录数、独立来源数、正常客户端参照、同期 sing-box `WARN`/`ERROR` 条数（含 Reality 非授权回落条数 `REALITY: processed invalid connection`），以及「低频陌生连接候选」（正常客户端连接后 `1.0–120.0` 秒内出现、全窗不超过 2 次、且不在参照集合内）。**这只是基于时序与频次的候选线索，不构成 GFW 归因证明**；无候选也不等于未发生主动探测。**注**：模式 3（单 `443` 合一）下 CloudFront 回源流量（订阅刷新与应急 CDN）也共用 TCP `443`，其回源连接与 Reality 回落日志会自然混入统计。
+- **输出内容**：时间窗、匹配的 SYN 记录数、独立来源数、正常客户端参照、同期核心 `WARN`/`ERROR` 条数（模式 3/4 读 `easy_all-singbox`，模式 5 读 `easy_all-xray`；含 Reality 非授权回落条数 `REALITY: processed invalid connection`，该计数不要求行内先出现 WARN/ERROR），以及「低频陌生连接候选」（正常客户端连接后 `1.0–120.0` 秒内出现、全窗不超过 2 次、且不在参照集合内）。**这只是基于时序与频次的候选线索，不构成 GFW 归因证明**；无候选也不等于未发生主动探测。**注**：模式 3（单 `443` 合一）与模式 5 下 CDN 回源流量（订阅刷新与应急 CDN）也共用 TCP `443`，其回源连接与 Reality 回落日志会自然混入统计。
 - **规则缺失时先修采集**：`hellogfw` 会在分析前核对采集规则，缺失或无法查询时非零退出并提示 `sudo easy_all apply` 或 `sudo systemctl restart easy_all-probe-log.service`，绝**不**把“采不到”当成“没有探测”。
 - **重放时机**：`easy_all-probe-log.service` 是 `oneshot` + `RemainAfterExit`，`ExecStart`/`ExecStop` 只重放/删除这一条规则；安装与 `apply` 会在**最后一次 UFW reload 之后**强制 `systemctl restart easy_all-probe-log.service`。管理员手工 `ufw` 操作或其他防火墙管理器仍可能在之后清掉它，重启本服务或执行 `apply` 即可恢复。
 - **覆盖范围**：默认只记录当前默认路由的公网网卡；拿不到默认路由时回退为 `! -i lo`（记录所有非回环接口的 TCP 443 SYN，噪声更多但不会静默漏掉公网入口）。路由/网卡名变化后需重启、`apply` 或重启本服务重新选择。仅记录 IPv4。
@@ -223,12 +227,59 @@ easy_all hellogfw --help
 | **SSH 断开后无法重连** | 检查云厂商安全组是否放通 SSH 端口；检查是否因密码多次输错被 Fail2ban 临时封禁。 |
 | **安装提示端口占用** | 运行 `sudo easy_all cleanup-partial` 清理历史残留；若为第三方应用占用需先释放端口。 |
 | **安装提示回源端口已被全局放行** | 机器上已有 `ufw allow 443/tcp` 或 `ufw allow 8443/tcp`（来源 `Anywhere` / `Any` / `0.0.0.0/0`）时，安装会在写入防火墙与云资源**之前**中止。运行 `sudo ufw status numbered` 找到该规则并 `sudo ufw delete <编号>` 移除后重试；否则回源端口对全网开放，Cloudflare-only 边界失效。 |
-| **提示状态文件无法确定 schema 字段集 / 不是纯赋值** | `state.env` 被改写或损坏（`PROTOCOL` 缺失/无效，或含命令替换、反引号、`;`、`\|` 等非纯赋值内容）。先备份该文件，按提示行号人工核对或删除该行；若 `PROTOCOL` 已不可恢复，`detect_installed_mode` 会将其归为 `incomplete-*`，此时用 `sudo easy_all uninstall` 走**仅本机清理**通道，云端资源（分发 / ACM / DNS / Origin Rule / Origin CA）需人工核对。 |
+| **提示状态文件无法确定 schema 字段集 / 不是纯赋值** | `state.env` 被改写或损坏（`PROTOCOL` 缺失/无效，或含命令替换、反引号、`;`、`\|` 等非纯赋值内容）。先备份该文件，按提示行号人工核对或删除该行；若 `PROTOCOL` 已不可恢复，`detect_installed_mode` 会将其归为 `incomplete-*`，此时用 `sudo easy_all uninstall` 走**仅本机清理**通道，云端资源（分发 / ACM / DNS / Origin Rule / Transform Rule / Origin CA）需人工核对。 |
 | **命令报错 command not found** | 运行 `bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) help` 自动修复命令软链接。 |
 | **CloudFront 返回 502** | 回源失败。检查云安全组是否放行回源端口（模式 2/3 为 `443`；旧版模式 3 升级后未执行 `sudo easy_all apply-cloud` 迁移前仍为 `8443`）；检查源站证书是否有效（`sudo easy_all renew-cert`）。 |
 | **CloudFront 返回 503** | 触发了 985 GB 流量熔断保护。运行 `sudo easy_all status` 确认配额，模式 3 可手动切到直连节点继续使用。 |
-| **模式 3/4 Reality 直连失败或静默回落到伪装站** | 服务端开启了 `max_time_difference: 2m` 抗重放校验，客户端与服务端时钟偏差超过 2 分钟会静默回落伪装站。在 VPS 上运行 `timedatectl status` 核对 `System clock synchronized: yes`（必要时 `sudo timedatectl set-ntp true && sudo systemctl enable --now systemd-timesyncd`），并确认客户端设备已开启自动网络校时；`sudo easy_all status` 在 NTP 未同步时也会给出警告。 |
-| **客户端提示证书错误** | 区分证书链路：直连 Reality 与源站为 Let's Encrypt（模式 4 拆分为独立直连与橙云两张证书），CloudFront CDN 节点为 AWS ACM，Cloudflare 橙云为 CF 边缘证书。勿在客户端开启“跳过证书验证”。 |
+| **模式 3/4/5 Reality 直连失败或静默回落到伪装站** | 服务端开启了 `max_time_difference: 2m` 抗重放校验，客户端与服务端时钟偏差超过 2 分钟会静默回落伪装站。在 VPS 上运行 `timedatectl status` 核对 `System clock synchronized: yes`（必要时 `sudo timedatectl set-ntp true && sudo systemctl enable --now systemd-timesyncd`），并确认客户端设备已开启自动网络校时；`sudo easy_all status` 在 NTP 未同步时也会给出警告。 |
+| **客户端提示证书错误** | 区分证书链路：直连 Reality 与源站为 Let's Encrypt（模式 4/5 拆分为独立直连与橙云两张证书），CloudFront CDN 节点为 AWS ACM，Cloudflare 橙云为 CF 边缘证书。勿在客户端开启“跳过证书验证”。 |
 | **订阅下载返回 403 / 404** | 403 为 Token 错误或 URL 携带重复参数；404 为路径错误（仅支持 `/subscribe` 与 `/sub`）。运行 `sudo easy_all subscription` 获取最新链接。 |
-| **订阅可下载但节点无法连接** | 1. 确认客户端内核支持 VLESS Reality / VLESS WebSocket（CloudFront 模式 2/3）/ VLESS HTTPUpgrade（Cloudflare 模式 1/4）；<br>2. 检查云安全组业务端口是否放通（模式 2/3/4 公网放通 `443`；模式 1 的 `443` 与模式 4 的 `8443` 仅对 Cloudflare 回源段放通；旧版模式 3 未执行 `apply-cloud` 迁移前仍需放通 `8443`）；<br>3. 模式 3/4 直连异常时用 `timedatectl` 与客户端自动校时核对 2 分钟时间窗；<br>4. 若启用了 CDN 优选地址，运行 `edit-sub` 临时移除 `cdnEdgeAddress` 排除第三方域名故障。 |
+| **订阅可下载但节点无法连接** | 1. 确认客户端内核支持 VLESS Reality / VLESS WebSocket（CloudFront 模式 2/3）/ VLESS HTTPUpgrade（Cloudflare 模式 1/4）/ VLESS XHTTP（模式 5）；<br>2. 检查云安全组业务端口是否放通（模式 2/3/4/5 公网放通 `443`；模式 1 的 `443` 与模式 4 的 `8443` 仅对 Cloudflare 回源段放通；旧版模式 3 未执行 `apply-cloud` 迁移前仍需放通 `8443`）；<br>3. 模式 3/4/5 直连异常时用 `timedatectl` 与客户端自动校时核对 2 分钟时间窗；<br>4. 模式 5 的橙云节点异常时确认 Cloudflare 已开启 `Network -> gRPC`、`Full (strict)` 生效，并运行 `sudo easy_all status` 核对 Transform Rule ID；<br>5. 若启用了 CDN 优选地址，运行 `edit-sub` 临时移除 `cdnEdgeAddress` 排除第三方域名故障。 |
 | **提示状态 schema 不受支持** | 当前系统为旧版 4.x 安装，先使用旧版 `sudo easy_all uninstall` 彻底卸载后再安装新版。 |
+
+---
+
+## 10. 模式 5（Xray XHTTP）维护与不可降级说明
+
+模式 5 是纯 `xray-core` + `Caddy` 后端：服务单元为 `easy_all-xray.service`（配置 `/etc/easy_all/xray/config.json`，二进制 `/etc/easy_all/xray/xray`），**不安装、不依赖、不下发 sing-box**。
+
+### 10.1 日常维护
+
+| 场景 | 操作与要点 |
+| :--- | :--- |
+| 重建本机配置 | `sudo easy_all apply`：重写 Xray 配置与 `127.0.0.1:9443` 双站点 Caddyfile，并重发六份订阅（Base64/Mihomo，无 `singbox*.json`） |
+| 同步云端 | `sudo easy_all apply-cloud`：校验 `Full (strict)`、同步直连/橙云 A 记录、续用双证书 lineage、创建或更新 Request Header Transform Rule（需 `Transform Rules Edit`） |
+| 更新核心 | `sudo easy_all update-core`：备份并替换 `xray` 与 `caddy`，失败自动回滚二进制与两份配置 |
+| 证书轮换 | `sudo easy_all renew-cert`：两套独立 lineage（`easy_all` 只覆盖直连域名、`easy_all-cdn` 只覆盖节点域名），部署后逐端口握手比对磁盘指纹 |
+| 探测日志 | `sudo easy_all hellogfw`：读取 `easy_all-xray` 单元日志，统计 `[Warning]`/`[Error]` 与 Reality 回落；`-h` 免 root |
+| 查看状态 | `sudo easy_all status`：显示单 `443` 合一架构、Transform Rule 的 ruleset/rule ID、`xray` 与 Caddy 服务状态（不再显示 `sing-box`/`Origin Rule`） |
+
+> 面板前提：Cloudflare 需开启 `Network -> gRPC`（XHTTP 经 HTTP/2 回源公网 `443`），SSL/TLS 必须为 `Full (strict)`。本工具只读校验，不会自动修改 Zone 级设置。
+
+### 10.2 为何不能降级
+
+`STATE_VERSION` 保持 `1`，因此存量模式 1–4 用户的 `self-update` 不受影响；但**已安装模式 5 后禁止退回 5.7.0 及更早的脚本**：旧版不认识 `PROTOCOL=reality-cloudflare-xhttp`，也不会停止 `easy_all-xray.service`，会让 443 端口与新老清理逻辑冲突。
+
+需要人工脱离时，按下面顺序清理：
+
+```bash
+# 1) 用当前版本完整卸载（会停服务并尝试清理本工具创建的 DNS 与 Transform Rule）
+sudo easy_all uninstall
+
+# 2) 若上一步不可用（例如脚本已被旧版覆盖），手工清理本机与云端：
+sudo systemctl disable --now easy_all-xray.service easy_all-caddy.service easy_all-probe-log.service
+sudo rm -f /etc/systemd/system/easy_all-xray.service            /etc/systemd/system/easy_all-caddy.service            /etc/systemd/system/easy_all-probe-log.service
+sudo rm -f /etc/systemd/journald.conf.d/99-easy_all-probe-retention.conf
+sudo systemctl daemon-reload
+sudo systemctl restart systemd-journald
+# iptables 里以 "GFW_CHK: " 为前缀的 443 LOG 规则（可用 iptables -S INPUT 查出后 -D 删除）
+sudo rm -rf /etc/easy_all /var/www/easy_all /usr/local/lib/easy_all
+sudo rm -f /usr/local/bin/easy_all
+# UFW 受管放行（注释 easy_all-managed 的 443/tcp）按需删除
+```
+
+云端资源可用当前版本的 `purge-cloud` 清理（Transform Rules 的 ruleset 名称以 `easy_all` 开头、规则 `ref` 前缀为 `easy_all-`，只有在清空后才会删除 ruleset）：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/v2yiz/easy_all/main/bootstrap.sh) purge-cloud --domain <节点域名> --yes
+```

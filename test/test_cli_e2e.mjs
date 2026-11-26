@@ -42,6 +42,8 @@ assert.match(help.stdout, /1 纯 CloudFlare/);
 assert.match(help.stdout, /2 纯 CloudFront/);
 assert.match(help.stdout, /3 Reality \+ CloudFront/);
 assert.match(help.stdout, /4 Reality \+ CloudFlare/);
+assert.match(help.stdout, /5 Reality \+ CloudFlare（Xray XHTTP，单 443 合一）/);
+assert.match(help.stdout, /reality-cloudflare-xhttp/);
 assert.doesNotMatch(help.stdout, /AnyTLS/);
 assert.match(help.stdout, /443/);
 assert.doesNotMatch(help.stdout, /reality-target/);
@@ -263,7 +265,7 @@ assert.match(hellogfwExtraHelp.stderr, /hellogfw 不支持参数：--help/);
 const hellogfwModeGate = run(['hellogfw'], stateEnv);
 assert.notEqual(hellogfwModeGate.status, 0);
 assert.match(hellogfwModeGate.stderr,
-  /hellogfw 仅支持含直连 443 的模式（reality-cloudfront \/ reality-cloudflare）/);
+  /hellogfw 仅支持含直连 443 的模式（reality-cloudfront \/ reality-cloudflare \/ reality-cloudflare-xhttp）/);
 assert.doesNotMatch(hellogfwModeGate.stderr, /请使用 root 用户运行此脚本/,
   '模式门禁必须先于 root 门禁给出可操作的拒绝理由');
 
@@ -428,6 +430,88 @@ const realityCfIncompleteStatus = run(['status'], {
 assert.notEqual(realityCfIncompleteStatus.status, 0);
 assert.match(realityCfIncompleteStatus.stderr, /只能先执行 sudo easy_all uninstall/);
 
+// 6be. 模式 5（Reality + CloudFlare Xray XHTTP）：单 443 合一 + Transform Rule 字段集。
+function realityXhttpState() {
+  return [
+    'STATE_VERSION=1',
+    'PROTOCOL=reality-cloudflare-xhttp',
+    'TCP_ACCELERATION=off',
+    'VPS_PUBLIC_IPV4=203.0.113.10',
+    'CF_ZONE=example.com',
+    'CLOUDFLARE_ZONE_ID=zoneid',
+    'SUBSCRIPTION_MODE=deploy',
+    'SUB_DOWNLOAD_NAME=EASY_ALL',
+    'OWNER_TOKEN=token-abcdefgh',
+    'ALLOWED_TOKENS=\\{\"owner\":\"token-abcdefgh\"\\}',
+    'SUBSCRIPTION_CONFIG=\\{\"allowedTokens\":\\{\"owner\":\"token-abcdefgh\"\\}\\,\"nodes\":\\[\\]\\}',
+    'MIHOMO_TEMPLATE_SNAPSHOT=1',
+    'SCHEDULED_REBOOT_ENABLED=0',
+    'SCHEDULED_REBOOT_HOUR=4',
+    'DIRECT_DOMAIN=direct.example.com',
+    'DIRECT_NODE_NAME=Reality',
+    'VLESS_UUID=11111111-2222-4333-8444-555555555555',
+    `REALITY_PRIVATE_KEY=${realityKeys.private}`,
+    `REALITY_PUBLIC_KEY=${realityKeys.public}`,
+    'REALITY_SHORT_ID=0123456789abcdef',
+    'CF_NODE_DOMAIN=cf.example.com',
+    'CF_NODE_PREFIX=CF',
+    'VLESS_PATH=/vless-0123456789ab',
+    'ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef',
+    'CLOUDFLARE_TRANSFORM_RULESET_ID=rs1',
+    'CLOUDFLARE_TRANSFORM_RULE_ID=rule1',
+  ];
+}
+const realityXhttpFile = join(tmp, 'state-reality-cloudflare-xhttp.env');
+writeFileSync(realityXhttpFile, realityXhttpState().join('\n') + '\n');
+const realityXhttpEnv = { EASY_ALL_STATE_FILE_OVERRIDE: realityXhttpFile };
+const realityXhttpMode = sourceLauncher('detect_installed_mode', realityXhttpEnv);
+assert.equal(realityXhttpMode.stdout.trim(), 'reality-cloudflare-xhttp', realityXhttpMode.stderr);
+for (const command of ['apply-cloud', 'renew-cert']) {
+  const res = run([command], realityXhttpEnv);
+  assert.notEqual(res.status, 0, `${command} 在模式 5 的非 root 调用必须非零`);
+  assert.match(res.stderr, /请使用 root 用户运行此脚本/,
+    `${command} 在模式 5 应进入实现（root 门禁），而不是被路由拒绝`);
+}
+// 模式 5 没有 CloudFront 计量，也没有 8443 回源端口：cdn-traffic-sync 必须被拒绝。
+const realityXhttpSync = run(['cdn-traffic-sync'], realityXhttpEnv);
+assert.notEqual(realityXhttpSync.status, 0);
+assert.match(realityXhttpSync.stderr, /cdn-traffic-sync 仅适用于 CloudFront 模式/);
+// show / subscription 也必须进入实现（非 root 命中 root 门禁，而不是被路由拒绝）。
+for (const command of ['show', 'subscription']) {
+  const res = run([command], realityXhttpEnv);
+  assert.notEqual(res.status, 0, `${command} 在模式 5 的非 root 调用必须非零`);
+  assert.match(res.stderr, /请使用 root 用户运行此脚本/,
+    `${command} 在模式 5 应进入实现（root 门禁），而不是被路由拒绝`);
+}
+// 优选前缀派生：模式 5 与橙云共用后缀。
+const xhttpSuffix = sourceLauncher(
+  'module=$(profile_file reality-cloudflare-xhttp); source "$module"; cdn_edge_mode_suffix', {});
+assert.equal(xhttpSuffix.stdout.trim(), 'cloudflare.182682.xyz', xhttpSuffix.stderr);
+// 跨模式清理：按 marker 记录的旧模式解析到新的 Profile 脚本。
+const xhttpProfileScript = sourceLauncher(
+  `source ${JSON.stringify(join(root, 'lib/profile-common.sh'))}; profile_script_for reality-cloudflare-xhttp`, {});
+assert.equal(xhttpProfileScript.stdout.trim(), 'reality-cloudflare-xhttp.sh',
+  xhttpProfileScript.stderr);
+// 不完整状态：缺 Transform Rule 标识时只保留卸载通道。
+const incompleteRealityXhttpFile = join(tmp, 'state-reality-cloudflare-xhttp-incomplete.env');
+writeFileSync(incompleteRealityXhttpFile,
+  realityXhttpState().filter((line) => !line.startsWith('CLOUDFLARE_TRANSFORM_RULE_ID=')).join('\n') + '\n');
+const incompleteRealityXhttp = sourceLauncher('detect_installed_mode', {
+  EASY_ALL_STATE_FILE_OVERRIDE: incompleteRealityXhttpFile,
+});
+assert.equal(incompleteRealityXhttp.stdout.trim(), 'incomplete-reality-cloudflare-xhttp',
+  incompleteRealityXhttp.stderr);
+const xhttpIncompleteStatus = run(['status'], {
+  EASY_ALL_STATE_FILE_OVERRIDE: incompleteRealityXhttpFile,
+});
+assert.notEqual(xhttpIncompleteStatus.status, 0);
+assert.match(xhttpIncompleteStatus.stderr, /只能先执行 sudo easy_all uninstall/);
+// internal-probe-log-apply：模式 5 与模式 3/4 一样放行（非 root 先命中 root 门禁，而不是模式拒绝）。
+const xhttpProbeApply = run(['internal-probe-log-apply'], realityXhttpEnv);
+assert.notEqual(xhttpProbeApply.status, 0);
+assert.match(xhttpProbeApply.stderr, /请使用 root 用户运行此脚本/);
+assert.doesNotMatch(xhttpProbeApply.stderr, /不使用直连 TCP 443 探测日志/);
+
 // 6c. 已安装（schema 1）情况下，旧 marker 同样必须在代码覆盖前拒绝 register/self-update。
 const installedLegacyMarker = 'PROFILE=combined\nSTAGE=services\nSTARTED_AT=T2\n';
 writeFileSync(markerFile, installedLegacyMarker);
@@ -484,7 +568,7 @@ const currentMarker = sourceLauncher('launcher_marker_schema_gate 1', markerEnv)
 assert.equal(currentMarker.status, 0, currentMarker.stderr);
 assert.doesNotMatch(currentMarker.stderr, /旧版本/);
 
-process.stdout.write('ok - CLI 门禁与四模式入口测试通过\n');
+process.stdout.write('ok - CLI 门禁与全部模式入口测试通过\n');
 
 // 8. hellogfw 的直连模式路由：3/4 进入实现后命中 root 门禁，1/2 被模式门禁拒绝。
 // 不走完整 launcher 是因为这里只需要验证 dispatch_profile_command 的路由分支；
@@ -499,8 +583,8 @@ function dispatchHellogfw(profile) {
 const cloudflareRoute = dispatchHellogfw('cloudflare');
 assert.notEqual(cloudflareRoute.status, 0);
 assert.match(cloudflareRoute.stderr,
-  /hellogfw 仅支持含直连 443 的模式（reality-cloudfront \/ reality-cloudflare）/);
-for (const profile of ['reality-cloudfront', 'reality-cloudflare']) {
+  /hellogfw 仅支持含直连 443 的模式（reality-cloudfront \/ reality-cloudflare \/ reality-cloudflare-xhttp）/);
+for (const profile of ['reality-cloudfront', 'reality-cloudflare', 'reality-cloudflare-xhttp']) {
   if (process.getuid() !== 0) {
     const res = dispatchHellogfw(profile);
     assert.notEqual(res.status, 0, `${profile} 的非 help 调用必须非零`);

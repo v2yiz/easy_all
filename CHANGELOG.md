@@ -1,3 +1,16 @@
+## 5.8.0 更新说明（2026-11-26）
+
+### 新增功能
+
+- **新增模式 5：`reality-cloudflare-xhttp`（纯 `xray-core` + `Caddy`，公网单 `443` 合一）**（`easy_all`、`profiles/reality-cloudflare-xhttp.sh`、`lib/xray-core.sh`、`lib/xray-runtime.sh`、`lib/cf-transform-rule.sh`、`lib/reality-cloudflare-mode.sh`、`lib/caddy-runtime.sh`、`lib/runtime-core.sh`、`lib/state.sh`）：
+  - **纯 Xray 后端，不安装也不支持 sing-box**：采用锁定版本的 `XTLS/Xray-core 26.11.9` + `Caddy 2.11.9`（跳过 `sing-box` 二进制下载，仅发布六份 Base64 / Mihomo 订阅产物，不生成 `singbox*.json`，`&flag=singbox` 返回 `503`），无需 AWS 账号与 985 GB 流量计量。
+  - **公网仅开放 TCP `443`**：UFW 仅放行 SSH 与公网 TCP `443`（不开放 `80`/`8443`，无 Cloudflare 回源 IP 段白名单）。`xray` 在 `0.0.0.0:443` 承载 `VLESS + raw/tcp + xtls-rprx-vision + Reality`（`target=127.0.0.1:9443`、`xver=0`、`maxTimeDiff=120000`），所有非 Reality 握手与 Cloudflare 橙云回源统一转发至回环 `127.0.0.1:9443` 的 Caddy。
+  - **Cloudflare 橙云 XHTTP + Transform Rule 边缘鉴权**：备用橙云节点走 `VLESS + XHTTP`（服务端 `127.0.0.1:10086` 为 `mode=auto`、`xhttpSettings.extra` 含 `xPaddingBytes=100-1000` 与 `scStreamUpServerSecs=20-80`；客户端声明 `mode=stream-up`、`alpn=h2`）。Cloudflare 通过 `lib/cf-transform-rule.sh` 单规则端点维护 `http_request_late_transform` 请求头规则，按精确 `http.host` 注入 `X-Easy-All-Origin-Key`；Caddy 在 `127.0.0.1:9443` 通过全局 `default_sni ${DIRECT_DOMAIN}` 与双 Certbot DNS-01 SAN 隔离证书承载独立直连伪装站与橙云回源站，首位精确校验源站头并在未命中时静默回落伪装站（不使用 `abort`）。
+  - **安全、日志分析与完整生命周期**：锁定 Xray 双架构 SHA256 并校验官方 `.dgst` 的 `SHA2-256=` 条目、`xray x25519` 三形态解析并显式跳过 `Hash32:`、路由显式阻断 11 条私网/保留 IPv4 CIDR + `::/0`；`hellogfw`（`lib/probe-log.sh`、`scripts/hellogfw.py`）支持读取 `easy_all-xray` 与 `[Warning]`/`[Error]` 及无前缀回落计数；全生命周期支持 `install`/`apply`/`apply-cloud`/`edit-sub`/`renew-cert`/`update-core`/`purge-cloud`/`cleanup-partial`/`uninstall`。
+  - **兼容性与不可降级**：`STATE_VERSION` 维持 `1`，模式 1–4 状态、服务、订阅与云端配置零破坏；模式 5 安装后禁止退回 `5.7.0` 及更早脚本管理（旧版不识别 `easy_all-xray.service`），脱离需按[运维指南 §10](docs/operations-guide.md#10-模式-5xray-xhttp维护与不可降级说明)执行。
+
+---
+
 ## 5.7.0 更新说明（2026-11-26）
 
 ### 破坏性变更

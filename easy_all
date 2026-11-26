@@ -85,7 +85,8 @@ launcher_usage() {
 用法: easy_all [命令]
 
   install          交互选择安装模式（1 纯 CloudFlare / 2 纯 CloudFront /
-                   3 Reality + CloudFront / 4 Reality + CloudFlare）
+                   3 Reality + CloudFront / 4 Reality + CloudFlare /
+                   5 Reality + CloudFlare（Xray XHTTP，单 443 合一））
   show             显示当前节点
   subscription     显示节点与订阅信息
   self-update [--dev|--branch <分支>]
@@ -95,11 +96,12 @@ launcher_usage() {
   edit-sub         交互编辑订阅配置（Token + 聚合节点）与模板
   cdn-traffic-sync 同步 CloudFront 用量并落实流量阻断（仅 CloudFront 模式）
   purge-cloud 清理 easy_all 创建的 Cloudflare 与 CloudFront/ACM 资源（可在未安装状态使用）
-  update-core      重装/修复当前锁定版本的核心（sing-box + Caddy）
+  update-core      重装/修复当前锁定版本的核心（sing-box + Caddy，模式 5 为 Xray + Caddy）
   renew-cert       重新签发/部署当前模式的 TLS 证书
   hellogfw [--since <时间范围>] [--my-ip <IPv4> ...]
                    分析直连 TCP 443 主动探测日志（仅 reality-cloudfront /
-                   reality-cloudflare；`hellogfw -h` 免 root 查看帮助）
+                   reality-cloudflare / reality-cloudflare-xhttp；
+                   `hellogfw -h` 免 root 查看帮助）
   status           显示运行状态
   cleanup-partial  清理上次中断安装留下的本机残留（未安装状态使用；不改云端资源）
   uninstall        卸载当前模式的本机内容并清理本工具创建的云端资源
@@ -238,12 +240,14 @@ choose_install_mode() {
     printf '  2. 纯 CloudFront（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
     printf '  3. Reality + CloudFront（自偷 Reality 直连伪装回落 + AWS CloudFront）\n' >&2
     printf '  4. Reality + CloudFlare（自偷 Reality 直连伪装回落 + Cloudflare 橙云）\n' >&2
+    printf '  5. Reality + CloudFlare（Xray XHTTP，单 443 合一；不安装 sing-box）\n' >&2
     launcher_read_bilingual '请选择 [1]（直接回车使用默认值）:' choice
     case "${choice:-1}" in
     1) printf 'cloudflare\n' ;;
     2) printf 'cloudfront\n' ;;
     3) printf 'reality-cloudfront\n' ;;
     4) printf 'reality-cloudflare\n' ;;
+    5) printf 'reality-cloudflare-xhttp\n' ;;
     *) launcher_die "不支持的安装模式：${choice}" ;;
     esac
 }
@@ -256,7 +260,7 @@ launcher_state_complete() {
 }
 
 # 输出既能识别又能门禁的模式分类：
-#   cloudflare / cloudfront / reality-cloudfront / reality-cloudflare
+#   cloudflare / cloudfront / reality-cloudfront / reality-cloudflare / reality-cloudflare-xhttp
 #   cdn / combined / combined-cloudfront / combined-cloudflare / anytls（已删除的旧协议，拒绝）
 #   incomplete-*（新协议但字段不齐，仅卸载）
 # schema 1 但协议不可识别（缺失或写坏）输出 incomplete-unknown：不猜协议，只保留本机卸载通道。
@@ -274,9 +278,11 @@ detect_installed_mode() {
         state_schema_supported "${state_version}" \
             || launcher_die "$(state_legacy_rejection_message "${state_version:-缺失}")"
         case "${protocol}" in
-        reality-cloudfront | reality-cloudflare | cloudfront | cloudflare) ;;
+        reality-cloudfront | reality-cloudflare | reality-cloudflare-xhttp \
+            | cloudfront | cloudflare)
+            ;;
         reality | cdn | combined | combined-cloudfront | combined-cloudflare | anytls)
-            launcher_die "检测到已删除的旧协议（PROTOCOL=${protocol}，schema ${state_version}）；当前版本只支持 cloudflare/cloudfront/reality-cloudfront/reality-cloudflare。请先用安装该版本的旧 easy_all 执行 sudo easy_all uninstall（旧版可加 --purge-cloud 一并清理云端；当前版本的 uninstall 已默认清理云端、不再接受该参数），再重新安装。"
+            launcher_die "检测到已删除的旧协议（PROTOCOL=${protocol}，schema ${state_version}）；当前版本只支持 cloudflare/cloudfront/reality-cloudfront/reality-cloudflare/reality-cloudflare-xhttp。请先用安装该版本的旧 easy_all 执行 sudo easy_all uninstall（旧版可加 --purge-cloud 一并清理云端；当前版本的 uninstall 已默认清理云端、不再接受该参数），再重新安装。"
             ;;
         *)
             # 状态本身已损坏（如 PROTOCOL 丢失）：整个卸载通道不能跟着失效，
@@ -318,6 +324,8 @@ profile_file() {
     reality-cloudfront | incomplete-reality-cloudfront) candidate="${EASY_ALL_ROOT}/profiles/reality-cloudfront.sh" ;;
     reality-cloudflare | incomplete-reality-cloudflare)
         candidate="${EASY_ALL_ROOT}/profiles/reality-cloudflare.sh" ;;
+    reality-cloudflare-xhttp | incomplete-reality-cloudflare-xhttp)
+        candidate="${EASY_ALL_ROOT}/profiles/reality-cloudflare-xhttp.sh" ;;
     cloudfront | incomplete-cloudfront) candidate="${EASY_ALL_ROOT}/profiles/cloudfront.sh" ;;
     cloudflare | incomplete-cloudflare) candidate="${EASY_ALL_ROOT}/profiles/cloudflare.sh" ;;
     *) launcher_die "不支持的安装模式：${mode}" ;;
@@ -507,7 +515,9 @@ dispatch_profile_command() {
     tcp-resume) resume_skyline_after_reboot "$@" ;;
     apply-cloud)
         case "${mode}" in
-        reality-cloudfront | reality-cloudflare | cloudfront | cloudflare) ;;
+        reality-cloudfront | reality-cloudflare | reality-cloudflare-xhttp \
+            | cloudfront | cloudflare)
+            ;;
         *) launcher_die "apply-cloud 仅适用于 CDN 与带订阅站点的模式" ;;
         esac
         apply_cloud_resources
@@ -522,24 +532,28 @@ dispatch_profile_command() {
         ;;
     renew-cert)
         case "${mode}" in
-        reality-cloudfront | reality-cloudflare | cloudfront | cloudflare) renew_certificate ;;
+        reality-cloudfront | reality-cloudflare | reality-cloudflare-xhttp \
+            | cloudfront | cloudflare)
+            renew_certificate
+            ;;
         *) launcher_die "当前模式不使用本工具签发的 TLS 证书" ;;
         esac
         ;;
     hellogfw)
         case "${mode}" in
-        reality-cloudfront | reality-cloudflare)
+        reality-cloudfront | reality-cloudflare | reality-cloudflare-xhttp)
             require_root
             run_hellogfw "$@"
             ;;
-        *) launcher_die "hellogfw 仅支持含直连 443 的模式（reality-cloudfront / reality-cloudflare）" ;;
+        *) launcher_die "hellogfw 仅支持含直连 443 的模式（reality-cloudfront / reality-cloudflare / reality-cloudflare-xhttp）" ;;
         esac
         ;;
     status) show_status ;;
     self-update) unified_self_update "$@" ;;
     uninstall)
         case "${mode}" in
-        incomplete-reality-cloudfront | incomplete-reality-cloudflare | incomplete-cloudfront \
+        incomplete-reality-cloudfront | incomplete-reality-cloudflare \
+            | incomplete-reality-cloudflare-xhttp | incomplete-cloudfront \
             | incomplete-cloudflare | incomplete-unknown)
             uninstall_incomplete
             ;;
@@ -626,7 +640,7 @@ main() {
         mode=$(detect_installed_mode)
         launcher_require_installed_mode "${mode}" "${command}"
         case "${mode}" in
-        reality-cloudfront | reality-cloudflare) ;;
+        reality-cloudfront | reality-cloudflare | reality-cloudflare-xhttp) ;;
         *) launcher_die "当前模式（${mode}）不使用直连 TCP 443 探测日志；拒绝重放采集规则" ;;
         esac
         probe_log_rules_replay || launcher_die "重放 TCP 443 GFW_CHK: 采集规则失败"
