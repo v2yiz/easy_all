@@ -1474,6 +1474,15 @@ assert_equal "模式 4 两个节点名相邻（直连后紧接 CDN）" "CDN 节�
 assert_equal "模式 4 提示总数固定" "9" \
     "$(printf '%s\n' "${reality_cf_order}" | grep -c .)"
 assert_not_contains "模式 4 不询问订阅域名（由节点域名派生）" "${reality_cf_order}" "订阅域名"
+assert_not_contains "模式 4 Token 提示不含过时 deploy 字样" "${reality_cf_order}" "deploy 还需"
+reality_cf_xhttp_order=$(run_prompt_order reality-cloudflare-xhttp)
+assert_equal "模式 5 第 3 条是橙云 XHTTP CDN 节点域名" \
+    "CDN 节点域名（橙云代理，同时提供 XHTTP 节点与订阅）" \
+    "$(printf '%s\n' "${reality_cf_xhttp_order}" | sed -n 3p)"
+assert_not_contains "模式 5 提示文案不得残留 HTTPUpgrade" "${reality_cf_xhttp_order}" "HTTPUpgrade"
+assert_equal "模式 5 第 7 条是 Transform Rules Token 提示" \
+    "Cloudflare API Token（Zone 只读 + DNS 编辑 + Zone Settings 只读 + Transform Rules 编辑）" \
+    "$(printf '%s\n' "${reality_cf_xhttp_order}" | sed -n 7p)"
 # 3b-4. 优选前缀与订阅配置的新顺序：前缀先问并暂存，配置落定后再写进 cdnEdgeAddress。
 apply_prefix_case() { # $1=初始订阅配置 $2=暂存前缀 $3=PROTOCOL -> 最终订阅配置
     bash -c '

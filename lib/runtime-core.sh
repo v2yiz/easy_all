@@ -2286,7 +2286,7 @@ uninstall_incomplete() {
         read_bilingual '状态不完整，云端资源无法自动清理，需人工核对；仍删除 easy_all 本机内容？[y/N]:' answer
         [[ "${answer}" =~ ^[Yy]$ ]] || die "已取消"
     fi
-    printf '状态不完整；仅清理本机内容。云端资源无法自动清理，需人工核对分发、ACM、DNS、Origin Rule 与 Origin CA\n' >&2
+    printf '状态不完整；仅清理本机内容。云端资源无法自动清理，需人工核对分发、ACM、DNS、Origin Rule、Transform Rule 与 Origin CA\n' >&2
     stop_maintenance_services || true
     acquire_runtime_write_lock "${UNINSTALL_LOCK_WAIT_OVERRIDE:-60}"
     # 损坏/字段不齐的状态可能是 CloudFront 模式：该路径只 source 了中立运行时，

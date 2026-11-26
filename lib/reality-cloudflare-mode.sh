@@ -71,7 +71,7 @@ collect_direct_install_inputs() {
         cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑 + Zone Settings 只读 + Transform Rules 编辑）'
         info "请确认已在 Cloudflare 面板开启 Network -> gRPC（XHTTP 回源依赖）；本工具不会自动修改该设置"
     else
-        cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑；deploy 还需 Zone Settings 只读 + Origin Rules 编辑）'
+        cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑 + Zone Settings 只读 + Origin Rules 编辑）'
     fi
     # Reality short_id 在输入阶段确定；keypair 依赖已安装的核心，留到 core 阶段生成。
     # 身份由 install_all 紧接着落盘。
@@ -97,11 +97,13 @@ collect_direct_install_inputs() {
     fi
 }
 
-# 模式 4：节点域名同时承载 HTTPUpgrade 节点与订阅，必须是 Zone 的一级子域名（默认边缘证书覆盖范围）。
+# 模式 4 承载 HTTPUpgrade、模式 5 承载 XHTTP：节点域名同时作为订阅域名，必须是 Zone 一级子域名（默认边缘证书覆盖范围）。
 # 域名与节点名分两步：域名先问（紧跟直连域名），节点名与直连节点名排在一起。
 collect_direct_cdn_domain() {
+    local prompt='CDN 节点域名（橙云代理，同时提供 HTTPUpgrade 节点与订阅）'
+    runtime_uses_xray && prompt='CDN 节点域名（橙云代理，同时提供 XHTTP 节点与订阅）'
     CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value \
-        'CDN 节点域名（橙云代理，同时提供 HTTPUpgrade 节点与订阅）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
+        "${prompt}" "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
     validate_domain "${CF_NODE_DOMAIN}" || die "节点域名无效：${CF_NODE_DOMAIN}"
     [[ "${CF_NODE_DOMAIN}" == *".${CF_ZONE}" ]] \
         || die "节点域名必须属于 ${CF_ZONE}：${CF_NODE_DOMAIN}"

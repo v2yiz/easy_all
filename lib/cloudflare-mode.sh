@@ -111,7 +111,7 @@ collect_cloudflare_install_inputs() {
     # 首装不经过 load_state：订阅渲染前必须在输入校验处派生运行时字段。
     cdn_derive_runtime_fields || die "运行时字段派生失败：缺少节点域名"
 
-    cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑 + Zone Settings 只读 + SSL/证书 编辑权限）'
+    cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑 + Zone Settings 只读 + SSL and Certificates 编辑）'
     info "请确认已在 Cloudflare 面板开启 Network -> gRPC（XHTTP 回源依赖）；本工具不会自动修改该设置"
 
     VLESS_PATH=$(normalize_vless_path "${VLESS_PATH:-}")

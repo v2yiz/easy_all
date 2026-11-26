@@ -92,7 +92,7 @@ launcher_usage() {
   self-update [--dev|--branch <分支>]
                    更新项目代码；默认 main，--dev 使用 dev
   apply            应用已安装配置；只重建本机与订阅（不访问云管理 API）
-  apply-cloud      同步云端资源（Cloudflare DNS/Origin Rule/Origin CA、AWS ACM 与 CloudFront 分发）
+  apply-cloud      同步云端资源（Cloudflare DNS/Origin Rule/Transform Rule/Origin CA、AWS ACM 与 CloudFront 分发）
   edit-sub         交互编辑订阅配置（Token + 聚合节点）与模板
   cdn-traffic-sync 同步 CloudFront 用量并落实流量阻断（仅 CloudFront 模式）
   purge-cloud 清理 easy_all 创建的 Cloudflare 与 CloudFront/ACM 资源（可在未安装状态使用）
