@@ -209,7 +209,7 @@ proxy_status() {
 for port in 18081; do
     status=""
     for _ in $(seq 1 10); do
-        status=$(proxy_status "${port}")
+        status=$(proxy_status "${port}" || true)
         [[ "${status}" == "200" ]] && break
         sleep 1
     done
@@ -391,13 +391,14 @@ validate_caddy_config "${CADDY_CONFIG}"
         m5_proxy_status=$(env -u NO_PROXY -u no_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
             -u http_proxy -u https_proxy -u all_proxy \
             curl -sS --max-time 10 -x "socks5h://127.0.0.1:18091" \
-            -o /dev/null -w '%{http_code}' https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+            -o /dev/null -w '%{http_code}' https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null || true)
         [[ "${m5_proxy_status}" == "200" ]] && break
         sleep 1
     done
     if [[ "${m5_proxy_status}" != "200" ]]; then
-        kill -0 "${CPID4}" 2>/dev/null || { tail -5 "${M5}/client.log" >&2 || true; }
+        tail -5 "${M5}/client.log" >&2 || true
         tail -5 "${M5}/xray.log" >&2 || true
+        tail -5 "${M5}/caddy.log" >&2 || true
         fail "模式 5 XHTTP 代理链路返回 ${m5_proxy_status:-无}"
     fi
     printf 'ok - 模式 5 真核心 live 冒烟（双证书 SNI 隔离 / 源站守卫回落 / 订阅矩阵 / Caddy h2c → Xray XHTTP）\n'
