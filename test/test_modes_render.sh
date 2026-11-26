@@ -136,22 +136,32 @@ assert_equal "模式 2 回源保活超时" "120" \
 [[ ! -s "${out}/groups.yaml" ]] || fail "模式 2 不应生成额外代理组"
 assert_equal "模式 2 PROXY 成员只有 CDN 节点" $'        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
 
-# --- 模式 1：橙云单域名 443 + Origin CA ---------------------------------------
+# --- 模式 1：橙云单域名 443 + Origin CA（纯 Xray XHTTP 后端） -----------------
 out="${TMP_DIR}/cloudflare"
 render_mode cloudflare "${out}"
 assert_contains "模式 1 站点是节点域名 443" "${out}/Caddyfile" 'https://cf.example.com:443 {'
 assert_contains "模式 1 有订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
 assert_not_contains "模式 1 没有 CloudFront 守卫" "${out}/Caddyfile" 'X-Easy-All-Origin-Key'
+assert_contains "模式 1 代理路径是 XHTTP 匹配器" "${out}/Caddyfile" \
+    '@easy_all_xhttp path /vless-0123456789ab /vless-0123456789ab/*'
 assert_contains "模式 1 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
-assert_contains "模式 1 回环入站用 httpupgrade" "${out}/config.json" '"type": "httpupgrade"'
-assert_not_contains "模式 1 入站不再是 ws" "${out}/config.json" '"type": "ws"'
-assert_contains "模式 1 节点用 httpupgrade 与 http/1.1 ALPN" "${out}/links.txt" \
-    'type=httpupgrade&alpn=http%2F1.1&'
-assert_contains "模式 1 Mihomo 开启 v2ray-http-upgrade" "${out}/nodes.yaml" \
-    'v2ray-http-upgrade: true'
-assert_contains "模式 1 协议标签是 HTTPUpgrade" "${out}/label.txt" 'VLESS HTTPUpgrade over Cloudflare'
-assert_equal "模式 1 Base64 标记" "type=httpupgrade" "$(<"${out}/markers-base64.txt")"
-assert_equal "模式 1 Mihomo 标记" $'network: ws\nv2ray-http-upgrade: true' \
+assert_contains "模式 1 Caddy 反代走 h2c" "${out}/Caddyfile" 'versions h2c 2'
+assert_contains "模式 1 Caddy 不缓冲" "${out}/Caddyfile" 'flush_interval -1'
+assert_not_contains "模式 1 不写 default_sni" "${out}/Caddyfile" 'default_sni'
+assert_contains "模式 1 XHTTP 回环入站" "${out}/xray.json" '"tag": "vless-cdn-in"'
+assert_contains "模式 1 XHTTP 传输" "${out}/xray.json" '"network": "xhttp"'
+assert_contains "模式 1 XHTTP mode auto" "${out}/xray.json" '"mode": "auto"'
+assert_contains "模式 1 padding 在 extra 内" "${out}/xray.json" '"xPaddingBytes": "100-1000"'
+assert_not_contains "模式 1 没有 Reality 入站" "${out}/xray.json" 'vless-reality-in'
+[[ ! -e "${out}/config.json" ]] || fail "模式 1 不得渲染 sing-box 配置"
+assert_contains "模式 1 节点用 XHTTP" "${out}/links.txt" 'type=xhttp&'
+assert_contains "模式 1 节点 mode=stream-up" "${out}/links.txt" '&mode=stream-up&'
+assert_contains "模式 1 Mihomo 节点 network xhttp" "${out}/nodes.yaml" 'network: xhttp'
+assert_not_contains "模式 1 Mihomo 不写 v2ray-http-upgrade" "${out}/nodes.yaml" \
+    'v2ray-http-upgrade'
+assert_contains "模式 1 协议标签是 XHTTP" "${out}/label.txt" 'VLESS XHTTP over Cloudflare'
+assert_equal "模式 1 Base64 标记" $'type=xhttp\nmode=stream-up' "$(<"${out}/markers-base64.txt")"
+assert_equal "模式 1 Mihomo 标记" $'network: xhttp\nmode: stream-up' \
     "$(<"${out}/markers-mihomo.txt")"
 assert_contains "模式 1 订阅域名由节点域名派生" "${out}/links.txt" 'host=cf.example.com&'
 [[ ! -s "${out}/groups.yaml" ]] || fail "模式 1 不应生成额外代理组"
@@ -181,8 +191,13 @@ NODE_DEFAULTS
 
 for mode_out in cloudfront cloudflare; do
     out="${TMP_DIR}/${mode_out}"
-    assert_not_contains "${mode_out} 不占用 10085" "${out}/config.json" '10085'
-    assert_not_contains "${mode_out} 不使用 v2ray_api" "${out}/config.json" 'v2ray_api'
+    if [[ "${mode_out}" == "cloudflare" ]]; then
+        mode1_core="${out}/xray.json"
+    else
+        mode1_core="${out}/config.json"
+    fi
+    assert_not_contains "${mode_out} 不占用 10085" "${mode1_core}" '10085'
+    assert_not_contains "${mode_out} 不使用 v2ray_api" "${mode1_core}" 'v2ray_api'
 done
 
 # --- A7：订阅就绪判定必须进 Caddyfile（模式 1 的 write_runtime_config）----------
@@ -203,6 +218,7 @@ a7_mode1_render() { # $1=CDN_SUBSCRIPTION_CORRUPT $2=cdn_config_ready(yes|no) $3
         export EASY_ALL_CERT_DIR_OVERRIDE="${out_dir}/certs"
         export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${out_dir}/subscriptions"
         export SINGBOX_CONFIG="${out_dir}/config.json"
+        export XRAY_CONFIG="${out_dir}/xray.json"
         export CADDY_CONFIG="${out_dir}/Caddyfile"
         # shellcheck source=/dev/null
         source "${ROOT_DIR}/profiles/cloudflare.sh"
@@ -463,6 +479,53 @@ for artifact in "${m5_subs}"/out/*; do
         fail "模式 5 订阅产物泄露源站密钥：${artifact##*/}"
     fi
 done
+
+# 模式 1 六产物订阅：纯 Xray 后端不产 singbox*.json；优选地址只换连接地址。
+m1_subs="${TMP_DIR}/mode1-subs"
+mkdir -p "${m1_subs}/runtime" "${m1_subs}/out"
+(
+    export RUNTIME_TMP="${m1_subs}/runtime"
+    export EASY_ALL_STATE_DIR_OVERRIDE="${m1_subs}/state"
+    export EASY_ALL_CERT_DIR_OVERRIDE="${m1_subs}/certs"
+    export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${m1_subs}/published"
+    export XRAY_CONFIG="${m1_subs}/xray.json"
+    export CADDY_CONFIG="${m1_subs}/Caddyfile"
+    # shellcheck source=/dev/null
+    source "${ROOT_DIR}/profiles/cloudflare.sh"
+    CF_ZONE=example.com
+    VPS_PUBLIC_IPV4=203.0.113.10
+    SUB_DOWNLOAD_NAME=EASY_ALL
+    ALLOWED_TOKENS='{"owner":"token-abcdefgh"}'
+    SUBSCRIPTION_CONFIG=$(jq -cn --argjson t "${ALLOWED_TOKENS}" \
+        '{allowedTokens:$t,nodes:[],cdnEdgeAddress:"edge9.cloudflare.182682.xyz"}')
+    CLOUDFLARE_ZONE_ID=zoneid
+    CF_NODE_DOMAIN=cf.example.com
+    CF_NODE_PREFIX="🇺🇸CF"
+    VLESS_UUID=11111111-2222-4333-8444-555555555555
+    VLESS_PATH=/vless-0123456789ab
+    SUBSCRIPTION_MODE=deploy
+    cdn_derive_runtime_fields || exit 1
+    cdn_apply_subscription_config "${SUBSCRIPTION_CONFIG}" || exit 1
+    render_subscription_files "${m1_subs}/out" || exit 1
+) || fail "模式 1 订阅渲染失败"
+for artifact in base64.txt base64-all.txt mihomo.yaml mihomo-all.yaml \
+    mihomo-ios.yaml mihomo-ios-all.yaml; do
+    [[ -s "${m1_subs}/out/${artifact}" ]] || fail "模式 1 缺少订阅产物：${artifact}"
+done
+[[ ! -e "${m1_subs}/out/singbox.json" && ! -e "${m1_subs}/out/singbox-all.json" ]] \
+    || fail "模式 1 不得生成 sing-box JSON 订阅"
+openssl base64 -d -A <"${m1_subs}/out/base64.txt" >"${m1_subs}/out/base64.decoded" \
+    || fail "模式 1 Base64 订阅无法解码"
+assert_contains "模式 1 Base64 含 XHTTP 节点" "${m1_subs}/out/base64.decoded" 'type=xhttp&'
+assert_contains "模式 1 Base64 含 stream-up" "${m1_subs}/out/base64.decoded" '&mode=stream-up&'
+assert_contains "模式 1 Base64 使用 cdnEdgeAddress 连接" "${m1_subs}/out/base64.decoded" \
+    '@edge9.cloudflare.182682.xyz:443?'
+assert_contains "模式 1 Base64 的 SNI 仍是节点域名" "${m1_subs}/out/base64.decoded" \
+    '&sni=cf.example.com&'
+assert_not_contains "模式 1 Base64 不含 Reality" "${m1_subs}/out/base64.decoded" 'security=reality'
+assert_contains "模式 1 Mihomo 含 XHTTP 节点" "${m1_subs}/out/mihomo.yaml" 'network: xhttp'
+assert_contains "模式 1 Mihomo 使用 cdnEdgeAddress" "${m1_subs}/out/mihomo.yaml" \
+    'edge9.cloudflare.182682.xyz'
 
 # --- 全四模式公共反指纹断言（WP1） -------------------------------------------
 for mode_out in cloudfront cloudflare reality-cloudfront reality-cloudflare \

@@ -333,7 +333,7 @@ subscription_link_domain() {
 
 # --- 后端分派（sing-box / xray） ---------------------------------------------
 
-# 模式 1-4 是 sing-box 后端；模式 5 是纯 xray-core 后端（不安装、不依赖 sing-box）。
+# 模式 2/3/4 是 sing-box 后端；模式 1/5 是纯 xray-core 后端（不安装、不依赖 sing-box）。
 # 下面这组函数是唯一分派点：模式库、订阅链与服务管理一律经它们取核心路径/服务名/渲染入口。
 runtime_uses_xray() {
     [[ "${BACKEND:-}" == "xray" ]]
@@ -409,7 +409,7 @@ runtime_protocol_label() {
     reality-cloudflare) printf 'Reality（direct TCP 443）+ VLESS HTTPUpgrade over Cloudflare 橙云' ;;
     reality-cloudflare-xhttp) printf 'Reality（direct TCP 443）+ VLESS XHTTP over Cloudflare 橙云（xray）' ;;
     cloudfront) printf 'VLESS WebSocket over AWS CloudFront' ;;
-    cloudflare) printf 'VLESS HTTPUpgrade over Cloudflare 橙云' ;;
+    cloudflare) printf 'VLESS XHTTP over Cloudflare 橙云（xray）' ;;
     *) printf '%s\n' "${PROTOCOL:-未知}" ;;
     esac
 }
@@ -2338,7 +2338,7 @@ stop_services() {
 
 # --- 核心事务（design §6 H） --------------------------------------------------
 
-# update-core 无新增参数：重装/修复当前脚本支持的锁定版本，不追最新。
+# update-core 无新增参数：sing-box 与 Caddy 重装/修复锁定版本，Xray 追踪最新官方 Release。
 update_current_core() {
     (($# == 0)) || die "update-core 不接受参数"
     local backup_dir restart_allowed=1 blocked=0 have_proxy=0 have_caddy=0
@@ -2346,6 +2346,12 @@ update_current_core() {
     require_root
     acquire_runtime_write_lock
     collect_installed_state
+    # 旧版 sing-box 模式 1 升到纯 Xray 后端后，update-core 不能用来原地换核：
+    # 下载的 Xray 会与仍在运行的 easy_all-singbox.service 争抢 10086，陷入重启/回滚死循环。
+    if runtime_uses_xray && [[ ! -x "${XRAY_BIN}" ]] \
+        && [[ -e "${SINGBOX_BIN}" || -e "${SINGBOX_SERVICE_FILE}" ]]; then
+        die "检测到旧版 sing-box 安装残留（${SINGBOX_BIN} / ${SINGBOX_SERVICE_FILE}）且缺少 Xray 核心；当前模式已切换为纯 Xray 后端，不支持通过 update-core 原地换核，请先用旧版执行 sudo easy_all uninstall 后重新安装"
+    fi
     proxy_bin=$(runtime_proxy_bin)
     proxy_config=$(runtime_proxy_config)
     proxy_label=$(runtime_proxy_label)
@@ -2389,7 +2395,7 @@ update_current_core() {
         refresh_runtime_subscription_after_core_update
         release_runtime_write_lock
         if runtime_uses_xray; then
-            success "Xray $(xray_version) 与 Caddy $(caddy_version) 已更新"
+            success "Xray $(xray_installed_version) 与 Caddy $(caddy_version) 已更新"
         else
             success "sing-box $(singbox_version) 与 Caddy $(caddy_version) 已更新"
         fi

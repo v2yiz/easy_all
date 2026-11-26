@@ -84,7 +84,7 @@ launcher_usage() {
     cat <<'EOF'
 用法: easy_all [命令]
 
-  install          交互选择安装模式（1 纯 CloudFlare / 2 纯 CloudFront /
+  install          交互选择安装模式（1 纯 CloudFlare（Xray XHTTP）/ 2 纯 CloudFront /
                    3 Reality + CloudFront / 4 Reality + CloudFlare /
                    5 Reality + CloudFlare（Xray XHTTP，单 443 合一））
   show             显示当前节点
@@ -96,7 +96,7 @@ launcher_usage() {
   edit-sub         交互编辑订阅配置（Token + 聚合节点）与模板
   cdn-traffic-sync 同步 CloudFront 用量并落实流量阻断（仅 CloudFront 模式）
   purge-cloud 清理 easy_all 创建的 Cloudflare 与 CloudFront/ACM 资源（可在未安装状态使用）
-  update-core      重装/修复当前锁定版本的核心（sing-box + Caddy，模式 5 为 Xray + Caddy）
+  update-core      重装/更新核心（sing-box/Caddy 为锁定版本，模式 1/5 的 Xray 为最新官方 Release）
   renew-cert       重新签发/部署当前模式的 TLS 证书
   hellogfw [--since <时间范围>] [--my-ip <IPv4> ...]
                    分析直连 TCP 443 主动探测日志（仅 reality-cloudfront /
@@ -236,7 +236,7 @@ choose_install_mode() {
     local choice
     [[ -t 0 ]] || launcher_die "安装必须在交互终端中执行"
     printf '请选择安装模式：\n' >&2
-    printf '  1. 纯 CloudFlare（橙云单域名同时提供节点与订阅）\n' >&2
+    printf '  1. 纯 CloudFlare（Xray XHTTP，单域名；不安装 sing-box）\n' >&2
     printf '  2. 纯 CloudFront（直连不佳、IP 被封或只要 CDN 入口时）\n' >&2
     printf '  3. Reality + CloudFront（自偷 Reality 直连伪装回落 + AWS CloudFront）\n' >&2
     printf '  4. Reality + CloudFlare（自偷 Reality 直连伪装回落 + Cloudflare 橙云）\n' >&2
@@ -437,7 +437,7 @@ unified_self_update() {
     acquire_runtime_write_lock 30
     bash "${repo_dir}/easy_all" register-command
     rm -rf -- "${temp_dir}"
-    success "easy_all 项目代码已更新；未修改 sing-box、Caddy、订阅或云端 CDN 资源"
+    success "easy_all 项目代码已更新；未修改 sing-box/Xray、Caddy、订阅或云端 CDN 资源"
 }
 
 # 命令参数门禁：只有下列命令带参数，其余一律不接受；未知命令必须先点名，

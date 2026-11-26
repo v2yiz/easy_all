@@ -54,7 +54,7 @@ if [[ "${EASY_ALL_DOWNLOAD_CORES:-0}" == "1" ]]; then
     # shellcheck source=lib/caddy-core.sh
     source "${ROOT_DIR}/lib/caddy-core.sh"
     download_singbox || die "下载/校验锁定 sing-box 失败"
-    download_xray || die "下载/校验锁定 Xray 失败"
+    download_xray || die "下载/校验最新 Xray 失败"
     download_caddy || die "下载/校验锁定 Caddy 失败"
     SINGBOX_BIN=${SINGBOX_BIN}
     XRAY_BIN=${XRAY_BIN}
@@ -82,8 +82,10 @@ source "${ROOT_DIR}/lib/caddy-core.sh"
 
 [[ "$(singbox_binary_version "${SINGBOX_BIN}")" == "$(singbox_version)" ]] \
     || die "sing-box 版本不是锁定版本 $(singbox_version)"
-[[ "$(xray_binary_version "${XRAY_BIN}")" == "$(xray_version)" ]] \
-    || die "Xray 版本不是锁定版本 $(xray_version)"
+xray_ver=$(xray_binary_version "${XRAY_BIN}") \
+    || die "无法读取 Xray 版本：${XRAY_BIN}"
+xray_version_at_least "${xray_ver}" "26.9.8" \
+    || die "Xray 版本过低（${xray_ver}），需要 >= 26.9.8"
 [[ "$(caddy_binary_version "${CADDY_BIN}")" == "v$(caddy_version)" ]] \
     || die "Caddy 版本不是锁定版本 v$(caddy_version)"
 
@@ -189,4 +191,4 @@ for profile in reality-cloudfront reality-cloudflare reality-cloudflare-xhttp \
 done
 
 printf 'ok - verify-cores 完成（sing-box %s / Xray %s / Caddy %s）\n' \
-    "$(singbox_version)" "$(xray_version)" "$(caddy_version)"
+    "$(singbox_version)" "${xray_ver}" "$(caddy_version)"

@@ -6,24 +6,24 @@
 
 ## 1. 架构总览与网络拓扑
 
-`easy_all` 支持在 Debian 12/13 与 Ubuntu 22.04/24.04/26.04 LTS 环境下以单机独占形式部署以下五种模式。本机运行时为官方 sing-box（模式 1–4 的节点入站）或官方 Xray-core（模式 5）与官方 Caddy（订阅与回源站点），一台 VPS 只能选择一种模式：
+`easy_all` 支持在 Debian 12/13 与 Ubuntu 22.04/24.04/26.04 LTS 环境下以单机独占形式部署以下五种模式。本机运行时为官方 sing-box（模式 2/3/4 的节点入站）或官方 Xray-core（模式 1/5）与官方 Caddy（订阅与回源站点），一台 VPS 只能选择一种模式：
 
 | 菜单 | Profile | `PROTOCOL` | `CDN_PROVIDER` | 客户端入口 |
 | :--- | :--- | :--- | :--- | :--- |
-| 1 | `cloudflare` | `cloudflare` | `cloudflare` | 仅 Cloudflare 橙云 CDN `cf:443`（单域名，同时承载订阅） |
+| 1 | `cloudflare` | `cloudflare` | `cloudflare` | 仅 Cloudflare 橙云 CDN `cf:443`（单域名，同时承载订阅；纯 Xray 后端） |
 | 2 | `cloudfront` | `cloudfront` | `aws` | 仅 CloudFront CDN `cf:443`（+ 订阅） |
 | 3 | `reality-cloudfront` | `reality-cloudfront` | `aws` | VLESS Reality 直连 `direct:443` + CloudFront CDN `cf:443`（单 `443` 合一回源至回环 `127.0.0.1:9443`） |
 | 4 | `reality-cloudflare` | `reality-cloudflare` | `cloudflare` | VLESS Reality 直连 `direct:443`（+ 回环 `127.0.0.1:9443` 伪装站）+ Cloudflare 橙云 CDN `cf:443`（单域名同时承载订阅） |
 | 5 | `reality-cloudflare-xhttp` | `reality-cloudflare-xhttp` | `cloudflare` | VLESS Reality 直连 `direct:443` + 橙云 VLESS XHTTP `cf:443`（单 `443` 合一，纯 Xray 后端） |
 
-模式 4/5 由 `lib/reality-cloudflare-mode.sh` 承载（按 `runtime_uses_xray` 在同一套编排里分派后端），模式 2/3 共用 `lib/cloudfront-mode.sh`，模式 1 由 `lib/cloudflare-mode.sh` 承载；Profile 只声明模式常量（含 `BACKEND`）、状态字段表与直连钩子。
+模式 4/5 由 `lib/reality-cloudflare-mode.sh` 承载（按 `runtime_uses_xray` 在同一套编排里分派后端），模式 2/3 共用 `lib/cloudfront-mode.sh`，模式 1 由 `lib/cloudflare-mode.sh` 承载；Profile 只声明模式常量（含 `BACKEND`：模式 2/3/4 为 `sing-box`，模式 1/5 为 `xray`）、状态字段表与直连钩子。
 
 - **状态 schema 固定为 `1`**（`STATE_VERSION=1`）：`PROTOCOL` 同时是模式选择、安装进度 marker、安装身份与 Profile 路由的唯一键。schema `0`（4.x）不被接管也不自动迁移，必须先由旧版本 `uninstall`（需要时加 `--purge-cloud`）再用本版本重装。
 - **本机节点与全部订阅入口统一 443**：Reality 入站 443、CloudFront viewer 443、橙云边缘 443。回源端口在模式 4 监听 `8443`（橙云回源，仅 Cloudflare 官方回源段放行），在模式 2 监听公网 `443`（由 `X-Easy-All-Origin-Key` 精确校验），在模式 1 监听 `443`（仅放行 Cloudflare 官方回源段）；模式 3 与模式 5 采用单 `443` 合一架构，直连与 CDN 回源统一经公网 `443` 透明回落至回环 `127.0.0.1:9443` 的 Caddy 按 `X-Easy-All-Origin-Key` 精确分流（模式 5 为双证书双站点隔离与全局 `default_sni`）。模式 3/4/5 的 `127.0.0.1:9443` 仅绑定本机回环。
-- **CDN 传输按 CDN 家族与后端区分**：模式 1/4（橙云 + sing-box）用 `httpupgrade`（服务端 `transport: {type: "httpupgrade", path}`，客户端 `alpn: ["http/1.1"]`）；模式 5（橙云 + Xray）用 `xhttp`（服务端 `mode=auto` + `extra`，客户端 `mode=stream-up` + `alpn: ["h2"]`）；模式 2/3（CloudFront）保持 `ws`（`transport: {type: "ws"}`）——CloudFront 会把 `Connection` 改写为 `Keep-Alive` 并剔除非完整 WebSocket 握手的 `Upgrade`，只透传带 `Sec-WebSocket-Key` 的真实 WebSocket 握手。
+- **CDN 传输按模式与后端区分**：模式 1/5（橙云 + Xray）用 `xhttp`（服务端 `mode=auto` + `extra`，客户端 `mode=stream-up` + `alpn: ["h2"]`）；模式 4（橙云 + sing-box）用 `httpupgrade`（服务端 `transport: {type: "httpupgrade", path}`，客户端 `alpn: ["http/1.1"]`）；模式 2/3（CloudFront）保持 `ws`（`transport: {type: "ws"}`）——CloudFront 会把 `Connection` 改写为 `Keep-Alive` 并剔除非完整 WebSocket 握手的 `Upgrade`，只透传带 `Sec-WebSocket-Key` 的真实 WebSocket 握手。
 - 用户订阅 JSON 里的外部聚合节点保留原有 `host/port/portRange`，不强制改写为 443。
 
-### 1.1 模式 1：Cloudflare 橙云（单域名）
+### 1.1 模式 1：Cloudflare 橙云（单域名，纯 Xray XHTTP）
 
 模式 1 只承载橙云入口，一个域名同时提供节点与订阅：
 
@@ -32,18 +32,21 @@
                                        │ https-only 回源（Full strict），SNI/Host=cf.<zone>
                                        ▼
 公网 443（仅 Cloudflare 官方回源 IPv4 段）Caddy（Origin CA 证书，header -Server）
-  ├─ <VLESS_PATH>          → reverse_proxy 127.0.0.1:10086（VLESS HTTPUpgrade）
-  ├─ = /subscribe、= /sub  → Token 鉴权的八产物订阅（非法 Token 返回 403）
+  ├─ <VLESS_PATH>、<VLESS_PATH>/* → 127.0.0.1:10086（h2c 反代，flush_interval -1）
+  │                                   └─ Xray vless-cdn-in（xhttp，mode=auto）
+  ├─ = /subscribe、= /sub  → Token 鉴权的六产物订阅（非法 Token 返回 403；flag=singbox → 503）
   └─ 其他路径              → 404
 ```
 
+- **后端**：纯 `xray-core`（追踪最新官方 Release）+ Caddy 2.11.9，服务单元 `easy_all-xray.service`，配置 `/etc/easy_all/xray/config.json`；**不下载、不安装、不启动 sing-box**，也不生成 `singbox*.json`。
 - **DNS**：节点域名一条 `proxied=true` 的 `A` 记录（→ VPS 公网 IPv4），订阅域名由节点域名派生，不需要第二个名字。
 - **证书**：只用 Cloudflare Origin CA（ECDSA P-256、5475 天、CN 与唯一 SAN 都是节点域名），直接签发与复用（仅使用 `443` 端口）；复用前除有效期/SAN/公私钥外还必须通过 `openssl verify` 链验证。
-- **`Full (strict)` 门禁**：安装与 `apply-cloud` 在创建任何 DNS/证书资源前只读读取 Zone SSL 设置，只接受 `strict`；`full`/`flexible`/`off` 与 403 权限不足都在创建资源前停止，工具不会自动修改全区设置。同一阶段还会只读校验 `Network -> WebSockets` 必须为 `on`（Upgrade 链路依赖该开关：HTTPUpgrade 握手同样发送 `Upgrade: websocket`），`off` 与读取失败同样在创建资源前停止。
+- **`Full (strict)` 门禁**：安装与 `apply-cloud` 在创建任何 DNS/证书资源前只读读取 Zone SSL 设置，只接受 `strict`；`full`/`flexible`/`off` 与 403 权限不足都在创建资源前停止，工具不会自动修改全区设置。XHTTP 走 HTTP/2 回源，**不再**预检 `Network -> WebSockets`，改为只读提示需在面板开启 `Network -> gRPC`。
 - **回源白名单**：VPS `443` 只对 Cloudflare 官方回源 IPv4 段放行（UFW 注释 `easy_all-cf-origin-443`）。这是公共回源网段，不是账户级鉴权。
 - **反指纹与探活**：站点剥离 `Server` 响应头（`header -Server`），仅开放精确代理路径与 `/subscribe`、`/sub`；本机与边缘探活通过 `/subscribe?token=invalid → 403`（本机兼查 `X-Robots-Tag` 与无 `Server` 头）完成。
 - **无源站头、无熔断**：橙云链路没有 `X-Easy-All-Origin-Key`，也没有 mangle 计量与 985 GB 额度（这些只属于模式 2/3）。
-- **订阅**：本机节点只有一个橙云 CDN 节点（默认名 `🇺🇸CF`，安装时可改），没有聚合优选 IP 列表或测速组；连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名（`*.cloudflare.182682.xyz`），TLS SNI 与 transport `Host` 仍是节点域名。
+- **订阅**：本机节点只有一个橙云 CDN 节点（默认名 `🇺🇸CF`，安装时可改），没有聚合优选 IP 列表或测速组；连接地址可用订阅配置的 `cdnEdgeAddress` 换成 CDN 优选域名（`*.cloudflare.182682.xyz`），TLS SNI 与 XHTTP `host` 仍是节点域名。订阅只产出六份 Base64/Mihomo 产物（不生成 `singbox*.json`，`flag=singbox` 返回 503）。
+- **旧版 sing-box 模式 1 不支持原地换核**：`apply` / `apply-cloud` / `renew-cert` / `edit-sub` / `update-core` 在检测到旧版 sing-box 残留且缺 Xray 核心时于任何副作用前阻断，需用旧版 `uninstall` 后重装；`uninstall` 与 `cleanup-partial` 同时回收 `sing-box` 与 `xray` 两侧服务单元和二进制目录。
 - **`apply` 的外部访问**：只读取公开的 Cloudflare 回源 IPv4 段与 Origin CA 根证书，不需要账号凭据、不修改云端。
 
 ### 1.2 模式 2：纯 CloudFront
@@ -149,7 +152,7 @@
 - **客户端**：Base64 与 Mihomo 六产物包含 **Reality 直连节点 + 橙云 VLESS XHTTP 节点**（`mode=stream-up`、`alpn: h2`、`no-grpc-header: false`、`uplink-http-method: POST`、`reuse-settings`/`xmux`、`cdnEdgeAddress` 分离连接地址）。Xray ≥ 26.9.8 时 Reality 链接与 Mihomo 节点都声明 `support-x25519mlkem768`（更早版本链接追加 `mlkem=0` 且不写该开关）。**不生成 `singbox*.json`**。
 - **状态与链路**：`CHAIN=cloudflare`；字段集为 `COMMON + DIRECT + REALITY + CDN + CLOUDFLARE_TRANSFORM_RULE`，`SUBSCRIPTION_MODE` 固定 `deploy`，订阅域名由节点域名派生。
 - **端口预检**：首轮检查 `443`、回环 `10086` 与 `9443`（不预检 `8443`）。
-- **不可降级**：`STATE_VERSION` 仍为 `1`（存量模式 1–4 升级零破坏），但模式 5 不能退回 5.7.0 及更早脚本管理，详见运维指南。
+- **不可降级**：`STATE_VERSION` 仍为 `1`（存量模式 2/3/4 升级零破坏），但模式 5 不能退回 5.7.0 及更早脚本管理，模式 1 不能退回 5.8.0 及更早脚本管理（旧版会把模式 1 当 sing-box 后端渲染），详见运维指南。
 
 ## 2. 防火墙、端口与安全边界
 
@@ -180,7 +183,7 @@
 | 模式 | UFW 公网放行 | 仅 Cloudflare 回源 IPv4 放行 | 本机回环监听 |
 | :--- | :--- | :--- | :--- |
 | 初始化（debian-init） | SSH 实际监听端口（安装收尾可选迁移到目标端口，默认 `22222`；迁移后旧端口被受管 `deny <旧端口>/tcp` 覆盖，选「不变更」则保持原端口与原放行） | — | — |
-| 1 纯 CloudFlare（单域名） | — | TCP `443` | `127.0.0.1:10086`（VLESS HTTPUpgrade） |
+| 1 纯 CloudFlare（Xray XHTTP） | — | TCP `443` | `127.0.0.1:10086`（VLESS XHTTP） |
 | 2 纯 CloudFront | TCP `443` | — | `127.0.0.1:10086`（VLESS WebSocket） |
 | 3 Reality + CloudFront | TCP `443`（旧装未执行 `apply-cloud` 迁移前暂保留 `8443`） | — | `127.0.0.1:10086`（VLESS WebSocket）、`127.0.0.1:9443`（伪装站 + CloudFront 合一回源） |
 | 4 Reality + CloudFlare | TCP `443` | TCP `8443`（橙云节点/订阅回源） | `127.0.0.1:10086`（VLESS HTTPUpgrade）、`127.0.0.1:9443`（伪装站） |
@@ -205,7 +208,7 @@
 - 公网验收的 DNS 判定走外部公共 DNS，且只在验收阶段这样用：域名等待同时查询 `1.1.1.1` 与 `8.8.8.8`，**任一命中即判定解析生效**，两侧状态不一致时输出一条告警（点名哪个解析器未命中或不可达）；两个公共解析器都没给出记录且至少一方不可达时，回退系统默认 DNS 取第三个意见（需命中才通过）；两个都可达且都无记录时继续等待。节点与订阅探测按公共解析结果注入 `--resolve`（按序查询 `1.1.1.1`、`8.8.8.8`，用首个命中者返回的 IP；两个都拿不到才回退系统 DNS），源站守卫探测直接钉本机公网 IPv4。安装与云端同步阶段的源站 `A` 记录等待只用系统默认 DNS。每次探测前会用两个公共解析器各查一次（单次上限 2 秒），因此公共 DNS 不可达时验收失败路径会明显变慢。
 
 ### 2.4 恶意出站与内部阻断
-- 模式 5 的 Xray 配置显式声明私网/保留 IPv4 CIDR（与 sing-box 清单同一组 11 条）加 `::/0` 的 `blackhole` 路由，DNS 只有 `1.1.1.1` 且 `queryStrategy=UseIPv4`、出站 `domainStrategy=UseIPv4`，解析失败即终止连接；不依赖 `geoip.dat` 等外置数据。`lib/xray-runtime.sh` 的 `xray_private_ranges_json` 是独立定义（模式 5 不调用 `lib/singbox-runtime.sh`），一致性由 `test/test_xray_render.sh` 逐条断言。
+- 模式 1/5 的 Xray 配置显式声明私网/保留 IPv4 CIDR（与 sing-box 清单同一组 11 条）加 `::/0` 的 `blackhole` 路由，DNS 只有 `1.1.1.1` 且 `queryStrategy=UseIPv4`、出站 `domainStrategy=UseIPv4`，解析失败即终止连接；不依赖 `geoip.dat` 等外置数据。`lib/xray-runtime.sh` 的 `xray_private_ranges_json` 是独立定义（模式 1/5 不调用 `lib/singbox-runtime.sh`），一致性由 `test/test_xray_render.sh` 逐条断言。
 - sing-box 配置使用显式 IPv4 DNS 服务器与 `ipv4_only` 策略，路由首条规则 `action: resolve` 先把目标域名解析成 IP，再拒绝私网地址及
   与 `lib/network.sh` 一致的私网/特殊地址清单（回环、云厂商元数据、CGNAT、多播与保留段）；不解析时域名目标匹配不上 IP 规则，私网与元数据拦截会整体失效。
   解析失败（含 NXDOMAIN、超时与空结果）时 `resolve` 会以错误终止该连接，不会继续向下匹配到 `final: direct`；
@@ -262,13 +265,13 @@
 
 - **订阅配置 JSON**：`SUBSCRIPTION_CONFIG` 的顶层只有三个键——`allowedTokens`（用户 Token 字典，必需）、`nodes`（外部聚合节点数组，必需）与可选的 `cdnEdgeAddress`（CDN 优选连接地址，只存完整主机名）。`cdnEdgeAddress` 只影响五种模式各自的本机 CDN 节点（五种模式都带 CDN 入口）：接受并持久化该字段；字段缺失或为 `null` 等同于不启用，删除字段即回退到节点域名（安装期必定写入且不提供关闭选项，删除只用于排障）。形状校验只发生在一处（`lib/local-aggregation.sh` 的 `normalize_subscription_config`，install / `edit-sub` / `apply` 全经它），拒绝 `*`、URL、端口、路径、空白、IP 字面量与单标签主机名，通过后按小写规范化存储；校验失败时 `update_subscription` 在写快照之前就退出，已发布的订阅产物与状态不变。该字段随 `SUBSCRIPTION_CONFIG` 原样写入安装身份的 `subscription_config`，续装据此沿用原优选地址，不会重新随机（身份里没有该字段时按新规则生成）。
 - **连接地址与 SNI/Host 分离**：本机 CDN 节点的连接地址（VLESS URI 的 `@host`、Mihomo `server`、sing-box `server`）取运行期变量 `CF_EDGE_ADDRESS`（由 `cdnEdgeAddress` 在 `apply_local_aggregation_config` 中派生，为空即用 `CF_NODE_DOMAIN`）；TLS SNI（`sni=`、`servername`、`tls.server_name`）、证书校验与 transport `Host`（`ws` 的 `headers.Host`、`httpupgrade` 与 `xhttp` 的 `host`）始终是节点域名，订阅 URL 域名、云端 DNS、回源与 Reality 直连都不受影响。
-- **Caddy 路由顺序与反指纹**：外层 `route` 固定为「源站密钥守卫/分流（模式 2 首位 `abort` 守卫；模式 3 在 `127.0.0.1:9443` 首位按密钥进入回源分支、未命中走伪装站；模式 5 在 `127.0.0.1:9443` 的橙云回源站点首位按密钥分流、未命中静默走伪装站且设全局 `default_sni`）→ 精确代理路径 → 精确订阅入口 → 404」；全模式站点块剥离 `Server` 响应头（`header -Server`）并仅开放上述明确路由，本机与边缘探活统一走 `/subscribe?token=invalid → 403`（本机兼查 `X-Robots-Tag` 与无 `Server` 头）；模式 1/4 依赖回源白名单、`Full (strict)` 与业务鉴权。
+- **Caddy 路由顺序与反指纹**：外层 `route` 固定为「源站密钥守卫/分流（模式 2 首位 `abort` 守卫；模式 3 在 `127.0.0.1:9443` 首位按密钥进入回源分支、未命中走伪装站；模式 5 在 `127.0.0.1:9443` 的橙云回源站点首位按密钥分流、未命中静默走伪装站且设全局 `default_sni`）→ 精确代理路径 → 精确订阅入口 → 404」；全模式站点块剥离 `Server` 响应头（`header -Server`）并仅开放上述明确路由，本机与边缘探活统一走 `/subscribe?token=invalid → 403`（本机兼查 `X-Robots-Tag` 与无 `Server` 头）；模式 1/4 依赖回源白名单、`Full (strict)` 与业务鉴权（模式 1 的代理路径是 `@easy_all_xhttp` + `h2c` 反代，无源站头守卫）。
 - **订阅入口是精确路径**：matcher 精确列出 `/subscribe` 与 `/sub`，两者进入同一处理器并保留 query；`/subscribe/`、`/subscribed`、裸文件与其他路径一律 `404`，不重定向、不做前缀匹配。
 - **订阅处理器内部顺序**：公共响应头（`Vary: User-Agent`、`Cache-Control: no-store, no-cache, must-revalidate, max-age=0`、`Pragma: no-cache`、`X-Content-Type-Options: nosniff`、`X-Robots-Tag: noindex, nofollow, noarchive`）先于任何终止响应；随后非 `GET`/`HEAD` 返回 `405`，Token 缺失/错误返回 `403`，订阅未就绪返回 `503`；全部响应都带上述公共头。
-- **Token 比较**：`ALLOWED_TOKENS` 的值构成 CEL 的精确字符串集合，大小写敏感、不使用正则，客户端文本不拼进表达式源码；`file_server` 只出现在鉴权后的订阅处理器里，且只 rewrite 到对应模式生成的一组固定文件（模式 1–4 为 8 份，模式 5 为 6 份）。
+- **Token 比较**：`ALLOWED_TOKENS` 的值构成 CEL 的精确字符串集合，大小写敏感、不使用正则，客户端文本不拼进表达式源码；`file_server` 只出现在鉴权后的订阅处理器里，且只 rewrite 到对应模式生成的一组固定文件（模式 2/3/4 为 8 份，模式 1/5 为 6 份）。
 - **重复 query 参数**：Caddy 把同名参数逗号拼接，因此重复 `token` 无法匹配合法值，一律 `403`；重复 `flag`/`os`/`node` 的拼接结果不命中显式分支，回落到 UA 等默认行为。这是相对旧版首值语义的有意收紧。
 - **原子渲染**：订阅文件在生成时先写入临时暂存目录，校验完整无缺后逐文件原子替换，防止高并发下载时读到半截内容（这是「单文件原子」而非整目录快照）。
-- **八种产物（模式 5 为六种）**：`base64.txt`、`mihomo.yaml`、`mihomo-ios.yaml`、`singbox.json`（默认过滤 `optional` 节点）与 `base64-all.txt`、`mihomo-all.yaml`、`mihomo-ios-all.yaml`、`singbox-all.json`（`&node=all` 时附带 `optional` 节点）。iOS 变体从 YAML 剥离以 `sniffer:` 开头的整段，并把顶层 `tcp-concurrent` 由 `true` 改为 `false`（桌面端开启并发建连，iOS 受后台内存红线限制），其余规则不变；sing-box JSON 没有 iOS 变体（嗅探只读首包、最长等 300ms，不像 Mihomo 那样需要为内存剥离）。两份 JSON 在模式 1–4 没有 optional 支持节点时内容相同，文件仍总是生成；模式 5 不生成 `singbox*.json`。
+- **八种产物（模式 1/5 为六种）**：`base64.txt`、`mihomo.yaml`、`mihomo-ios.yaml`、`singbox.json`（默认过滤 `optional` 节点）与 `base64-all.txt`、`mihomo-all.yaml`、`mihomo-ios-all.yaml`、`singbox-all.json`（`&node=all` 时附带 `optional` 节点）。iOS 变体从 YAML 剥离以 `sniffer:` 开头的整段，并把顶层 `tcp-concurrent` 由 `true` 改为 `false`（桌面端开启并发建连，iOS 受后台内存红线限制），其余规则不变；sing-box JSON 没有 iOS 变体（嗅探只读首包、最长等 300ms，不像 Mihomo 那样需要为内存剥离）。两份 JSON 在模式 2/3/4 没有 optional 支持节点时内容相同，文件仍总是生成；模式 1/5 是纯 Xray 后端，不生成 `singbox*.json`（`flag=singbox` 返回 503）。
 - **客户端自适应**（判定顺序固定为「显式 flag → 已确认的 sing-box UA → Clash UA → Base64」，只选一种格式）：
   - 根据 HTTP 请求头中的 `User-Agent` 自动识别客户端；
   - 官方 sing-box 客户端 SFA / SFI / SFM / SFT / SFW / SFL 的远程配置请求返回完整 JSON。按小写归一化后匹配 UA 前缀（例如 `sfi (sing-box `）；仅含 `sing-box` 字样的其他 UA 不命中；
@@ -294,12 +297,15 @@ Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成�
 
 - `PROXY` 为 `select`，默认第一项分别是直连节点（模式 3/4/5）或 CDN 节点（模式 1/2）；即使聚合节点为空也始终有有效成员。
 - 模式 4/5 与模式 3 结构一致：`PROXY` 由用户手动在直连节点与 CDN 节点之间切换，没有自动测速或兜底组。
-- 模式 5 只有六份 Base64/Mihomo 产物（`base64{, -all}.txt`、`mihomo{, -all}.yaml`、`mihomo-ios{, -all}.yaml`）：`render_subscription_files` 经 `runtime_supports_singbox_subscription` 跳过 sing-box JSON 生成，`flag=singbox` 因产物缺失返回 503。
+- 模式 1/5 只有六份 Base64/Mihomo 产物（`base64{, -all}.txt`、`mihomo{, -all}.yaml`、`mihomo-ios{, -all}.yaml`）：`render_subscription_files` 经 `runtime_supports_singbox_subscription` 跳过 sing-box JSON 生成，`flag=singbox` 因产物缺失返回 503。
+- 模式 1 的 `PROXY` 只有橙云 XHTTP 一个本机节点（无 Reality 直连），分组结构与模式 2 相同。
 - `GLOBAL` 维持 `select`，唯一成员是 `PROXY`；切换到「全局」后所有接管流量使用 `PROXY` 的当前选择。
 - 模板只保留 `PROXY` / `GLOBAL` 两个占位区；`build_mihomo_proxy_groups` 由各模式库提供，当前三个模式库（`reality-cloudflare-mode.sh` 同时服务模式 4 与模式 5）均输出空内容（不注入额外分组），`AUTO`、`CDN-AUTO`、`CDN-FALLBACK` 等名字属于保留组名，不能用于聚合节点。
 - 聚合节点支持三类：`vless` + `reality/tcp`、`vless` + `tls/xhttp`、`mieru`；外部聚合节点的 `host/port/portRange` 原样保留，不受本机「全 443」约束，也不受「本机只有一个 CDN 节点」的限制。
 
 ### 3.2 sing-box 完整 JSON 订阅
+
+- **适用范围**：仅模式 2/3/4（sing-box 后端）生成；模式 1/5 是纯 Xray 后端，不生成 `singbox*.json`，`flag=singbox` 返回 503。
 
 - **合成方式**：`templates/singbox.json` 提供固定段（`log`、`dns`、`inbounds`、`route`、`rule_set`、`http_clients`、`experimental`），`lib/singbox-subscription.sh` 用 `jq` 注入 `outbounds` 与 `PROXY` 选择器。节点来自 `lib/local-aggregation.sh` 的结构化数据与本机身份字段，不反向解析 URI/YAML，也不做字符串替换拼接凭据。
 - **入口**：混合代理 `127.0.0.1:1080` 与 TUN（`198.19.0.1/30`、MTU 1500、`auto_route`、`dns_mode=hijack`）；TUN 地址取 RFC 2544 基准网段并避开 Fake-IP `198.18.0.0/16`，不与下面被排除的私网段重叠（原 `172.19.0.1/30` 落在 `172.16/12` 内，属于“自己排除自己”，按排除表裁路由的平台会让 TUN 自身地址不可达）；TUN 由客户端平台管理接口名；`route_exclude_address` 排除 `10/8`、`172.16/12`、`192.168/16`、`169.254/16`、`100.64/10`（与 Mihomo 模板的 `route-exclude-address` 一致），私网、CGNAT（Tailscale/ZeroTier）与链路本地流量不进 TUN，漏进来的也由路由规则直连（`ip_is_private` 既不含 `100.64.0.0/10` 也不含 `169.254.0.0/16`，因此单独有一条 `ip_cidr` 规则同时列出这两段，云元数据 `169.254.169.254` 与经 `mixed-in` 的同类访问都不会落到 `PROXY`）；这些网段被排除后，指向内网 DNS（如路由器 `192.168.x.1:53`）的查询也不再进入 TUN、不被 `hijack-dns` 接管，这类客户端拿不到 Fake-IP 与反向映射，只能按 IP 分流（与 Mihomo 同行为）。嗅探规则只对 `tun-in` 生效、且端口不设上限（官方客户端示例的 `{"action":"sniff"}` 是全入站嗅探，但对 `mixed-in`（`127.0.0.1:1080`）也嗅探只会给本地工具的非 Web 协议白加 300ms，而这类入站本来就从 SOCKS5/HTTP CONNECT 拿到域名），只嗅探 TCP 的 HTTP/TLS，不嗅探 QUIC（嗅探要解析握手，只会给 UDP 首包白加等待与内存开销，QUIC 由 GeoIP 与 `MATCH` 按已有目标 IP 兜底；Mihomo 同样不嗅探）；不设端口上限的代价是非 HTTP/TLS 的 TCP 连接（SSH、MySQL 等，尤其服务端先发数据的协议）首包最多多等 300ms（核心只在 `common/sniff/sniff.go:Skip` 里硬编码跳过邮件端口 `25`/`465`/`587`、`143`/`993`、`110`/`995`，其他服务端先发协议照旧等满超时；Mihomo 用 `80,8080-8880 / 443,8443` 的端口上限规避这一点）。`clash_api` 仅监听 `127.0.0.1:9090`，`access_control_allow_origin` 只放行内置直连的 `clash.razord.top` 与 `yacd.haishan.me` 的 **https** 来源（不放行 `http://`：面板域名在规则里直连，明文 HTTP 面板可被局域网中间人注入脚本，而注入的脚本又能借 `access_control_allow_private_network` 过预检、读写本机 API），其余网页的跨域预检不会通过，避免任意网页改写本机模式与节点；未设 `secret`，同机其他进程仍可直接读写该 API（多用户主机需自行限制，本项目不生成凭证）。
@@ -307,8 +313,8 @@ Base64 平铺顺序与 Mihomo `proxies` 顺序完全一致；`PROXY` 组的成�
 - **反向映射**：`dns.reverse_mapping` 把已应答的 IP 反查到域名，使「应用直接连接真实 IP（未命中 `geoip-cn`、没有 Fake-IP 映射）」的连接仍能命中域名规则（微信、Steam 下载、国内直连集合的 UDP 与 TCP），对应 Mihomo 模板的 `force-dns-mapping` / `parse-pure-ip`。它依赖应用先把域名交给 sing-box 解析，系统 DNS 被代持并缓存的平台（如 macOS）可能拿不到映射，此时按原 IP 规则分流；共享 IP 上的多个域名仍按已解析的那个域名归类。
 - **分流顺序**与默认 Mihomo 模板逐条对应：DNS 接管 → 私网、CGNAT、链路本地与零地址 → 单标签/认证门户/本地管理域名 → FCM `5228-5230` → 代理服务与 Google 域名代理 → 微信/Steam/Apple 中国/国内服务 → 国内域名集合 → Telegram IP 代理 → CN IP 兜底 → `PROXY`。`UDP/443` 不再有任何拦截规则，三份 Mihomo 模板顶层为 `tcp-concurrent: true`（iOS 变体下发时改为 `false`）。`clash_mode=direct/global` 在路由与 DNS 两处都优先于业务规则。
 - **规则集**：小型内联集合（`private-fallback`、`captive-portal`、`fakeip-exceptions`、`proxy-services`、`wechat-services`、`steam-download`、`apple-cn-fallback`、`direct-services`、`telegram-fallback`）与 MetaCubeX 的 sing-box 分支 SRS（`geosite-*`、`geoip-*`，`update_interval=1d`）并存；下载走显式 `http_clients`（默认直连出口，不依赖待解析的代理节点）。冷启动时任一必需远程规则集下载失败会让客户端配置启动失败，少量内联规则只缩短影响面，不构成离线首次启动保证。内联集合的 `domain_suffix` 不写前导点：锁定核心对无点后缀按「裸域 + 各级子域」匹配（等价 Mihomo 的 `+.` 写法），带点后缀只匹配子域，因此 `wechat.com`、`steamcontent.com` 这类裸域与子域都会被同一个条目覆盖。
-- **策略组差异**：`PROXY` 为 `select`，成员顺序与本机节点/聚合节点一致，默认选中首个本机节点；模式 1–4 均只有 `PROXY` 与 `DIRECT`，不生成自动测速或兜底组。
-- **节点映射**：本机 Reality（`uuid` + `flow=xtls-rprx-vision` + `tls.reality`，客户端只写公钥与 short_id）与 VLESS CDN 节点（模式 2/3：`transport.type=ws` + `headers.Host`；模式 1/4：`transport.type=httpupgrade` + `transport.host` + `tls.alpn=["http/1.1"]`；两者 `packet_encoding=xudp`）；聚合 Reality 节点映射为 `flow=xtls-rprx-vision` + `tls.reality`（`public_key`、`short_id`），`udp=false` 时用 `network: "tcp"` 限制承载。1.14.4 的 Reality 客户端会从 ClientHello 里过滤 `X25519MLKEM768`（`common/tls/reality_client.go`），因此聚合节点的 `supportX25519Mlkem768` 在 sing-box 侧没有对应开关：`false` 与核心行为一致，`true` 的 PQ 扩展不会出现，两者都仍用经典 X25519 连接，所以都保留。源站密钥永不进入 JSON。
+- **策略组差异**：`PROXY` 为 `select`，成员顺序与本机节点/聚合节点一致，默认选中首个本机节点；全模式都只有 `PROXY` 与 `DIRECT`，不生成自动测速或兜底组。
+- **节点映射**：本机 Reality（`uuid` + `flow=xtls-rprx-vision` + `tls.reality`，客户端只写公钥与 short_id）与 VLESS CDN 节点（模式 2/3：`transport.type=ws` + `headers.Host`；模式 4：`transport.type=httpupgrade` + `transport.host` + `tls.alpn=["http/1.1"]`；模式 1/5 的 Mihomo 节点为 `network: xhttp` + `xhttp-opts`（`mode: stream-up`、`alpn: [h2]`、`reuse-settings`）；两者 `packet_encoding=xudp`）；聚合 Reality 节点映射为 `flow=xtls-rprx-vision` + `tls.reality`（`public_key`、`short_id`），`udp=false` 时用 `network: "tcp"` 限制承载。1.14.4 的 Reality 客户端会从 ClientHello 里过滤 `X25519MLKEM768`（`common/tls/reality_client.go`），因此聚合节点的 `supportX25519Mlkem768` 在 sing-box 侧没有对应开关：`false` 与核心行为一致，`true` 的 PQ 扩展不会出现，两者都仍用经典 X25519 连接，所以都保留。源站密钥永不进入 JSON。
 - **排除规则**：官方 1.14.4 没有 xhttp 传输与 mieru 协议，`fp` 不在 1.14.4 utls 枚举内的 Reality 节点会让核心拒绝整份配置，因此这两类节点只从 JSON 排除，`apply` 会输出节点名、原因与数量；Mihomo / Base64 输出不变。Reality 的 `supportX25519Mlkem768` 不参与排除（见上一条：核心固定过滤 MLKEM），但该行为的握手实测仍未进行。所有模式都至少有一个本机节点，因此排除后 JSON 仍有效；本机节点生成失败则整个候选发布失败。
 - **候选校验**：发布前检查 JSON 可解析、outbound tag 唯一、策略组成员与路由/DNS 引用存在、默认出口存在、无源站密钥；存在锁定核心时再跑 `sing-box check`。`check` 不覆盖运行期初始化，因此 `scripts/verify-live.sh` 还会把客户端 JSON 去掉 TUN 入口后用真实核心启动一次（DNS detour 指向空 direct 出口这类问题只在启动阶段暴露）。校验失败即中止发布，已发布的旧订阅保持不变。
 - **发布与流控边界**：JSON 与六份旧产物在同一暂存目录生成并沿用逐文件原子替换（单文件原子，不是整代快照）。`render_mihomo_base64_files` 保留六产物渲染，仅供 CDN 就绪判定与流控门禁复用；JSON 缺失或损坏不会改变 `blocked`/`pending` 状态，也不清零用量。
@@ -369,7 +375,7 @@ easy_all
 ├── easy_all                     # CLI 统一管理入口与命令调度
 ├── runtime.manifest             # 运行时受管文件清单
 ├── profiles/
-│   ├── cloudflare.sh            # 模式 1：纯 CloudFlare 薄 Profile（单域名，空直连钩子）
+│   ├── cloudflare.sh            # 模式 1：纯 CloudFlare 薄 Profile（单域名，纯 Xray 后端，空直连钩子）
 │   ├── cloudfront.sh            # 模式 2：纯 CloudFront 薄 Profile（仅常量与空直连钩子）
 │   ├── reality-cloudfront.sh    # 模式 3：Reality + CloudFront 薄 Profile
 │   ├── reality-cloudflare.sh    # 模式 4：Reality + CloudFlare 薄 Profile
@@ -384,15 +390,15 @@ easy_all
 │   ├── cf-dns.sh                # Cloudflare API / DNS / Origin CA / 回源网段与持久 Token
 │   ├── cf-origin-rule.sh        # Origin Rule 单规则生命周期（ref/归属/追加/删除）
 │   ├── cloudfront-mode.sh       # 模式 2/3 唯一 CloudFront 业务核心
-│   ├── cloudflare-mode.sh       # 模式 1 唯一橙云业务核心（单域名 + Origin CA + 回源白名单）
+│   ├── cloudflare-mode.sh       # 模式 1 唯一橙云业务核心（单域名 + XHTTP 反代 + Origin CA + 回源白名单）
 │   ├── reality-cloudflare-mode.sh # 模式 4/5 业务编排（直连入站、橙云订阅站点、Origin Rule / Transform Rule）
 │   ├── cdn-traffic-guard.sh     # mangle 计量、985 GB 阈值、保护状态机与 systemd timer
 │   ├── cloud-purge.sh           # Cloudflare 与 CloudFront/ACM 远端托管资源识别与清理
 │   ├── singbox-core.sh          # 锁定 sing-box 版本、官方归档与固定 SHA256
-│   ├── singbox-runtime.sh       # 模式 1–4 sing-box JSON、客户端节点与运行验收
+│   ├── singbox-runtime.sh       # 模式 2/3/4 sing-box JSON、客户端节点与运行验收
 │   ├── singbox-subscription.sh  # sing-box 完整 JSON 客户端订阅（模板 + 结构化节点合成）
-│   ├── xray-core.sh             # 锁定 Xray-core 版本、官方归档/.dgst 清单与 SHA256 校验、服务单元
-│   ├── xray-runtime.sh          # 模式 5 的 Xray 服务端配置、Reality 密钥对解析与客户端节点
+│   ├── xray-core.sh             # Xray-core 最新官方 Release 下载、.dgst SHA2-256 校验与服务单元
+│   ├── xray-runtime.sh          # 模式 1/5 的 Xray 服务端配置、Reality 密钥对解析与客户端节点
 │   ├── cf-transform-rule.sh     # Cloudflare Request Header Transform Rule 单规则生命周期（模式 5）
 │   ├── caddy-core.sh            # 锁定 Caddy 版本、官方归档与 SHA512 清单校验
 │   ├── caddy-runtime.sh         # Caddyfile、订阅路由、单 443 合一/伪装站路由、服务与重载
@@ -423,10 +429,10 @@ easy_all
 ```
 
 ### 5.1 模式库的模块边界
-- **Profile 只声明、不复制**：`CDN_PROFILE_KEY`、`CDN_EXPECTED_PROTOCOL`、`CDN_MODE_LABEL`、`CDN_ENTRY_SUMMARY`、`CDN_INSTALL_PORTS`，`BACKEND`（模式 1–4 为 `sing-box`，模式 5 为 `xray`），以及同名直连钩子（模式 1/2 返回空值）。
+- **Profile 只声明、不复制**：`CDN_PROFILE_KEY`、`CDN_EXPECTED_PROTOCOL`、`CDN_MODE_LABEL`、`CDN_ENTRY_SUMMARY`、`CDN_INSTALL_PORTS`，`BACKEND`（模式 2/3/4 为 `sing-box`，模式 1/5 为 `xray`），以及同名直连钩子（模式 1/2 返回空值）。
 - **模式库持有本模式契约**：AWS 常量（`us-east-1`、缓存/源站请求策略 ID、回源时限、头名、分发 Comment）、Cloudflare 常量（来源白名单注释、Origin CA、Origin Rule / Transform Rule phase）、状态白名单与校验、本机 UFW、订阅渲染、运维事务、熔断重建、安装与卸载。`reality-cloudflare-mode.sh` 通过 `runtime_uses_xray` 按后端分派模式 4 与模式 5。
-- **共享运行时保持中立**：`runtime-core.sh` 提供后端分派、证书事务（DNS-01 签发、hook、部署与验收）、订阅发布与验收（模式 1–4 发布八份产物，模式 5 跳过 JSON 仅发布六份；流控门禁只用六份 Mihomo/Base64）、核心事务与停机清理；它不持有任何云 Provider 语义。
-- **渲染与路由分离**：`singbox-runtime.sh`（模式 1–4）与 `xray-runtime.sh`（模式 5）各自产出对应核心的 JSON 配置与客户端节点；`caddy-runtime.sh` 只产出 Caddyfile（站点主机与端口由模式派生）并负责 reload。两者都用「候选文件 → 校验 → `0600` 同目录原子 rename」发布。
+- **共享运行时保持中立**：`runtime-core.sh` 提供后端分派、证书事务（DNS-01 签发、hook、部署与验收）、订阅发布与验收（模式 2/3/4 发布八份产物，模式 1/5 跳过 JSON 仅发布六份；流控门禁只用六份 Mihomo/Base64）、核心事务与停机清理；它不持有任何云 Provider 语义。
+- **渲染与路由分离**：`singbox-runtime.sh`（模式 2/3/4）与 `xray-runtime.sh`（模式 1/5）各自产出对应核心的 JSON 配置与客户端节点；`caddy-runtime.sh` 只产出 Caddyfile（站点主机与端口由模式派生）并负责 reload。两者都用「候选文件 → 校验 → `0600` 同目录原子 rename」发布。
 - **橙云核心并列而非抽象**：`cloudflare-mode.sh`、`reality-cloudflare-mode.sh` 与 `cloudfront-mode.sh` 各自持有 Provider 语义，共用 `cf-dns.sh` 的 Cloudflare API 层与同一套 Profile 钩子契约。每个进程只加载所选链路的 Profile 与核心，因此同名生命周期函数（`load_state`、`apply_easy_all`、`install_all` 等）不会冲突；不引入跨 Provider 抽象层。
 
 ---
@@ -448,9 +454,9 @@ easy_all
 - **模式 2/3 的 ACM viewer 证书**由 AWS 自动续期，本工具只负责申请、复用与删除：只复用 `ISSUED` 且 SAN 覆盖节点域名的证书；处于 `FAILED`/`VALIDATION_TIMED_OUT`/`REVOKED`/`EXPIRED` 等终态时立即失败并点名 ARN（`RequestCertificate` 的幂等 Token 只会取回同一张证书，只能到控制台删除后重试）；删除分发后 `InUseBy` 需要时间收敛，按 60×10 秒有界退避重试后再按归属口径保留（卸载路径的 `ACM_IN_USE_WAIT_ATTEMPTS` / `ACM_IN_USE_WAIT_SECONDS`）。
 
 ### 6.2 核心下载与 `update-core`
-- 固定 sing-box `1.14.4`（代码内审查过的 SHA256 常量，无官方 checksums 清单可用）、Xray-core `26.11.9`（代码内锁定双架构 SHA256 常量，并核对其官方 `<asset>.dgst` 清单的 `SHA2-256` 条目一致；清单与归档同源，只用于防传输损坏与交叉复核）与 Caddy `2.11.9`（读取官方 `caddy_2.11.9_checksums.txt` 中精确文件名的 SHA512 条目）。
+- sing-box 与 Caddy 保持锁定版本：sing-box `1.14.4`（规避不兼容配置变更；代码内审查过的 SHA256 常量，无官方 checksums 清单可用）、Caddy `2.11.9`（读取官方 `caddy_2.11.9_checksums.txt` 中精确文件名的 SHA512 条目）；**Xray-core 追踪最新官方 Release**（通过 GitHub `/releases/latest` 302 跳转解析正式版标签，再从同一版本路径下载 `<asset>.dgst` 与归档，校验 `SHA2-256` 条目与候选二进制版本号后原子安装）。
 - 一律只通过 HTTPS 下载，先校验摘要再解压、再跑候选版本/配置检查，最后同目录原子替换；失败保留旧二进制与旧配置。darwin 归档只用于开发验证。
-- `update-core` 没有新增参数，含义是**重装/修复当前脚本支持的锁定版本**，不追最新：更新前备份现存二进制与运行配置（模式 5 备份 `xray` 与 `XRAY_CONFIG`，模式 1–4 备份 `sing-box` 与 `SINGBOX_CONFIG`，两者都备份 Caddy），下载校验失败或候选验收失败即恢复旧版本；二进制已缺失时按修复处理（没有可回滚的旧版本）；保护待落实时直接拒绝。
+- `update-core` 没有新增参数，含义是**sing-box/Caddy 重装或修复锁定版本，Xray 更新到最新官方 Release**：更新前备份现存二进制与运行配置（模式 1/5 备份 `xray` 与 `XRAY_CONFIG`，模式 2/3/4 备份 `sing-box` 与 `SINGBOX_CONFIG`，两者都备份 Caddy），下载校验失败或候选验收失败即恢复旧版本；二进制已缺失时按修复处理（没有可回滚的旧版本）；保护待落实时直接拒绝；检测到旧版 sing-box 残留且缺 Xray 核心时将拒绝换核并提示先重装。
 - 发布顺序固定为「写单元 → `systemctl daemon-reload` → 启停服务」：不重新加载时 systemd 继续使用内存里的旧单元，新增的 `ExecStartPre` 计量守卫会被静默跳过。替换 Caddy 二进制后必须**重启** Caddy 进程——`reload` 只在现有进程内换配置，不会执行磁盘上的新二进制。
 
 ### 6.3 `/run` 目录与两把锁

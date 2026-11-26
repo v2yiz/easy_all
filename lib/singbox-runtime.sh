@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 四模式 sing-box 本机配置与客户端节点（design §7、§12）。
+# 三模式 sing-box 本机配置与客户端节点（模式 2/3/4；模式 1/5 走 lib/xray-runtime.sh）（design §7、§12）。
 # 依赖调用方提供 log.sh 的 die/warn/info/fail，以及模式字段：
 # PROTOCOL、DIRECT_DOMAIN、DIRECT_NODE_NAME、VLESS_UUID、VLESS_PATH、
 # REALITY_PRIVATE_KEY、REALITY_PUBLIC_KEY、REALITY_SHORT_ID、
@@ -20,7 +20,7 @@ source "${SINGBOX_RUNTIME_LIB_DIR}/singbox-core.sh"
 
 singbox_require_protocol() {
     case "${PROTOCOL:-}" in
-    reality-cloudfront | reality-cloudflare | cloudfront | cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare | cloudfront) return 0 ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
@@ -34,16 +34,17 @@ singbox_protocol_has_reality() {
 
 singbox_protocol_has_cdn() {
     case "${PROTOCOL:-}" in
-    cloudfront | cloudflare | reality-cloudfront | reality-cloudflare) return 0 ;;
+    cloudfront | reality-cloudfront | reality-cloudflare) return 0 ;;
     esac
     return 1
 }
 
 # CDN 传输按 CDN 家族区分：CloudFront 会改写 Connection 并剥离非完整 WebSocket 握手
-# 的 Upgrade 头，只有橙云模式（1/4）能用 httpupgrade；其余一律 ws。
+# 的 Upgrade 头，只有模式 4（reality-cloudflare）能用 httpupgrade；其余一律 ws。
+# 模式 1 已改为纯 Xray XHTTP 后端，不再进入本库。
 singbox_cdn_transport_type() {
     case "${PROTOCOL:-}" in
-    cloudflare | reality-cloudflare) printf 'httpupgrade\n' ;;
+    reality-cloudflare) printf 'httpupgrade\n' ;;
     *) printf 'ws\n' ;;
     esac
 }

@@ -20,7 +20,7 @@ readonly CDN_PUBLIC_ACCEPT_SECONDS="${CDN_PUBLIC_ACCEPT_SECONDS_OVERRIDE:-10}"
 
 cdn_derive_runtime_fields() {
     [[ -n "${DIRECT_DOMAIN:-}" ]] || return 1
-    # BACKEND 由 Profile 声明（模式 1-4 为 sing-box，模式 5 为 xray）：这里不硬编码覆写。
+    # BACKEND 由 Profile 声明（模式 2/3/4 为 sing-box，模式 1/5 为 xray）：这里不硬编码覆写。
     BACKEND=${BACKEND:-sing-box}
     # 橙云节点域名同时是 transport Host、订阅域名与证书名；固定 deploy。
     [[ -n "${CF_NODE_DOMAIN:-}" ]] || return 1

@@ -14,7 +14,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - name: Install locked cores (sing-box 1.14.4 / Xray 26.11.9 / Caddy 2.11.9)
+      - name: Install cores (sing-box 1.14.4 / Xray latest / Caddy 2.11.9)
         run: EASY_ALL_DOWNLOAD_CORES=1 bash scripts/verify-cores.sh
       - name: Run end-to-end tests
         run: npm test

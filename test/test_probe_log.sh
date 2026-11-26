@@ -355,10 +355,13 @@ run_case() { # $1=目录 $2=snippet [额外 VAR=值 ...]
         RUNTIME_TMP="${dir}/runtime" \
         RUNTIME_WRITE_LOCK_FILE_OVERRIDE="${dir}/runtime/write.lock" \
         SINGBOX_BIN="${dir}/core/sing-box" \
+        XRAY_BIN="${dir}/core/xray" \
         CADDY_BIN="${dir}/core/caddy" \
         SINGBOX_SERVICE="easy_all-singbox.service" \
+        XRAY_SERVICE="easy_all-xray.service" \
         CADDY_SERVICE="easy_all-caddy.service" \
         SINGBOX_SERVICE_FILE="${dir}/units/easy_all-singbox.service" \
+        XRAY_SERVICE_FILE="${dir}/units/easy_all-xray.service" \
         CADDY_SERVICE_FILE="${dir}/units/easy_all-caddy.service" \
         UFW_DEFAULT_CONFIG="${dir}/ufw-default" \
         FAKE_SSHD_T_STATUS=0 \

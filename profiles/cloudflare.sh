@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mode 1: Cloudflare orange-cloud single domain (one proxied A record serves both
-# the VLESS WebSocket node and the Token-protected subscription on 443).
+# the VLESS XHTTP node and the Token-protected subscription on 443).
 set -Eeuo pipefail
 umask 077
 
@@ -8,8 +8,8 @@ readonly CDN_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/nul
 EASY_ALL_RUNTIME_LIB_DIR="${CDN_PROFILE_ROOT}/../lib"
 export EASY_ALL_RUNTIME_LIB_DIR
 
-# CDN 节点名的推荐默认值：必须在加载 singbox-runtime.sh 之前赋值，否则会被其
-# Reality / VLESS-WS 兜底值覆盖，交互提示与文档默认名不一致。
+# CDN 节点名的推荐默认值：必须在加载运行时库之前赋值，否则会被 xray-runtime.sh /
+# singbox-runtime.sh 的兜底值覆盖，交互提示与文档默认名不一致。
 CF_NODE_PREFIX=${CF_NODE_PREFIX:-🇺🇸CF}
 
 # shellcheck source=lib/runtime-core.sh
@@ -18,12 +18,12 @@ source "${EASY_ALL_RUNTIME_LIB_DIR}/runtime-core.sh"
 source "${EASY_ALL_RUNTIME_LIB_DIR}/cloudflare-mode.sh"
 
 PROTOCOL=cloudflare
-BACKEND=sing-box
+BACKEND=xray
 CDN_PROVIDER=cloudflare
 readonly CDN_PROFILE_KEY=cloudflare
 readonly CDN_EXPECTED_PROTOCOL=cloudflare
-readonly CDN_MODE_LABEL="纯 CloudFlare（单域名）"
-readonly CDN_ENTRY_SUMMARY="Cloudflare 橙云 + VLESS WebSocket"
+readonly CDN_MODE_LABEL="纯 CloudFlare（Xray XHTTP）"
+readonly CDN_ENTRY_SUMMARY="Cloudflare 橙云 + VLESS XHTTP (Xray)"
 CDN_INSTALL_PORTS=(443)
 SUBSCRIPTION_OPTIONAL_VARIANTS=1
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 阶段 1 基础库：sing-box 固定版本/摘要、四模式配置渲染、运行校验与安装。
+# 阶段 1 基础库：sing-box 固定版本/摘要、模式 2/3/4 配置渲染、运行校验与安装。
 # 用户视角：只通过公开接口与产物断言；外部边界（curl/tar 之外的下载、候选核心）用替身。
 set -Eeuo pipefail
 
@@ -120,13 +120,18 @@ assert_equal "VLESS 用户 UUID" "${VLESS_UUID}" \
 assert_equal "回环 CDN 入站不启用 TLS" "null" \
     "$(jq -c '.inbounds[0].tls' <<<"${cloudfront_json}")"
 
-cloudflare_json=$(render cloudflare 0)
-assert_equal "模式 1 回环 CDN 入站用 httpupgrade" \
-    "vless-cdn-in 127.0.0.1 10086 httpupgrade" \
-    "$(jq -r '.inbounds[0] | "\(.tag) \(.listen) \(.listen_port) \(.transport.type)"' <<<"${cloudflare_json}")"
+# 模式 1 已改为纯 Xray XHTTP 后端：sing-box 渲染器与协议谓词必须拒绝它。
+if (PROTOCOL=cloudflare; render_singbox_config "${TMP_DIR}/cloudflare-reject.json" 0) \
+    >/dev/null 2>&1; then
+    fail "模式 1 必须被 sing-box 渲染器拒绝"
+fi
+if (PROTOCOL=cloudflare; singbox_require_protocol) >/dev/null 2>&1; then
+    fail "模式 1 必须不被 sing-box 协议谓词接受"
+fi
+[[ ! -e "${TMP_DIR}/cloudflare-reject.json" ]] || fail "被拒绝的模式 1 不得留下 sing-box 配置"
 
-# blocked 只省略 CDN 入站；模式 3/4 保留 Reality。
-for proto in cloudfront cloudflare; do
+# blocked 只省略 CDN 入站。
+for proto in cloudfront; do
     blocked_json=$(render "${proto}" 1)
     assert_equal "${proto} blocked 省略 CDN 入站" "[]" \
         "$(jq -c '.inbounds' <<<"${blocked_json}")"
@@ -155,7 +160,7 @@ assert_equal "模式 4 blocked 保留 2m 时间窗" "2m" \
     "$(jq -r '.inbounds[0].tls.reality.max_time_difference' <<<"${reality_cf_blocked_json}")"
 
 # 公共结构：log/dns/outbounds/route 按 design §7。
-for proto in reality-cloudfront reality-cloudflare cloudfront cloudflare; do
+for proto in reality-cloudfront reality-cloudflare cloudfront; do
     body=$(render "${proto}" 0)
     assert_equal "${proto}: log 级别 warning" "warning" "$(jq -r '.log.level' <<<"${body}")"
     assert_equal "${proto}: DNS 显式 IPv4-only" "ipv4_only" "$(jq -r '.dns.strategy' <<<"${body}")"
@@ -237,21 +242,21 @@ assert_equal "sing-box 节点不写 early data" "null null" \
     "$(build_singbox_ws_outbound \
         | jq -r '.transport.max_early_data, .transport.early_data_header_name' | paste -sd' ' -)"
 
-# 橙云模式（1/4）：三端产物同步切到 httpupgrade + http/1.1 ALPN。
-cloudflare_link=$(PROTOCOL=cloudflare build_vless_ws_link)
-assert_contains "模式 1 VLESS 链接用 httpupgrade" "${cloudflare_link}" \
+# 橙云 httpupgrade 只剩模式 4（reality-cloudflare）：三端产物同步切到 httpupgrade + http/1.1 ALPN。
+reality_cf_link=$(PROTOCOL=reality-cloudflare build_vless_ws_link)
+assert_contains "模式 4 VLESS 链接用 httpupgrade" "${reality_cf_link}" \
     "security=tls&type=httpupgrade&alpn=http%2F1.1&sni=cf.example.com&"
-cloudflare_node=$(PROTOCOL=cloudflare build_mihomo_ws_node)
-assert_contains "模式 1 Mihomo 仍是 network: ws" "${cloudflare_node}" "network: ws"
-assert_contains "模式 1 Mihomo 锁 ALPN http/1.1" "${cloudflare_node}" $'    alpn:\n      - http/1.1'
-assert_contains "模式 1 Mihomo 开启 v2ray-http-upgrade" "${cloudflare_node}" \
+reality_cf_node=$(PROTOCOL=reality-cloudflare build_mihomo_ws_node)
+assert_contains "模式 4 Mihomo 仍是 network: ws" "${reality_cf_node}" "network: ws"
+assert_contains "模式 4 Mihomo 锁 ALPN http/1.1" "${reality_cf_node}" $'    alpn:\n      - http/1.1'
+assert_contains "模式 4 Mihomo 开启 v2ray-http-upgrade" "${reality_cf_node}" \
     $'      v2ray-http-upgrade: true'
-assert_equal "模式 1 sing-box outbound 传输契约" \
+assert_equal "模式 4 sing-box outbound 传输契约" \
     "httpupgrade cf.example.com /vless-abcdef123456 cf.example.com [\"http/1.1\"]" \
-    "$(PROTOCOL=cloudflare build_singbox_ws_outbound \
+    "$(PROTOCOL=reality-cloudflare build_singbox_ws_outbound \
         | jq -r '"\(.transport.type) \(.server) \(.transport.path) \(.transport.host) \(.tls.alpn)"')"
-assert_not_contains "模式 1 sing-box outbound 不写 ws headers" \
-    "$(PROTOCOL=cloudflare build_singbox_ws_outbound)" '"headers"'
+assert_not_contains "模式 4 sing-box outbound 不写 ws headers" \
+    "$(PROTOCOL=reality-cloudflare build_singbox_ws_outbound)" '"headers"'
 
 if (PROTOCOL=cloudfront; CF_NODE_DOMAIN=""; build_vless_ws_link) >/dev/null 2>&1; then
     fail "缺少 CF_NODE_DOMAIN 必须失败"
@@ -273,7 +278,7 @@ assert_equal "优选地址只替换 sing-box server" \
         | jq -r '"\(.server) \(.tls.server_name) \(.transport.headers.Host)"')"
 assert_equal "优选地址不改 httpupgrade transport.host" \
     "edge.example-cdn.com cf.example.com cf.example.com" \
-    "$(PROTOCOL=cloudflare CF_EDGE_ADDRESS="edge.example-cdn.com" build_singbox_ws_outbound \
+    "$(PROTOCOL=reality-cloudflare CF_EDGE_ADDRESS="edge.example-cdn.com" build_singbox_ws_outbound \
         | jq -r '"\(.server) \(.tls.server_name) \(.transport.host)"')"
 # 空值与未设置都必须回落到节点域名：无字段的既有部署产物逐字节不变（验收条件 5）。
 assert_equal "空优选地址不改变 VLESS 链接" "$(build_vless_ws_link)" \

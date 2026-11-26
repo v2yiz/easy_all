@@ -52,9 +52,13 @@ caddy_protocol_has_subscription_userinfo() {
     return 1
 }
 
-# 模式 5 的单一谓词：同时决定双站点单 443 布局、全局 default_sni 与 h2c XHTTP 路由。
+# XHTTP 路由谓词（模式 1/5）：代理路径用 `@easy_all_xhttp` + `h2c` 反代。
+# 与模式 5 独有的双 9443 站点/`default_sni` 分开：后者需同时满足 has_reality。
 caddy_protocol_uses_xhttp() {
-    [[ "${PROTOCOL:-}" == "reality-cloudflare-xhttp" ]]
+    case "${PROTOCOL:-}" in
+    cloudflare | reality-cloudflare-xhttp) return 0 ;;
+    esac
+    return 1
 }
 
 # Reality 自偷入口（模式 3/4/5）：只有这三个模式提供 9443 伪装站。
@@ -228,7 +232,8 @@ caddy_render_global_options() {
     printf '\tauto_https off\n'
     # 模式 5：空 SNI / 裸 IP 探测只拿到直连主证书；两个站点块都是精确主机名，
     # 未知 SNI 无通配块故直接拒绝，绝不向外暴露 CDN_CERT_FILE 的 SAN。
-    if caddy_protocol_uses_xhttp; then
+    # 模式 1 的 Caddy 直接监听公网 443（只有一个站点块），不得写 default_sni。
+    if caddy_protocol_uses_xhttp && caddy_protocol_has_reality; then
         printf '\tdefault_sni %s\n' "$(caddy_require_host DIRECT_DOMAIN)"
     fi
     printf '\tservers {\n'
@@ -346,7 +351,7 @@ caddy_render_subscription_handler() {
 }
 
 # 源站业务路由片段（VLESS 代理路径 + 订阅路由 + 兜底 404）；不提供 /easy_all-health。
-# 模式 5 的代理路径改为 XHTTP（h2c 反代 + 不缓冲），其余模式保持原有 HTTP 反代。
+# 模式 1/5 的代理路径改为 XHTTP（h2c 反代 + 不缓冲），模式 2/3/4 保持原有 HTTP 反代。
 caddy_render_origin_routes() {
     local blocked=$1 subscription_ok=$2 indent=${3:-$'\t\t'}
     if caddy_protocol_has_cdn; then
@@ -536,7 +541,7 @@ render_caddy_config() {
         || die "Mihomo 下载文件名无效：${SUB_DOWNLOAD_NAME:-空}"
     {
         caddy_render_global_options
-        if caddy_protocol_uses_xhttp; then
+        if caddy_protocol_uses_xhttp && caddy_protocol_has_reality; then
             # 模式 5：两个回环 9443 站点块（直连伪装站 + 橙云 XHTTP 回源站），无公网 Caddy 端口。
             caddy_render_camouflage_site
             printf '\n'
@@ -595,6 +600,21 @@ caddy_config_structure_ok() {
         return
     fi
     grep -Fq 'bind 0.0.0.0' "${file}" || return 1
+    if caddy_protocol_uses_xhttp; then
+        # 模式 1：代理路径必须是 h2c XHTTP，且不得出现模式 5 独有的 default_sni/源站守卫/伪装站与
+        # CloudFront 计量头。就绪态必须声明 h2c 且不缓冲；阻断态只允许 respond 503。
+        grep -Fq "@easy_all_xhttp path ${VLESS_PATH:-} ${VLESS_PATH:-}/*" "${file}" || return 1
+        if grep -Fq 'reverse_proxy 127.0.0.1:10086' "${file}"; then
+            grep -Fq 'versions h2c 2' "${file}" || return 1
+            grep -Fq 'flush_interval -1' "${file}" || return 1
+        else
+            grep -Fq 'respond 503' "${file}" || return 1
+        fi
+        if grep -Eq 'default_sni|X-Easy-All-Origin-Key|abort @easy_all_bad_origin|Subscription-Userinfo' \
+            "${file}"; then
+            return 1
+        fi
+    fi
     route_line=$(grep -n '^[[:space:]]*route[[:space:]]*{[[:space:]]*$' "${file}" \
         | head -n 1 | cut -d: -f1)
     handle_line=$(grep -n '^[[:space:]]*handle' "${file}" | head -n 1 | cut -d: -f1)
@@ -791,6 +811,7 @@ caddy_xhttp_origin_site_structure_ok() { # $1=站点块行（橙云主机）
 caddy_reality_structure_ok() {
     local file=$1 camo origin site_blocks
     site_blocks=$(grep -Ec '^https://.*:[0-9]+ \{$' "${file}")
+    # 本函数只在 caddy_protocol_has_reality 为真时调用，因此内部的 uses_xhttp 仍唯一指代模式 5。
     if caddy_protocol_uses_xhttp; then
         # 模式 5：两个回环 9443 站点块（直连伪装站 + 橙云 XHTTP 回源站），全局 default_sni 锁定直连证书。
         grep -Fq "default_sni ${DIRECT_DOMAIN}" "${file}" || return 1

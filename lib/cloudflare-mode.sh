@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Cloudflare orange-cloud core for mode 2 (single proxied domain serving both the
-# VLESS HTTPUpgrade node and the Token-protected subscription).
+# Cloudflare orange-cloud core for mode 1 (single proxied domain serving both the
+# VLESS XHTTP node and the Token-protected subscription on 443).
 #
 # Profile contract provided before this file is sourced:
 #   CDN_PROFILE_KEY          install marker / profile key (cloudflare)
@@ -13,12 +13,12 @@
 #   CDN_RECORD_COMMENT       Cloudflare DNS ownership comment of this profile
 # plus the hooks (empty results instead of guessing):
 #   collect_install_inputs      collect this profile's inputs (calls the shared input collector)
-#   cdn_prepare_direct_runtime  no-op: mode 2 has no direct entry
-#   cdn_validate_direct_runtime no-op: mode 2 has no direct entry
+#   cdn_prepare_direct_runtime  no-op: mode 1 has no direct entry
+#   cdn_validate_direct_runtime no-op: mode 1 has no direct entry
 #
 # Cloudflare API/DNS/Origin CA/origin-firewall helpers come from lib/cf-dns.sh.
-# 这一层只承载橙云单域名链路（一个域名同时提供 HTTPUpgrade 节点与订阅），没有优选 IP、
-# 没有测速/兜底分组、没有 Globalping 与 CloudFront/AWS/流量熔断语义。
+# 这一层只承载橙云单域名链路（一个域名同时提供 XHTTP 节点与订阅），后端为纯 xray-core，
+# 没有优选 IP、没有测速/兜底分组、没有 Globalping 与 CloudFront/AWS/流量熔断语义。
 
 # 公网验收重试次数/间隔；测试可经 *_OVERRIDE 缩短，生产默认不变。
 readonly CDN_PUBLIC_ACCEPT_ATTEMPTS="${CDN_PUBLIC_ACCEPT_ATTEMPTS_OVERRIDE:-6}"
@@ -59,7 +59,7 @@ runtime_probe_ca_file() {
 
 cdn_derive_runtime_fields() {
     [[ -n "${CF_NODE_DOMAIN:-}" ]] || return 1
-    BACKEND=sing-box
+    BACKEND=xray
     SUBSCRIPTION_MODE=deploy
     VLESS_CDN_DOMAIN=${CF_NODE_DOMAIN}
     SUBSCRIPTION_DOMAIN=${CF_NODE_DOMAIN}
@@ -106,12 +106,13 @@ collect_cloudflare_install_inputs() {
     CF_ZONE=$(normalize_domain "$(prompt_value 'Cloudflare 根 Zone（如 example.com）' "${CF_ZONE:-}")")
     validate_domain "${CF_ZONE}" || die "Cloudflare Zone 无效：${CF_ZONE}"
 
-    CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value 'CDN 节点域名（橙云代理，同时提供 HTTPUpgrade 节点与订阅）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
+    CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value 'CDN 节点域名（橙云代理，同时提供 XHTTP 节点与订阅）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
     cdn_validate_install_domains
     # 首装不经过 load_state：订阅渲染前必须在输入校验处派生运行时字段。
     cdn_derive_runtime_fields || die "运行时字段派生失败：缺少节点域名"
 
-    cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑 + SSL/证书 编辑权限）'
+    cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑 + Zone Settings 只读 + SSL/证书 编辑权限）'
+    info "请确认已在 Cloudflare 面板开启 Network -> gRPC（XHTTP 回源依赖）；本工具不会自动修改该设置"
 
     VLESS_PATH=$(normalize_vless_path "${VLESS_PATH:-}")
     validate_vless_path "${VLESS_PATH}" || die "VLESS 路径无效：${VLESS_PATH}"
@@ -159,7 +160,7 @@ cdn_ensure_zone_id() {
     fi
 }
 
-# 橙云节点域名一条 A 记录同时承载 HTTPUpgrade 节点与订阅。
+# 橙云节点域名一条 A 记录同时承载 XHTTP 节点与订阅。
 cdn_ensure_dns() {
     local domain
     cdn_ensure_zone_id
@@ -212,10 +213,10 @@ write_runtime_config() {
     runtime_write_config 0 "${subscription_ok}"
 }
 
-# 订阅渲染用 Phase 1 builder：节点与订阅同域，无需源站密钥。
+# 订阅渲染用 Phase 1 builder：节点与订阅同域，无需源站密钥，服务端为 Xray XHTTP。
 build_node_links() {
     local extra
-    build_vless_ws_link
+    build_xray_xhttp_link
     printf '\n'
     extra=$(aggregation_node_links)
     [[ -z "${extra}" ]] || printf '%s\n' "${extra}"
@@ -224,7 +225,7 @@ build_node_links() {
 
 build_mihomo_nodes() {
     local extra
-    build_mihomo_ws_node
+    build_mihomo_xray_xhttp_node
     printf '\n'
     extra=$(aggregation_mihomo_nodes)
     [[ -z "${extra}" ]] || printf '%s\n' "${extra}"
@@ -303,7 +304,9 @@ cloudflare_render_subscription_files() {
 
 refresh_runtime_subscription() {
     cloudflare_write_subscriptions
-    validate_singbox_subscription_runtime
+    if runtime_supports_singbox_subscription; then
+        validate_singbox_subscription_runtime
+    fi
     save_state
 }
 
@@ -317,17 +320,24 @@ cdn_wait_for_node_dns() {
 # 本机验收（--resolve 127.0.0.1）不能证明橙云链路：DNS 指向、边缘证书与
 # Full (strict) 回源都可能在这里才暴露。公网探测走真实域名 + 系统 CA，禁止 -k。
 cdn_public_subscription_ok() {
-    local token body decoded
+    local token body decoded marker
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS:-[]}") || return 1
     [[ -n "${token}" && "${token}" != "null" ]] || return 1
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         "https://${CF_NODE_DOMAIN}/subscribe") || return 1
     decoded=$(printf '%s' "${body}" | openssl base64 -d -A 2>/dev/null) || return 1
-    [[ "${decoded}" == *"type=httpupgrade"* ]] || return 1
+    while IFS= read -r marker; do
+        [[ -n "${marker}" ]] || continue
+        grep -Fq -- "${marker}" <<<"${decoded}" || return 1
+    done < <(runtime_base64_markers)
     body=$(public_dns_curl --get --data-urlencode "token=${token}" \
         --data-urlencode 'flag=clash' \
         "https://${CF_NODE_DOMAIN}/subscribe") || return 1
-    [[ "${body}" == *"network: ws"* && "${body}" == *"v2ray-http-upgrade: true"* ]]
+    while IFS= read -r marker; do
+        [[ -n "${marker}" ]] || continue
+        grep -Fq -- "${marker}" <<<"${body}" || return 1
+    done < <(runtime_mihomo_markers)
+    return 0
 }
 
 cdn_public_token_rejection_ok() {
@@ -348,7 +358,7 @@ cdn_validate_public_runtime() {
         fi
         ((attempt == CDN_PUBLIC_ACCEPT_ATTEMPTS)) || sleep "${CDN_PUBLIC_ACCEPT_SECONDS}"
     done
-    die "Cloudflare 公网验收失败（已重试 ${CDN_PUBLIC_ACCEPT_ATTEMPTS} 次）：请确认 ${CF_NODE_DOMAIN} 已开启橙云代理、SSL/TLS 为 Full (strict) 且边缘证书可用；修复后执行 sudo easy_all apply-cloud"
+    die "Cloudflare 公网验收失败（已重试 ${CDN_PUBLIC_ACCEPT_ATTEMPTS} 次）：请确认 ${CF_NODE_DOMAIN} 已开启橙云代理、SSL/TLS 为 Full (strict)、Network -> gRPC 已开启且边缘证书可用；修复后执行 sudo easy_all apply-cloud"
 }
 
 # --- Commands -----------------------------------------------------------------
@@ -396,8 +406,8 @@ show_status() {
     else
         printf '回源证书: 缺失；请执行 sudo easy_all renew-cert\n'
     fi
-    printf 'sing-box: '
-    systemctl is-active --quiet "${SINGBOX_SERVICE}" 2>/dev/null \
+    printf '%s: ' "$(runtime_proxy_label)"
+    systemctl is-active --quiet "$(runtime_proxy_service)" 2>/dev/null \
         && printf 'active\n' || printf 'inactive\n'
     printf 'Caddy: '
     systemctl is-active --quiet "${CADDY_SERVICE}" 2>/dev/null \
@@ -414,10 +424,21 @@ show_status() {
     fi
 }
 
+# 旧版 sing-box 模式 1 不支持原地换核：所有会改写配置/重载服务/换核的维护命令在
+# 交互、快照与云端写入之前先确认 Xray 核心存在，并按有无 sing-box 残留给出相反处置。
+cloudflare_require_xray_binary() {
+    [[ ! -x "${XRAY_BIN}" ]] || return 0
+    if [[ -e "${SINGBOX_BIN}" || -e "${SINGBOX_SERVICE_FILE}" ]]; then
+        die "检测到旧版 sing-box 模式 1 且缺少 Xray 核心（${XRAY_BIN}）；当前版本模式 1 已切换为纯 Xray XHTTP，不支持原地切换，请先用旧版执行 sudo easy_all uninstall 后重新安装"
+    fi
+    die "未检测到 Xray 核心（${XRAY_BIN}）；请执行 sudo easy_all update-core 修复核心后重试"
+}
+
 apply_easy_all() {
     require_root
     acquire_runtime_write_lock
     collect_installed_state
+    cloudflare_require_xray_binary
     cdn_require_valid_subscription
     snapshot_subscription_update
     configure_tcp_acceleration
@@ -428,7 +449,9 @@ apply_easy_all() {
     validate_protocol_runtime
     cloudflare_write_subscriptions
     validate_subscription_runtime
-    validate_singbox_subscription_runtime
+    if runtime_supports_singbox_subscription; then
+        validate_singbox_subscription_runtime
+    fi
     save_state
     register_easy_all_command
     commit_subscription_update
@@ -445,8 +468,8 @@ apply_cloud_phase() {
     # 只读查询 Zone ID 必须先于 strict 校验（design §9）：创建任何资源前完成。
     cdn_ensure_zone_id
     cloudflare_ensure_zone_ssl_strict
-    # 橙云 VLESS 节点走 HTTPUpgrade（握手仍发 Upgrade: websocket）：Zone 关闭 WebSockets 时链路必失败。
-    cloudflare_ensure_zone_websockets_on
+    # XHTTP 走 HTTP/2 回源，不依赖 Zone 的 WebSockets 开关；gRPC 只读提示在输入阶段给出。
+    info "XHTTP 回源依赖 Cloudflare Zone 的 Network -> gRPC 已在面板开启（本工具不自动修改全区设置）"
     cdn_ensure_dns
     cdn_issue_certificate
 }
@@ -455,6 +478,7 @@ apply_cloud_resources() {
     require_root
     acquire_runtime_write_lock
     collect_installed_state
+    cloudflare_require_xray_binary
     cdn_require_valid_subscription
     snapshot_subscription_update
     configure_tcp_acceleration
@@ -466,7 +490,9 @@ apply_cloud_resources() {
     validate_protocol_runtime
     cloudflare_write_subscriptions
     validate_subscription_runtime
-    validate_singbox_subscription_runtime
+    if runtime_supports_singbox_subscription; then
+        validate_singbox_subscription_runtime
+    fi
     # 本机子流程完成后才能证明公网链路；失败时云端资源保留，可重试 apply-cloud。
     cdn_validate_public_runtime
     runtime_served_certificate_matches_disk \
@@ -489,6 +515,8 @@ update_subscription() {
     # 交互输入先于写锁收集：edit-sub 停在提示上时，共享同一把排他锁的运行时任务会整段时间
     # 取不到锁。输入完成后再取锁并重新 load_state，按最新状态继续。
     collect_installed_state
+    # 旧版 sing-box 模式 1 必须在用户输入订阅配置之前就被阻断，并在取锁后复核一次。
+    cloudflare_require_xray_binary
     if [[ -t 0 ]]; then
         chosen_name=$(normalize_sub_download_name \
             "$(prompt_value 'Mihomo 下载文件名（不含 .yaml）' "${SUB_DOWNLOAD_NAME}")")
@@ -499,6 +527,7 @@ update_subscription() {
     # 提示已在锁外完成：这里给短暂等待，避免刚填完输入就撞上守卫的持锁窗口而整段丢弃。
     acquire_runtime_write_lock 30
     collect_installed_state
+    cloudflare_require_xray_binary
     [[ -z "${chosen_name}" ]] || SUB_DOWNLOAD_NAME=${chosen_name}
     cdn_apply_subscription_config "${raw_config}" \
         || die "订阅配置无效：需包含 allowedTokens 与 nodes；节点仅支持 vless reality/tcp、vless tls/xhttp 与 mieru"
@@ -509,7 +538,9 @@ update_subscription() {
     write_runtime_config
     runtime_reload_caddy
     validate_subscription_runtime
-    validate_singbox_subscription_runtime
+    if runtime_supports_singbox_subscription; then
+        validate_singbox_subscription_runtime
+    fi
     save_state
     commit_subscription_update
     show_subscription
@@ -520,6 +551,7 @@ renew_certificate() {
     require_root
     acquire_runtime_write_lock
     collect_installed_state
+    cloudflare_require_xray_binary
     cdn_require_valid_subscription
     cloudflare_collect_api_token
     snapshot_subscription_update
@@ -557,10 +589,11 @@ cdn_local_uninstall_common() {
         warn "卸载未完成：移除 easy_all 定时重启任务失败，本机状态与命令已保留；修正 root crontab 后重试 uninstall"
         return 1
     fi
-    rm -f -- "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}"
+    rm -f -- "${SINGBOX_SERVICE_FILE}" "${XRAY_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}"
     systemctl daemon-reload >/dev/null 2>&1 || true
     rm -rf -- "${STATE_DIR}" "${SUBSCRIPTION_DIR}" \
-        "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"
+        "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" \
+        "$(dirname -- "${XRAY_BIN}")" "$(dirname -- "${CADDY_BIN}")"
     rmdir "$(dirname -- "${SUBSCRIPTION_DIR}")" 2>/dev/null || true
 }
 
@@ -598,9 +631,10 @@ cleanup_partial_install() {
     remove_probe_log \
         || { warn "回收 TCP 443 探测日志规则与单元失败；已保留安装进度标记与状态，修正后重试 sudo easy_all cleanup-partial"; return 1; }
     remove_daily_reboot_schedule || true
-    for path in "${SINGBOX_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}" \
+    for path in "${SINGBOX_SERVICE_FILE}" "${XRAY_SERVICE_FILE}" "${CADDY_SERVICE_FILE}" "${COMMAND_PATH}" \
         "${SUBSCRIPTION_DIR}" \
-        "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${CADDY_BIN}")"; do
+        "${COMMAND_INSTALL_DIR}" "$(dirname -- "${SINGBOX_BIN}")" "$(dirname -- "${XRAY_BIN}")" \
+        "$(dirname -- "${CADDY_BIN}")"; do
         [[ -n "${path}" ]] || continue
         rm -rf -- "${path}" 2>/dev/null || { warn "删除残留失败：${path}"; failed=1; }
     done
@@ -655,7 +689,7 @@ install_all() {
     collect_install_inputs
     persist_install_identity || die "无法落盘安装身份；在创建云端资源前停止安装"
     install_progress_stage core
-    download_singbox
+    runtime_download_proxy_core
     download_caddy
     install_progress_stage services
     configure_runtime_ufw
@@ -663,20 +697,22 @@ install_all() {
     persist_cloudflare_token
     cdn_ensure_zone_id
     cloudflare_ensure_zone_ssl_strict
-    cloudflare_ensure_zone_websockets_on
+    info "XHTTP 回源依赖 Cloudflare Zone 的 Network -> gRPC 已在面板开启（本工具不自动修改全区设置）"
     cdn_ensure_dns
     cdn_issue_certificate
     # 证书已签发：立即落盘 ID/到期时间，续装可直接复用而不是重复 POST /certificates。
     persist_install_identity || die "无法落盘安装身份；已保留云端资源"
     write_runtime_config
-    # 首装先注册 easy_all：sing-box 的 ExecStartPre 依赖 /usr/local/bin/easy_all。
+    # 首装先注册 easy_all：CloudFront 模式的 sing-box ExecStartPre 依赖 /usr/local/bin/easy_all。
     register_easy_all_command
     runtime_apply_runtime_services
     validate_protocol_runtime
     install_progress_stage subscription
     cloudflare_write_subscriptions
     validate_subscription_runtime
-    validate_singbox_subscription_runtime
+    if runtime_supports_singbox_subscription; then
+        validate_singbox_subscription_runtime
+    fi
     cdn_validate_public_runtime
     install_progress_stage state
     save_state

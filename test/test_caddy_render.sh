@@ -158,7 +158,48 @@ assert_not_contains "模式 2 代理路径不是前缀匹配" "${cloudfront_body
 assert_contains "模式 2 转发到回环" "${cloudfront_body}" "reverse_proxy 127.0.0.1:10086"
 assert_contains "模式 1 站点：节点域 443" "${cloudflare_body}" "https://cf.example.com:443 {"
 assert_not_contains "模式 1 无源站守卫" "${cloudflare_body}" "@easy_all_bad_origin"
-assert_contains "模式 1 代理路径" "${cloudflare_body}" "handle ${VLESS_PATH} {"
+# 模式 1 已改为纯 Xray XHTTP 后端：代理路径是 h2c 反代，不是 HTTPUpgrade 反代。
+assert_contains "模式 1 代理路径是 XHTTP 前缀匹配" "${cloudflare_body}" \
+    "@easy_all_xhttp path ${VLESS_PATH} ${VLESS_PATH}/*"
+assert_contains "模式 1 站点反代回环" "${cloudflare_body}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "模式 1 反代声明 h2c" "${cloudflare_body}" "versions h2c 2"
+assert_contains "模式 1 反代不缓冲" "${cloudflare_body}" "flush_interval -1"
+assert_not_contains "模式 1 不写 default_sni" "${cloudflare_body}" "default_sni"
+assert_not_contains "模式 1 不下发 Subscription-Userinfo" "${cloudflare_body}" \
+    "Subscription-Userinfo"
+
+# 模式 1 阻断态：只保留 XHTTP 匹配器 + respond 503，不得留下反代与 h2c 声明。
+cloudflare_blocked_body=$(render_caddy cloudflare 1 1)
+assert_contains "模式 1 阻断态保留 XHTTP 匹配器" "${cloudflare_blocked_body}" \
+    "@easy_all_xhttp path ${VLESS_PATH} ${VLESS_PATH}/*"
+assert_contains "模式 1 阻断态返回 503" "${cloudflare_blocked_body}" "respond 503"
+assert_not_contains "模式 1 阻断态不反代" "${cloudflare_blocked_body}" \
+    "reverse_proxy 127.0.0.1:10086"
+assert_not_contains "模式 1 阻断态不声明 h2c" "${cloudflare_blocked_body}" "versions h2c 2"
+
+# caddy_config_structure_ok 读 PROTOCOL：用子 shell 赋值，避免污染后续模式断言。
+mode1_caddy_structure_ok() { # $1=Caddyfile
+    ( PROTOCOL=cloudflare; caddy_config_structure_ok "$1" )
+}
+mode1_ready_file="${TMP_DIR}/Caddyfile-cloudflare-0-1"
+mode1_blocked_file="${TMP_DIR}/Caddyfile-cloudflare-1-1"
+mode1_caddy_structure_ok "${mode1_ready_file}" || fail "模式 1 就绪态必须通过结构校验"
+mode1_caddy_structure_ok "${mode1_blocked_file}" || fail "模式 1 阻断态必须通过结构校验"
+grep -vF 'versions h2c 2' "${mode1_ready_file}" >"${TMP_DIR}/mode1-no-h2c"
+mode1_caddy_structure_ok "${TMP_DIR}/mode1-no-h2c" && fail "模式 1 缺 h2c 声明必须被拒"
+grep -vF 'flush_interval -1' "${mode1_ready_file}" >"${TMP_DIR}/mode1-no-flush"
+mode1_caddy_structure_ok "${TMP_DIR}/mode1-no-flush" && fail "模式 1 缺 flush_interval 必须被拒"
+grep -vF "@easy_all_xhttp path ${VLESS_PATH} ${VLESS_PATH}/*" "${mode1_ready_file}" \
+    >"${TMP_DIR}/mode1-no-matcher"
+mode1_caddy_structure_ok "${TMP_DIR}/mode1-no-matcher" && fail "模式 1 缺 XHTTP 匹配器必须被拒"
+{ cat "${mode1_ready_file}"; printf '\tdefault_sni cf.example.com\n'; } \
+    >"${TMP_DIR}/mode1-default-sni"
+mode1_caddy_structure_ok "${TMP_DIR}/mode1-default-sni" && fail "模式 1 出现 default_sni 必须被拒"
+{ cat "${mode1_ready_file}"; printf '\t@easy_all_bad_origin expression {http.request.header.X-Easy-All-Origin-Key} != \x27x\x27\n'; } \
+    >"${TMP_DIR}/mode1-origin-guard"
+mode1_caddy_structure_ok "${TMP_DIR}/mode1-origin-guard" && fail "模式 1 出现源站守卫必须被拒"
+grep -vF 'respond 503' "${mode1_blocked_file}" >"${TMP_DIR}/mode1-blocked-no-503"
+mode1_caddy_structure_ok "${TMP_DIR}/mode1-blocked-no-503" && fail "模式 1 阻断态缺 respond 503 必须被拒"
 assert_contains "模式 4 站点：节点域 8443" "${reality_cf_body}" "https://cf.example.com:8443 {"
 assert_not_contains "模式 4 无源站守卫" "${reality_cf_body}" "@easy_all_bad_origin"
 assert_contains "模式 4 代理路径" "${reality_cf_body}" "handle ${VLESS_PATH} {"

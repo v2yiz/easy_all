@@ -1,12 +1,12 @@
 # 前置准备手册
 
-本手册介绍使用 `easy_all` 部署各个模式前，需要在域名注册商、Cloudflare 和 AWS 准备的资源与凭据：**域名注册与 Cloudflare 托管**、**Cloudflare API Token**（全模式）与 **AWS 访问密钥**（仅模式 2/3）。模式 5 还需要在 Cloudflare 面板开启 `Network -> gRPC`。
+本手册介绍使用 `easy_all` 部署各个模式前，需要在域名注册商、Cloudflare 和 AWS 准备的资源与凭据：**域名注册与 Cloudflare 托管**、**Cloudflare API Token**（全模式）与 **AWS 访问密钥**（仅模式 2/3）。模式 1/5 还需要在 Cloudflare 面板开启 `Network -> gRPC`。
 
 ## 凭据需求一览
 
 | 部署模式 | Cloudflare API Token 权限要求 | AWS 访问密钥（IAM） |
 | :--- | :--- | :---: |
-| **模式 1 纯 CloudFlare** | Zone Read + DNS Edit + Zone Settings Read + SSL and Certificates Edit | 不需要 |
+| **模式 1 纯 CloudFlare（Xray XHTTP）** | Zone Read + DNS Edit + Zone Settings Read + SSL and Certificates Edit | 不需要 |
 | **模式 2 纯 CloudFront** | Zone Read + DNS Edit | **需要** |
 | **模式 3 Reality + CloudFront** | Zone Read + DNS Edit | **需要** |
 | **模式 4 Reality + CloudFlare** | Zone Read + DNS Edit + Zone Settings Read + Origin Rules Edit | 不需要 |
@@ -84,7 +84,7 @@
 
 > [!NOTE]
 > - **模式 2/3** 边缘证书由 AWS ACM 托管，Cloudflare 仅作权威 DNS，**只需 Zone Read 与 DNS Edit**。
-> - **模式 5** 除 Token 权限外，还需在 Cloudflare 控制台 **Network → gRPC** 打开（XHTTP 回源经 HTTP/2 到源站 `443`）。本工具只读校验 `Full (strict)`，不会自动修改 Zone 级 gRPC 开关；未开启时安装的公网订阅验收会失败并提示。
+> - **模式 1/5** 除 Token 权限外，还需在 Cloudflare 控制台 **Network → gRPC** 打开（XHTTP 回源经 HTTP/2 到源站 `443`）。本工具只读校验 `Full (strict)`，不会自动修改 Zone 级 gRPC 开关；未开启时安装的公网订阅验收会失败并提示。两者的 CDN 节点都是 VLESS XHTTP（`stream-up`），不再预检 `Network → WebSockets`。
 > - Token 在安装时输入，以 `0600` 权限安全保存于 VPS 本机 `/etc/easy_all/cloudflare.token`。
 
 ### 2.2 控制台创建步骤

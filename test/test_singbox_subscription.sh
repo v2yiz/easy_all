@@ -391,9 +391,9 @@ while IFS='|' read -r profile expected_default has_direct; do
     fi
     assert_not_contains "${profile} 默认订阅不含 optional 节点" "$(tags "${mode_json}")" "R-可用"
     assert_contains "${profile} all 订阅包含 optional 节点" "$(tags "${mode_out}/subs/singbox-all.json")" "R-可用"
-    # CDN 传输按 CDN 家族分流：橙云（1/4）httpupgrade + http/1.1 ALPN，CloudFront 保持 ws。
+    # CDN 传输按 CDN 家族分流：模式 4（橙云）httpupgrade + http/1.1 ALPN，CloudFront 保持 ws。
     case "${profile}" in
-    cloudflare | reality-cloudflare) mode_transport=httpupgrade ;;
+    reality-cloudflare) mode_transport=httpupgrade ;;
     *) mode_transport=ws ;;
     esac
     assert_equal "${profile} 本机 CDN 节点传输" "${mode_transport} cf.example.com" \
@@ -416,7 +416,6 @@ done <<'PROFILES'
 reality-cloudfront|🇺🇸直连|yes
 reality-cloudflare|🇺🇸直连|yes
 cloudfront|🇺🇸CF|no
-cloudflare|🇺🇸CF|no
 PROFILES
 
 # --- 模式 3：Reality + CloudFront 双本地节点进入 JSON 订阅 -------------------

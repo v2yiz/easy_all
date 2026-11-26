@@ -207,29 +207,24 @@ for ssl in strict full flexible off 403; do
     assert_not_contains "模式 1 ${ssl}：没有删除请求" "${log}" "DELETE "
 done
 
-# WebSockets 开关：橙云节点走 WebSocket，关闭时链路必失败，
-# 因此必须在任何 DNS/证书写入前阻断。
-for ws in off 403; do
+# 模式 1 已改为纯 Xray XHTTP（HTTP/2 回源）：不再预检 WebSockets，
+# 即使 Zone 把 WebSockets 置为 off/403 或读取失败也不得阻断，且不得发该设置请求。
+for ws in off 403 on; do
     log=$(run_strict_case strict cloudflare deploy "${ws}")
-    assert_contains "模式 1 websockets ${ws}：查询了 WebSockets 设置" "${log}" \
+    assert_not_contains "模式 1 websockets ${ws}：不请求 WebSockets 设置" "${log}" \
         "GET /zones/zoneid/settings/websockets"
-    assert_not_contains "模式 1 websockets ${ws}：不创建 DNS" "${log}" "DNS "
-    assert_not_contains "模式 1 websockets ${ws}：不签发证书" "${log}" "CERT"
-    assert_not_contains "模式 1 websockets ${ws}：非零退出" "${log}" "STATUS=0"
+    assert_contains "模式 1 websockets ${ws}：继续创建 DNS" "${log}" "DNS cf.example.com"
+    assert_contains "模式 1 websockets ${ws}：执行到证书签发" "${log}" "CERT"
+    assert_contains "模式 1 websockets ${ws}：成功结束" "${log}" "STATUS=0"
     assert_not_contains "模式 1 websockets ${ws}：没有写请求" "${log}" "POST "
-    assert_not_contains "模式 1 websockets ${ws}：没有删除请求" "${log}" "DELETE "
 done
-
-# websockets=on 必须继续，且 SSL 校验先于 WebSockets 校验。
-ws_on_log=$(run_strict_case strict cloudflare deploy on)
-assert_contains "模式 1 websockets on：继续创建 DNS" "${ws_on_log}" "DNS cf.example.com"
-assert_contains "模式 1 websockets on：执行到证书签发" "${ws_on_log}" "CERT"
-assert_contains "模式 1 websockets on：成功结束" "${ws_on_log}" "STATUS=0"
-ssl_line=$(grep -n 'settings/ssl' <<<"${ws_on_log}" | head -n 1 | cut -d: -f1)
-ws_line=$(grep -n 'settings/websockets' <<<"${ws_on_log}" | head -n 1 | cut -d: -f1)
-[[ -n "${ssl_line}" && -n "${ws_line}" ]] \
-    || fail "模式 1 websockets on：必须同时查询 SSL 与 WebSockets 设置"
-((ssl_line < ws_line)) || fail "模式 1 websockets on：SSL 校验必须早于 WebSockets 校验"
+# SSL 校验仍然保留，且仍早于 DNS 与证书。
+ssl_only_log=$(run_strict_case strict cloudflare)
+ssl_line=$(grep -n 'settings/ssl' <<<"${ssl_only_log}" | head -n 1 | cut -d: -f1)
+dns_line=$(grep -n 'DNS cf.example.com' <<<"${ssl_only_log}" | head -n 1 | cut -d: -f1)
+[[ -n "${ssl_line}" && -n "${dns_line}" ]] \
+    || fail "模式 1：必须同时查询 SSL 设置并创建 DNS 记录"
+((ssl_line < dns_line)) || fail "模式 1：SSL 校验必须早于 DNS 写入"
 
 # 模式 4：橙云节点同样依赖 WebSockets，关闭或读取失败必须在任何 DNS/证书/Origin Rule 写入前阻断。
 for ws in off 403; do
@@ -252,7 +247,8 @@ assert_contains "模式 4 websockets on：成功结束" "${mode4_ws_on_log}" "ST
 
 
 
-# 交互终端下预检失败时给 1 次重试机会：首次 off → 提示后回车 → 变为 on 则通过，仍 off 则阻断。
+# 模式 4 仍走 HTTPUpgrade（握手发 Upgrade: websocket）：交互终端下预检失败时给 1 次重试机会：
+# 首次 off → 提示后回车 → 变为 on 则通过，仍 off 则阻断。
 run_interactive_ws_retry_case() {
     local second_value=$1
     local case_dir="${TMP_DIR}/ws-retry-${second_value}"
@@ -266,10 +262,14 @@ export RUNTIME_TMP=$(printf '%q' "${case_dir}/runtime")
 export EASY_ALL_STATE_DIR_OVERRIDE=$(printf '%q' "${case_dir}/state")
 export EASY_ALL_CERT_DIR_OVERRIDE=$(printf '%q' "${case_dir}/state/certs")
 export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE=$(printf '%q' "${case_dir}/state/subscriptions")
-source $(printf '%q' "${ROOT_DIR}/profiles/cloudflare.sh")
+source $(printf '%q' "${ROOT_DIR}/profiles/reality-cloudflare.sh")
 CF_ZONE=example.com
 VPS_PUBLIC_IPV4=203.0.113.10
 CF_NODE_DOMAIN=cf.example.com
+DIRECT_DOMAIN=node.example.com
+SUBSCRIPTION_DOMAIN=cf.example.com
+ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef
+SUBSCRIPTION_MODE=deploy
 CLOUDFLARE_API_TOKEN=$(printf '%q' "${TOKEN}")
 COUNT_FILE=$(printf '%q' "${count_file}")
 cloudflare_api_request() {
@@ -294,7 +294,9 @@ cloudflare_api_request() {
 }
 persist_cloudflare_token() { :; }
 dns_ensure_record() { printf 'DNS %s\n' "\$1" >>$(printf '%q' "${log}"); }
+certbot_write_cloudflare_credentials() { :; }
 cdn_issue_certificate() { printf 'CERT\n' >>$(printf '%q' "${log}"); }
+direct_ensure_origin_rule() { printf 'RULE\n' >>$(printf '%q' "${log}"); }
 apply_cloud_phase
 RETRY
     local status=0
@@ -2696,10 +2698,13 @@ INSTALL
     EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/subs/subscriptions" \
     CAMOUFLAGE_DIR="${case_dir}/subs/camouflage" \
     SINGBOX_BIN="${case_dir}/core/sing-box/sing-box" \
+    XRAY_BIN="${case_dir}/core/xray/xray" \
     CADDY_BIN="${case_dir}/core/caddy/caddy" \
     SINGBOX_SERVICE=easy_all-singbox.service \
+    XRAY_SERVICE=easy_all-xray.service \
     CADDY_SERVICE=easy_all-caddy.service \
     SINGBOX_SERVICE_FILE="${case_dir}/units/easy_all-singbox.service" \
+    XRAY_SERVICE_FILE="${case_dir}/units/easy_all-xray.service" \
     CADDY_SERVICE_FILE="${case_dir}/units/easy_all-caddy.service" \
         bash -c '
             source "$1/profiles/reality-cloudflare.sh"
@@ -3656,6 +3661,168 @@ assert_contains "模式 5 端口预检包含 443" "${xhttp_ports}" "443"
 assert_contains "模式 5 端口预检包含回环 10086" "${xhttp_ports}" "10086"
 assert_contains "模式 5 端口预检包含伪装回环 9443" "${xhttp_ports}" "9443"
 assert_not_contains "模式 5 端口预检不包含 8443" "${xhttp_ports}" "8443"
+
+# --- 14. 模式 1 纯 Xray 后端：旧版 sing-box 残留拦截 ---------------------------
+# 旧装（仅有 sing-box）不得被任何写配置/重载/CDN 重载命令接管：一律在副作用前阻断。
+run_legacy_singbox_case() { # $1=guard-xray|guard|edit-sub|update-core
+    local case_name=$1 case_dir="${TMP_DIR}/cf-legacy-${1}"
+    local script="${case_dir}/run.sh" log="${case_dir}/run.log" status=0
+    mkdir -p "${case_dir}/runtime" "${case_dir}/state"
+    cat >"${script}" <<LEGACY
+set -Eeuo pipefail
+export RUNTIME_TMP=$(printf '%q' "${case_dir}/runtime")
+export EASY_ALL_STATE_DIR_OVERRIDE=$(printf '%q' "${case_dir}/state")
+export EASY_ALL_CERT_DIR_OVERRIDE=$(printf '%q' "${case_dir}/state/certs")
+export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE=$(printf '%q' "${case_dir}/state/subscriptions")
+export XRAY_BIN=$(printf '%q' "${case_dir}/xray/xray")
+export SINGBOX_BIN=$(printf '%q' "${case_dir}/singbox/sing-box")
+export SINGBOX_SERVICE_FILE=$(printf '%q' "${case_dir}/systemd/easy_all-singbox.service")
+export CADDY_CONFIG=$(printf '%q' "${case_dir}/Caddyfile")
+source $(printf '%q' "${ROOT_DIR}/profiles/cloudflare.sh")
+CF_ZONE=example.com
+CF_NODE_DOMAIN=cf.example.com
+SUBSCRIPTION_MODE=deploy
+ALLOWED_TOKENS='{"owner":"token-abcdefgh"}'
+require_root() { :; }
+acquire_runtime_write_lock() { :; }
+collect_installed_state() { :; }
+snapshot_subscription_update() { printf 'SNAPSHOT\\n'; }
+cloudflare_write_subscriptions() { printf 'SUBS-WRITE\\n'; }
+write_runtime_config() { printf 'CONFIG-WRITE\\n'; }
+runtime_reload_caddy() { printf 'CADDY-RELOAD\\n'; }
+runtime_download_proxy_core() { printf 'DOWNLOAD-XRAY\\n'; }
+download_caddy() { printf 'DOWNLOAD-CADDY\\n'; }
+systemctl() { printf 'SYSTEMCTL %s\\n' "\$*"; }
+case $(printf '%q' "${case_name}") in
+guard-xray)
+    install -d "\${XRAY_BIN%/*}"
+    printf '#!/bin/sh\\n' >"\${XRAY_BIN}"
+    chmod 0755 "\${XRAY_BIN}"
+    cloudflare_require_xray_binary ;;
+guard)
+    install -d "\${SINGBOX_BIN%/*}"
+    : >"\${SINGBOX_BIN}"
+    cloudflare_require_xray_binary ;;
+edit-sub)
+    install -d "\${SINGBOX_BIN%/*}"
+    : >"\${SINGBOX_BIN}"
+    update_subscription ;;
+update-core)
+    install -d "\${SINGBOX_BIN%/*}"
+    : >"\${SINGBOX_BIN}"
+    update_current_core ;;
+esac
+printf 'REACHED\\n'
+LEGACY
+    bash "${script}" >"${log}" 2>&1 || status=$?
+    printf 'STATUS=%s\n' "${status}" >>"${log}"
+    cat "${log}"
+}
+
+legacy_guard_xray=$(run_legacy_singbox_case guard-xray)
+assert_contains "Xray 二进制存在时维护命令不拦截" "${legacy_guard_xray}" "REACHED"
+assert_equal "Xray 二进制存在时退出 0" "STATUS=0" \
+    "$(grep '^STATUS=' <<<"${legacy_guard_xray}")"
+legacy_guard=$(run_legacy_singbox_case guard)
+assert_contains "旧版 sing-box 残留必须阻断" "${legacy_guard}" "旧版 sing-box 模式 1"
+assert_not_contains "旧版残留阻断不引导 update-core" "${legacy_guard}" "update-core"
+assert_not_contains "旧版残留阻断不继续执行" "${legacy_guard}" "REACHED"
+assert_contains "旧版残留阻断非零退出" "${legacy_guard}" "STATUS=1"
+
+legacy_edit_sub=$(run_legacy_singbox_case edit-sub)
+assert_contains "edit-sub 在旧版残留时阻断" "${legacy_edit_sub}" "旧版 sing-box 模式 1"
+assert_not_contains "edit-sub 阻断后不写订阅" "${legacy_edit_sub}" "SUBS-WRITE"
+assert_not_contains "edit-sub 阻断后不改配置" "${legacy_edit_sub}" "CONFIG-WRITE"
+assert_not_contains "edit-sub 阻断后不重载 Caddy" "${legacy_edit_sub}" "CADDY-RELOAD"
+assert_contains "edit-sub 阻断非零退出" "${legacy_edit_sub}" "STATUS=1"
+
+legacy_update_core=$(run_legacy_singbox_case update-core)
+assert_contains "update-core 在旧版残留时阻断" "${legacy_update_core}" "旧版 sing-box 安装残留"
+assert_not_contains "update-core 阻断后不下载 Xray" "${legacy_update_core}" "DOWNLOAD-XRAY"
+assert_not_contains "update-core 阻断后不换核" "${legacy_update_core}" "REACHED"
+assert_contains "update-core 阻断非零退出" "${legacy_update_core}" "STATUS=1"
+
+# 纯 Xray 安装但二进制意外丢失：必须引导 update-core 修复，而不是要求重装。
+missing_dir="${TMP_DIR}/cf-legacy-missing"
+mkdir -p "${missing_dir}/runtime"
+missing_output=$(
+    RUNTIME_TMP="${missing_dir}/runtime" \
+    EASY_ALL_STATE_DIR_OVERRIDE="${missing_dir}/state" \
+    XRAY_BIN="${missing_dir}/xray/xray" \
+    SINGBOX_BIN="${missing_dir}/singbox/sing-box" \
+    SINGBOX_SERVICE_FILE="${missing_dir}/systemd/easy_all-singbox.service" \
+        bash -c '
+            source "$1/profiles/cloudflare.sh"
+            CF_ZONE=example.com
+            CF_NODE_DOMAIN=cf.example.com
+            cloudflare_require_xray_binary
+        ' _ "${ROOT_DIR}" 2>&1
+) && fail "纯 Xray 安装缺二进制时维护命令必须失败"
+assert_contains "纯 Xray 缺二进制引导 update-core" "${missing_output}" "update-core"
+assert_not_contains "纯 Xray 缺二进制不点名旧版 sing-box" "${missing_output}" "旧版 sing-box"
+legacy_apply_body=$(sed -n '/^apply_easy_all() {/,/^}/p' "${ROOT_DIR}/lib/cloudflare-mode.sh")
+assert_contains "apply 调用旧装拦截" "${legacy_apply_body}" "cloudflare_require_xray_binary"
+apply_guard_line=$(grep -n 'cloudflare_require_xray_binary' <<<"${legacy_apply_body}" | head -n 1 | cut -d: -f1)
+apply_snapshot_line=$(grep -n 'snapshot_subscription_update' <<<"${legacy_apply_body}" | head -n 1 | cut -d: -f1)
+[[ -n "${apply_guard_line}" && -n "${apply_snapshot_line}" ]] \
+    || fail "apply 缺少拦截或快照定位行"
+((apply_guard_line < apply_snapshot_line)) || fail "apply 的拦截必须早于订阅快照"
+legacy_apply_cloud_body=$(sed -n '/^apply_cloud_resources() {/,/^}/p' "${ROOT_DIR}/lib/cloudflare-mode.sh")
+assert_contains "apply-cloud 调用旧装拦截" "${legacy_apply_cloud_body}" \
+    "cloudflare_require_xray_binary"
+legacy_renew_body=$(sed -n '/^renew_certificate() {/,/^}/p' "${ROOT_DIR}/lib/cloudflare-mode.sh")
+assert_contains "renew-cert 调用旧装拦截" "${legacy_renew_body}" "cloudflare_require_xray_binary"
+legacy_edit_body=$(sed -n '/^update_subscription() {/,/^}/p' "${ROOT_DIR}/lib/cloudflare-mode.sh")
+edit_guard_line=$(grep -n 'cloudflare_require_xray_binary' <<<"${legacy_edit_body}" | head -n 1 | cut -d: -f1)
+edit_prompt_line=$(grep -n 'prompt_value' <<<"${legacy_edit_body}" | head -n 1 | cut -d: -f1)
+[[ -n "${edit_guard_line}" && -n "${edit_prompt_line}" ]] \
+    || fail "edit-sub 缺少拦截或提示定位行"
+((edit_guard_line < edit_prompt_line)) || fail "edit-sub 的拦截必须早于交互提示"
+
+# --- 15. 模式 1 公网订阅验收标记：只能是 XHTTP stream-up ----------------------
+run_public_subscription_case() { # $1=ready|httpupgrade|no-mode
+    local case_dir="${TMP_DIR}/cf-public-$1"
+    local script="${case_dir}/run.sh" log="${case_dir}/run.log" status=0
+    mkdir -p "${case_dir}/runtime"
+    cat >"${script}" <<PUBLIC
+set -Eeuo pipefail
+export RUNTIME_TMP=$(printf '%q' "${case_dir}/runtime")
+export EASY_ALL_STATE_DIR_OVERRIDE=$(printf '%q' "${case_dir}/state")
+source $(printf '%q' "${ROOT_DIR}/profiles/cloudflare.sh")
+CF_ZONE=example.com
+CF_NODE_DOMAIN=cf.example.com
+ALLOWED_TOKENS='{"owner":"token-abcdefgh"}'
+cdn_derive_runtime_fields
+link='vless://uuid@cf.example.com:443?encryption=none&security=tls&type=xhttp&sni=cf.example.com&mode=stream-up#CF'
+yaml=\$(printf 'network: xhttp\\nmode: stream-up\\n')
+case $(printf '%q' "$1") in
+httpupgrade)
+    link='vless://uuid@cf.example.com:443?encryption=none&security=tls&type=httpupgrade&alpn=http%2F1.1&sni=cf.example.com#CF'
+    yaml=\$(printf 'network: ws\\nv2ray-http-upgrade: true\\n') ;;
+no-mode)
+    link='vless://uuid@cf.example.com:443?encryption=none&security=tls&type=xhttp&sni=cf.example.com#CF' ;;
+esac
+public_dns_curl() {
+    case "\$*" in
+    *flag=clash*) printf '%s\\n' "\${yaml}" ;;
+    *) printf '%s' "\$(printf '%s' "\${link}" | openssl base64 -A)" ;;
+    esac
+}
+cdn_public_subscription_ok && printf 'PUBLIC-OK\\n'
+PUBLIC
+    bash "${script}" >"${log}" 2>&1 || status=$?
+    printf 'STATUS=%s\n' "${status}" >>"${log}"
+    cat "${log}"
+}
+
+public_ready=$(run_public_subscription_case ready)
+assert_contains "XHTTP 订阅产物通过公网验收" "${public_ready}" "PUBLIC-OK"
+assert_contains "XHTTP 订阅公网验收退出 0" "${public_ready}" "STATUS=0"
+public_old=$(run_public_subscription_case httpupgrade)
+assert_not_contains "旧 httpupgrade 产物不得通过公网验收" "${public_old}" "PUBLIC-OK"
+assert_contains "旧 httpupgrade 产物公网验收非零退出" "${public_old}" "STATUS=1"
+public_no_mode=$(run_public_subscription_case no-mode)
+assert_not_contains "缺少 mode=stream-up 不得通过公网验收" "${public_no_mode}" "PUBLIC-OK"
 
 printf 'ok - 凭据、strict 顺序、DNS 归属、证书生效与服务编排测试通过\n'
 

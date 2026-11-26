@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 模式 5（reality-cloudflare-xhttp）核心与渲染（design §2.1 / §2.2）：
-# 锁定版本与摘要链、Xray 服务端配置结构、密钥对解析三形态、客户端节点与私网阻断清单。
-# 外部边界（下载、二进制）用替身；断言只针对可观察产物与失败路径。
+# 模式 1（cloudflare，纯 XHTTP）与模式 5（reality-cloudflare-xhttp）核心与渲染
+# （design v2 §2.1 / §2.2）：锁定版本与摘要链、Xray 服务端配置结构、密钥对解析三形态、
+# 客户端节点与私网阻断清单。外部边界（下载、二进制）用替身；断言只针对可观察产物与失败路径。
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
@@ -57,26 +57,44 @@ source "${XRAY_CORE}"
 # shellcheck source=lib/xray-runtime.sh
 source "${XRAY_RUNTIME}"
 
-# --- 锁定契约 ---------------------------------------------------------------
-assert_equal "Xray 锁定版本" "26.11.9" "${XRAY_VERSION}"
-assert_equal "Xray 版本接口" "26.11.9" "$(xray_version)"
-assert_equal "Xray amd64 SHA256" \
-    "b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82" \
-    "$(xray_expected_sha256 amd64)"
-assert_equal "Xray arm64 SHA256" \
-    "64ed6858982a7f5eb85d88b811089063bd4f17561f4c8f44e0f1dc8e6f6430be" \
-    "$(xray_expected_sha256 arm64)"
+# --- 最新 Release 契约（不锁定版本与固定 SHA256） ----------------------------
+[[ -z "${XRAY_VERSION:-}" ]] || fail "Xray 不应再定义锁定版本常量 XRAY_VERSION"
+! declare -F xray_expected_sha256 >/dev/null 2>&1 || fail "Xray 不应再定义固定摘要函数 xray_expected_sha256"
 assert_equal "amd64 映射" "amd64" "$(xray_arch x86_64)"
 assert_equal "aarch64 映射" "arm64" "$(xray_arch aarch64)"
 assert_equal "amd64 归档名" "Xray-linux-64.zip" "$(xray_archive_name amd64)"
 assert_equal "arm64 归档名" "Xray-linux-arm64-v8a.zip" "$(xray_archive_name arm64)"
 assert_equal "amd64 归档 URL" \
-    "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-linux-64.zip" \
-    "$(xray_archive_url amd64)"
+    "https://github.com/XTLS/Xray-core/releases/download/v26.12.1/Xray-linux-64.zip" \
+    "$(xray_archive_url amd64 26.12.1)"
 assert_equal "amd64 清单 URL" \
-    "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-linux-64.zip.dgst" \
-    "$(xray_digest_url amd64)"
+    "https://github.com/XTLS/Xray-core/releases/download/v26.12.1/Xray-linux-64.zip.dgst" \
+    "$(xray_digest_url amd64 26.12.1)"
+expect_fail "归档 URL 缺版本号必须失败" xray_archive_url amd64
+expect_fail "清单 URL 缺版本号必须失败" xray_digest_url amd64
 expect_fail "未知架构" xray_arch mips
+
+# 最新版本标签解析：仅接受 /releases/tag/vX.Y(.Z)，拒绝预发布与异常跳转。
+assert_equal "解析最新正式版标签" "26.12.1" "$(
+    curl() { printf 'https://github.com/XTLS/Xray-core/releases/tag/v26.12.1\n'; }
+    xray_latest_version
+)"
+assert_equal "解析最新标签自动去尾斜杠与查询串" "27.1" "$(
+    curl() { printf 'https://github.com/XTLS/Xray-core/releases/tag/v27.1/?foo=bar\n'; }
+    xray_latest_version
+)"
+expect_fail "预发布标签必须被拒绝" bash -c '
+    source "$1/lib/log.sh"; source "$1/lib/xray-core.sh"
+    curl() { printf "https://github.com/XTLS/Xray-core/releases/tag/v26.12.1-rc1\n"; }
+    xray_latest_version' _ "${ROOT_DIR}"
+expect_fail "未跳转到 tag 页面必须被拒绝" bash -c '
+    source "$1/lib/log.sh"; source "$1/lib/xray-core.sh"
+    curl() { printf "https://github.com/XTLS/Xray-core/releases\n"; }
+    xray_latest_version' _ "${ROOT_DIR}"
+expect_fail "查询最新版本失败必须中止" bash -c '
+    source "$1/lib/log.sh"; source "$1/lib/xray-core.sh"
+    curl() { return 1; }
+    xray_latest_version' _ "${ROOT_DIR}"
 
 # 版本比较：MLKEM 门槛 26.9.8。
 xray_version_at_least 26.11.9 26.9.8 || fail "26.11.9 应 >= 26.9.8"
@@ -251,6 +269,86 @@ jq 'del(.inbounds[0].settings.clients[0].flow)' "${ready_config}" \
     >"${TMP_DIR}/xray-no-flow.json"
 expect_fail "缺少 vision 流控必须被拒" xray_config_structure_ok "${TMP_DIR}/xray-no-flow.json"
 
+# --- 模式 1（cloudflare）：纯 XHTTP，无 Reality -------------------------------
+MODE1_ENV=(
+    PROTOCOL=cloudflare
+    CF_NODE_DOMAIN=cf.example.com
+    CF_NODE_PREFIX=CF
+    VLESS_UUID=11111111-2222-4333-8444-555555555555
+    VLESS_PATH=/vless-0123456789ab
+)
+render_mode1() { # $1=目标文件 $2=blocked
+    env "${MODE1_ENV[@]}" bash -c '
+        set -Eeuo pipefail
+        source "$1/lib/log.sh"; source "$1/lib/xray-core.sh"; source "$1/lib/xray-runtime.sh"
+        RUNTIME_TMP=$2
+        render_xray_config "$3" "$4"' _ "${ROOT_DIR}" "${RUNTIME_TMP}" "$1" "${2:-0}"
+}
+# 结构校验读 PROTOCOL：用子 shell 赋值，避免污染本进程后续的模式 5 断言。
+mode1_structure_ok() { # $1=文件 $2=blocked
+    ( PROTOCOL=cloudflare; xray_config_structure_ok "$1" "${2:-}" )
+}
+
+mode1_ready="${TMP_DIR}/xray-mode1.json"
+render_mode1 "${mode1_ready}" 0 || fail "模式 1 服务端配置渲染失败"
+assert_equal "模式 1 只有 XHTTP 入站" "vless-cdn-in" \
+    "$(jq -r '[.inbounds[].tag] | join(",")' "${mode1_ready}")"
+assert_equal "模式 1 XHTTP 回环 10086" "127.0.0.1:10086" \
+    "$(jq -r '.inbounds[0] | "\(.listen):\(.port)"' "${mode1_ready}")"
+assert_equal "模式 1 XHTTP 服务端 mode auto" "auto" \
+    "$(jq -r '.inbounds[0].streamSettings.xhttpSettings.mode' "${mode1_ready}")"
+assert_equal "模式 1 xPaddingBytes 在 extra" "100-1000" \
+    "$(jq -r '.inbounds[0].streamSettings.xhttpSettings.extra.xPaddingBytes' "${mode1_ready}")"
+assert_equal "模式 1 scStreamUpServerSecs 在 extra" "20-80" \
+    "$(jq -r '.inbounds[0].streamSettings.xhttpSettings.extra.scStreamUpServerSecs' "${mode1_ready}")"
+assert_equal "模式 1 不含 vless-reality-in" "0" \
+    "$(jq '[.inbounds[] | select(.tag == "vless-reality-in")] | length' "${mode1_ready}")"
+mode1_structure_ok "${mode1_ready}" 0 || fail "模式 1 就绪态必须通过结构校验"
+# 把模式 5 的 Reality 入站拼进模式 1 配置：纯 XHTTP 模式下必须被结构校验拒绝。
+jq --slurpfile r "${ready_config}" '.inbounds += [$r[0].inbounds[0]]' \
+    "${mode1_ready}" >"${TMP_DIR}/xray-mode1-reality.json" \
+    || fail "无法构造模式 1 混入 Reality 的负例"
+
+mode1_blocked="${TMP_DIR}/xray-mode1-blocked.json"
+render_mode1 "${mode1_blocked}" 1 || fail "模式 1 阻断态渲染失败"
+assert_equal "模式 1 阻断态入站为空数组" "[]" "$(jq -c '.inbounds' "${mode1_blocked}")"
+mode1_structure_ok "${mode1_blocked}" 1 || fail "模式 1 阻断态必须通过结构校验"
+expect_fail "模式 1 阻断态按就绪态校验必须被拒" mode1_structure_ok "${mode1_blocked}" 0
+expect_fail "模式 1 就绪态按阻断态校验必须被拒" mode1_structure_ok "${mode1_ready}" 1
+expect_fail "模式 1 就绪态缺 vless-cdn-in 必须被拒" bash -c '
+    set -Eeuo pipefail
+    source "$1/lib/log.sh"; source "$1/lib/xray-core.sh"; source "$1/lib/xray-runtime.sh"
+    PROTOCOL=cloudflare jq ".inbounds = []" "$2" >"$3"
+    PROTOCOL=cloudflare xray_config_structure_ok "$3" 0' \
+    _ "${ROOT_DIR}" "${mode1_ready}" "${TMP_DIR}/xray-mode1-empty.json"
+expect_fail "模式 1 混入 vless-reality-in 必须被拒" bash -c '
+    set -Eeuo pipefail
+    source "$1/lib/log.sh"; source "$1/lib/xray-core.sh"; source "$1/lib/xray-runtime.sh"
+    PROTOCOL=cloudflare xray_config_structure_ok "$2" 0' \
+    _ "${ROOT_DIR}" "${TMP_DIR}/xray-mode1-reality.json"
+expect_fail "未知 PROTOCOL 必须被拒" bash -c '
+    set -Eeuo pipefail
+    source "$1/lib/log.sh"; source "$1/lib/xray-core.sh"; source "$1/lib/xray-runtime.sh"
+    PROTOCOL=bogus xray_config_structure_ok "$2" 0' _ "${ROOT_DIR}" "${mode1_ready}"
+
+# 模式 1 的客户端产物与模式 5 共用同一套 XHTTP 构造器，但不得带 Reality 字段。
+mode1_link=$(env "${MODE1_ENV[@]}" bash -c '
+    set -Eeuo pipefail
+    source "$1/lib/log.sh"; source "$1/lib/xray-core.sh"; source "$1/lib/xray-runtime.sh"
+    build_xray_xhttp_link' _ "${ROOT_DIR}") || fail "模式 1 客户端链接渲染失败"
+assert_contains "模式 1 链接 type=xhttp" "${mode1_link}" 'type=xhttp&'
+assert_contains "模式 1 链接 mode=stream-up" "${mode1_link}" '&mode=stream-up&'
+assert_contains "模式 1 链接 alpn=h2" "${mode1_link}" '&alpn=h2&'
+assert_contains "模式 1 链接 host 为节点域名" "${mode1_link}" '&host=cf.example.com&'
+assert_not_contains "模式 1 链接不带 Reality" "${mode1_link}" 'security=reality'
+mode1_node=$(env "${MODE1_ENV[@]}" bash -c '
+    set -Eeuo pipefail
+    source "$1/lib/log.sh"; source "$1/lib/xray-core.sh"; source "$1/lib/xray-runtime.sh"
+    build_mihomo_xray_xhttp_node' _ "${ROOT_DIR}") || fail "模式 1 Mihomo 节点渲染失败"
+assert_contains "模式 1 Mihomo 节点 network xhttp" "${mode1_node}" 'network: xhttp'
+assert_contains "模式 1 Mihomo 节点 mode stream-up" "${mode1_node}" 'mode: stream-up'
+assert_not_contains "模式 1 Mihomo 节点不带 reality-opts" "${mode1_node}" 'reality-opts:'
+
 # --- 客户端节点 -------------------------------------------------------------
 links=$(env "${FIXTURE_ENV[@]}" bash -c '
     set -Eeuo pipefail
@@ -286,7 +384,7 @@ assert_contains "Mihomo 直连节点 network tcp" "${nodes}" 'network: tcp'
 assert_contains "Mihomo 直连节点 ip-version ipv4" "${nodes}" 'ip-version: ipv4'
 assert_contains "Mihomo 直连节点 vision" "${nodes}" 'flow: xtls-rprx-vision'
 assert_contains "Mihomo 直连节点 reality-opts" "${nodes}" 'reality-opts:'
-assert_contains "Mihomo 直连节点 MLKEM 开关（26.11.9 >= 26.9.8）" "${nodes}" \
+assert_contains "Mihomo 直连节点 MLKEM 开关（离线默认 >= 26.9.8）" "${nodes}" \
     'support-x25519mlkem768: true'
 assert_contains "Mihomo 橙云节点 network xhttp" "${nodes}" 'network: xhttp'
 assert_contains "Mihomo 橙云节点 no-grpc-header false" "${nodes}" 'no-grpc-header: false'
@@ -299,13 +397,13 @@ assert_not_contains "Mihomo 节点不泄露源站密钥" "${nodes}" '0123456789a
 legacy_links=$(env "${FIXTURE_ENV[@]}" bash -c '
     set -Eeuo pipefail
     source "$1/lib/log.sh"; source "$1/lib/xray-core.sh"; source "$1/lib/xray-runtime.sh"
-    xray_version() { printf "26.9.7\n"; }
+    xray_binary_version() { printf "26.9.7\n"; }
     build_xray_reality_link' _ "${ROOT_DIR}") || fail "旧版本链接渲染失败"
 assert_contains "旧版本链接追加 mlkem=0" "${legacy_links}" '&mlkem=0#'
 legacy_node=$(env "${FIXTURE_ENV[@]}" bash -c '
     set -Eeuo pipefail
     source "$1/lib/log.sh"; source "$1/lib/xray-core.sh"; source "$1/lib/xray-runtime.sh"
-    xray_version() { printf "26.9.7\n"; }
+    xray_binary_version() { printf "26.9.7\n"; }
     build_mihomo_xray_reality_node' _ "${ROOT_DIR}") || fail "旧版本节点渲染失败"
 assert_not_contains "旧版本不写 PQ 开关" "${legacy_node}" 'support-x25519mlkem768'
 
@@ -347,12 +445,12 @@ fake_archive="${TMP_DIR}/${archive_name}"
 python3 -m zipfile -c "${fake_archive}" "${TMP_DIR}/zip/xray" >/dev/null \
     || fail "无法构造测试归档"
 fake_sha=$(openssl dgst -sha256 "${fake_archive}" | awk '{print $NF}')
-frozen_sha=$(xray_expected_sha256 "${TEST_ARCH}")
+wrong_sha=$(printf '0%.0s' {1..64})
 curl_log="${TMP_DIR}/xray-curl.log"
 STUB_DIGEST_FILE="${TMP_DIR}/digest.txt"
 
-xray_download_case() { # $1=.dgst 内容 $2=期望摘要覆盖（空=用锁定常量） $3=版本替身（空=正确）
-    local digest=$1 override=$2 bad_version=${3:-} status=0
+xray_download_case() { # $1=.dgst 内容 $2=latest 跳转 URL（空=正常 v26.11.9） $3=版本替身（空=正确）
+    local digest=$1 latest_url=${2:-https://github.com/XTLS/Xray-core/releases/tag/v26.11.9} bad_version=${3:-} status=0
     printf '%s\n' "${digest}" >"${STUB_DIGEST_FILE}"
     (
         : >"${curl_log}"
@@ -373,10 +471,14 @@ xray_download_case() { # $1=.dgst 内容 $2=期望摘要覆盖（空=用锁定�
                 esac
             done
             printf '%s\n' "${url}" >>"${curl_log}"
-            [[ -n "${out}" ]] || return 1
             case "${url}" in
-            *.zip.dgst) cp "${STUB_DIGEST_FILE}" "${out}" ;;
-            *.zip) cp "${fake_archive}" "${out}" ;;
+            */releases/latest)
+                [[ "${latest_url}" != "FAIL" ]] || return 1
+                printf '%s' "${latest_url}"
+                return 0
+                ;;
+            *.zip.dgst) [[ -n "${out}" ]] || return 1; cp "${STUB_DIGEST_FILE}" "${out}" ;;
+            *.zip) [[ -n "${out}" ]] || return 1; cp "${fake_archive}" "${out}" ;;
             *) return 1 ;;
             esac
         }
@@ -392,9 +494,6 @@ xray_download_case() { # $1=.dgst 内容 $2=期望摘要覆盖（空=用锁定�
             done
             python3 -m zipfile -e "${archive}" "${dest}"
         }
-        if [[ -n "${override}" ]]; then
-            xray_expected_sha256() { printf '%s\n' "${override}"; }
-        fi
         if [[ -n "${bad_version}" ]]; then
             xray_binary_version() {
                 if [[ -f "$1" ]]; then
@@ -420,30 +519,34 @@ assert_kept() {
 }
 
 reset_old_xray
-assert_equal "清单与锁定常量一致时安装成功" "0" \
+assert_equal "解析最新版本并校验 .dgst 一致时安装成功" "0" \
     "$(xray_download_case "MD5= x
-SHA2-256= ${fake_sha}" "${fake_sha}")"
+SHA2-256= ${fake_sha}")"
 [[ -x "${XRAY_BIN}" ]] || fail "下载后 xray 必须可执行"
 assert_equal "安装后版本" "26.11.9" "$(xray_binary_version "${XRAY_BIN}")"
-assert_contains "先取 .dgst 清单" "$(<"${curl_log}")" "${archive_name}.dgst"
-assert_contains "再取本机架构归档" "$(<"${curl_log}")" "${archive_name}"
+assert_contains "先查最新 release 跳转" "$(<"${curl_log}")" "/releases/latest"
+assert_contains "再取对应版本 .dgst 清单" "$(<"${curl_log}")" "/v26.11.9/${archive_name}.dgst"
+assert_contains "再取同版本本机架构归档" "$(<"${curl_log}")" "/v26.11.9/${archive_name}"
 
 reset_old_xray
-assert_kept "清单摘要与锁定常量不一致" \
-    "$(xray_download_case "SHA2-256= ${frozen_sha}" "")"
+assert_kept "最新版本查询失败" \
+    "$(xray_download_case "SHA2-256= ${fake_sha}" "FAIL")"
+reset_old_xray
+assert_kept "最新版本为预发布标签" \
+    "$(xray_download_case "SHA2-256= ${fake_sha}" "https://github.com/XTLS/Xray-core/releases/tag/v26.12.0-rc1")"
 reset_old_xray
 assert_kept "归档与清单摘要不符" \
-    "$(xray_download_case "SHA2-256= ${frozen_sha}" "${frozen_sha}")"
+    "$(xray_download_case "SHA2-256= ${wrong_sha}")"
 reset_old_xray
 assert_kept "清单缺少 SHA2-256 行" \
-    "$(xray_download_case "SHA256= ${fake_sha}" "${fake_sha}")"
+    "$(xray_download_case "SHA256= ${fake_sha}")"
 reset_old_xray
 assert_kept "清单 SHA2-256 重复" \
     "$(xray_download_case "SHA2-256= ${fake_sha}
-SHA2-256= ${fake_sha}" "${fake_sha}")"
+SHA2-256= ${fake_sha}")"
 reset_old_xray
-assert_kept "候选版本不符" \
-    "$(xray_download_case "SHA2-256= ${fake_sha}" "${fake_sha}" "26.9.7")"
+assert_kept "候选版本与解析标签不符" \
+    "$(xray_download_case "SHA2-256= ${fake_sha}" "" "26.9.7")"
 
 # --- 接线 -------------------------------------------------------------------
 assert_contains "runtime.manifest 登记 xray 核心" "$(<"${ROOT_DIR}/runtime.manifest")" "lib/xray-core.sh"
@@ -452,4 +555,4 @@ assert_contains "runtime.manifest 登记模式 5 Profile" "$(<"${ROOT_DIR}/runti
     "profiles/reality-cloudflare-xhttp.sh"
 assert_contains "npm test 串入 Xray 渲染测试" "$(<"${ROOT_DIR}/package.json")" "test/test_xray_render.sh"
 
-printf 'ok - Xray 核心与模式 5 渲染测试通过\n'
+printf 'ok - Xray 核心与模式 1/5 渲染测试通过\n'

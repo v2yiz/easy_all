@@ -1123,16 +1123,20 @@ run_incomplete_uninstall() { # 零参数入口
     local status=0
     local case_dir="${TMP_DIR}/incomplete-uninstall"
     mkdir -p "${case_dir}/state" "${case_dir}/subscriptions/data" \
-        "${case_dir}/bin" "${case_dir}/singbox" "${case_dir}/caddy" \
+        "${case_dir}/bin" "${case_dir}/singbox" "${case_dir}/xray" "${case_dir}/caddy" \
         "${case_dir}/units"
     : >"${case_dir}/state/state.env"
+    : >"${case_dir}/xray/xray"
+    : >"${case_dir}/units/easy_all-xray.service"
     EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
     EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/subscriptions/data" \
     COMMAND_INSTALL_DIR="${case_dir}/bin" \
     COMMAND_PATH="${case_dir}/bin/easy_all" \
     SINGBOX_BIN="${case_dir}/singbox/sing-box" \
+    XRAY_BIN="${case_dir}/xray/xray" \
     CADDY_BIN="${case_dir}/caddy/caddy" \
     SINGBOX_SERVICE_FILE="${case_dir}/units/easy_all-singbox.service" \
+    XRAY_SERVICE_FILE="${case_dir}/units/easy_all-xray.service" \
     CADDY_SERVICE_FILE="${case_dir}/units/easy_all-caddy.service" \
     bash -c '
         set -Eeuo pipefail
@@ -1432,9 +1436,7 @@ install_singbox_service() { :; }
 STUB
 cat >"${verify_stub_repo}/lib/xray-core.sh" <<'STUB'
 EASY_ALL_XRAY_CORE_LOADED=1
-XRAY_VERSION=26.11.9
-xray_version() { printf '%s\n' "${XRAY_VERSION}"; }
-xray_binary_version() { [[ -x "$1" ]] && printf '%s\n' "${XRAY_VERSION}"; }
+xray_binary_version() { [[ -x "$1" ]] && printf '26.11.9\n'; }
 xray_installed_version() { xray_binary_version "${XRAY_BIN}"; }
 download_xray() {
     install -d -m 0755 "$(dirname "${XRAY_BIN}")"
@@ -1922,6 +1924,13 @@ run_uninstall_entry() { # $1=label $2=profile $3=protocol $4=归注释 $5=cloud_
     : >"${case_dir}/caddy/caddy"
     : >"${case_dir}/units/easy_all-singbox.service"
     : >"${case_dir}/units/easy_all-caddy.service"
+    case "${profile}" in
+    cloudflare | reality-cloudflare | reality-cloudflare-xhttp)
+        mkdir -p "${case_dir}/xray"
+        : >"${case_dir}/xray/xray"
+        : >"${case_dir}/units/easy_all-xray.service"
+        ;;
+    esac
     : >"${case_dir}/refusals.log"
     : >"${case_dir}/curl.log"
     : >"${case_dir}/aws.log"
@@ -1961,7 +1970,9 @@ run_uninstall_entry() { # $1=label $2=profile $3=protocol $4=归注释 $5=cloud_
         EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/state/certs" \
         SINGBOX_BIN="${case_dir}/singbox/sing-box" \
         CADDY_BIN="${case_dir}/caddy/caddy" \
+        XRAY_BIN="${case_dir}/xray/xray" \
         SINGBOX_SERVICE_FILE="${case_dir}/units/easy_all-singbox.service" \
+        XRAY_SERVICE_FILE="${case_dir}/units/easy_all-xray.service" \
         CADDY_SERVICE_FILE="${case_dir}/units/easy_all-caddy.service" \
             bash -c '
                 set -Eeuo pipefail
@@ -1997,11 +2008,13 @@ uninstall_entry_value() { # $1=输出 $2=字段
 assert_uninstall_entry_cleanup() {
     TESTS_ASSERTED=$((TESTS_ASSERTED + 1)) # $1=label $2=case_dir
     local label=$1 case_dir=$2 path
-    for path in state websub singbox caddy; do
+    for path in state websub singbox caddy xray; do
         [[ ! -e "${case_dir}/${path}" ]] || fail "${label}: 本机路径未被删除：${path}"
     done
     [[ ! -e "${case_dir}/units/easy_all-singbox.service" ]] \
         || fail "${label}: sing-box 单元文件未删除"
+    [[ ! -e "${case_dir}/units/easy_all-xray.service" ]] \
+        || fail "${label}: Xray 单元文件未删除"
     [[ ! -e "${case_dir}/units/easy_all-caddy.service" ]] \
         || fail "${label}: Caddy 单元文件未删除"
 }
@@ -2036,11 +2049,10 @@ assert_contains "模式 4 清单点名节点/订阅 A 记录" "${entry_combined_
 assert_uninstall_entry_cleanup "模式 4" "${entry_combined_cf_dir}"
 assert_contains "模式 4 拒绝删除宿主命令路径" \
     "$(<"${entry_combined_cf_dir}/refusals.log")" "/usr/local/bin/easy_all"
-# 模式 4/5 共用的清理主体同时回收 easy_all-xray 单元与 Xray 安装目录（模式 4 下不存在，属安全空操作）。
+# XRAY_BIN / XRAY_SERVICE_FILE 已隔离到 case_dir：模式 4 卸载不得触及宿主或 CI 的 Xray 目录。
 assert_refusals_within "模式 4" "${entry_combined_cf_dir}/refusals.log" \
     "/usr/local/bin/easy_all" "/usr/local/lib/easy_all" \
-    "/var/www/easy_all/camouflage/index.html" \
-    "/etc/systemd/system/easy_all-xray.service" "/etc/easy_all/xray"
+    "/var/www/easy_all/camouflage/index.html"
 
 entry_cloudflare_dir="${TMP_DIR}/uninstall-entry/cloudflare"
 entry_cloudflare_output=$(run_uninstall_entry cloudflare cloudflare cloudflare "easy_all cloudflare" 0 0)
@@ -3452,6 +3464,96 @@ reality_cf_sequence=$(grep -E '^(STAGE:|IDENTITY-PERSIST|DOWNLOAD-|PREPARE-DIREC
     <<<"${reality_cf_install_all_output}")
 assert_contains "模式 4 身份先于核心下载落盘" "${reality_cf_sequence}" \
     $'STAGE:inputs\nIDENTITY-PERSIST:keypair= anytls=\nSTAGE:core\nDOWNLOAD-SINGBOX\nDOWNLOAD-CADDY\nPREPARE-DIRECT:identity=ok\nSTAGE:services'
+
+# 42c. 模式 1 从 install_all 入口走到 services 阶段：纯 Xray 后端（不下载/不安装 sing-box）。
+run_cloudflare_install_all_case() {
+    local case_dir="${TMP_DIR}/cloudflare-install-all"
+    rm -rf -- "${case_dir}"
+    mkdir -p "${case_dir}"
+    EASY_ALL_STATE_DIR_OVERRIDE="${case_dir}/state" \
+    EASY_ALL_GUARD_STATE_DIR="${case_dir}/state" \
+    EASY_ALL_GUARD_STATE_FILE="${case_dir}/state/state.env" \
+    EASY_ALL_CERT_DIR_OVERRIDE="${case_dir}/certs" \
+    EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${case_dir}/subscriptions" \
+    EASY_ALL_INSTALL_PROGRESS_FILE_OVERRIDE="${case_dir}/progress/install-progress.env" \
+    XRAY_BIN="${case_dir}/xray/xray" \
+    XRAY_SERVICE_FILE="${case_dir}/systemd/easy_all-xray.service" \
+    SINGBOX_BIN="${case_dir}/singbox/sing-box" \
+    SINGBOX_SERVICE_FILE="${case_dir}/systemd/easy_all-singbox.service" \
+    RUNTIME_TMP="${case_dir}/runtime" \
+        bash -c '
+            set -Eeuo pipefail
+            # shellcheck source=/dev/null
+            source "$1/profiles/cloudflare.sh"
+            require_root() { :; }
+            acquire_runtime_write_lock() { :; }
+            require_systemd() { :; }
+            check_platform() { :; }
+            report_host_init_state() { :; }
+            ensure_swap() { :; }
+            install_failure_begin() { :; }
+            install_progress_begin() { printf "PROGRESS-BEGIN: %s %s\n" "$1" "$2"; }
+            prepare_fresh_install() { printf "PRECHECK:%s|%s|%s|%s\n" "$1" "${2:-}" "${3:-}" "${4:-}"; }
+            snapshot_fresh_install() { :; }
+            install_packages() { :; }
+            install_certbot_deploy_hook() { :; }
+            choose_tcp_acceleration() { :; }
+            configure_tcp_acceleration() { :; }
+            configure_daily_reboot() { :; }
+            configure_ipv4_only() { :; }
+            prompt_value() { printf "%s\n" "$2"; }
+            cloudflare_collect_api_token() { :; }
+            collect_cdn_edge_address() { :; }
+            apply_cdn_edge_prefix() { :; }
+            choose_subscription_config() {
+                printf %s "{\"allowedTokens\":{\"owner\":\"token-abcdefgh\"},\"nodes\":[]}"
+            }
+            cdn_apply_subscription_config() { :; }
+            cdn_validate_install_owner_token() { :; }
+            detect_public_ipv4() { printf %s "203.0.113.10"; }
+            persist_install_identity() { printf "IDENTITY-PERSIST\n"; }
+            download_xray() { printf "DOWNLOAD-XRAY\n"; }
+            download_singbox() { printf "DOWNLOAD-SINGBOX\n"; }
+            download_caddy() { printf "DOWNLOAD-CADDY\n"; }
+            install_xray_service() { printf "INSTALL-XRAY-UNIT\n"; }
+            install_singbox_service() { printf "INSTALL-SINGBOX-UNIT\n"; }
+            install_progress_stage() {
+                printf "STAGE:%s\n" "$1"
+                if [[ "$1" == "services" ]]; then
+                    printf "PROXY-SERVICE=%s\n" "$(runtime_proxy_service)"
+                    printf "PROXY-LABEL=%s\n" "$(runtime_proxy_label)"
+                    runtime_ensure_proxy_service
+                    exit 0
+                fi
+            }
+            CF_ZONE=example.com
+            install_all_definition=$(declare -f install_all | grep -v "^    \[\[ -t 0 \]\]")
+            eval "${install_all_definition}"
+            install_all
+        ' _ "${ROOT_DIR}" 2>&1
+}
+cloudflare_install_all_output=$(run_cloudflare_install_all_case)
+assert_contains "模式 1 安装写橙云链路标记" "${cloudflare_install_all_output}" \
+    "PROGRESS-BEGIN: cloudflare cloudflare"
+assert_equal "模式 1 首轮端口预检只覆盖 443 与回环 10086" \
+    "PRECHECK:443|10086||" \
+    "$(grep -F 'PRECHECK:' <<<"${cloudflare_install_all_output}" || true)"
+assert_contains "模式 1 下载 Xray 核心" "${cloudflare_install_all_output}" "DOWNLOAD-XRAY"
+assert_contains "模式 1 下载 Caddy" "${cloudflare_install_all_output}" "DOWNLOAD-CADDY"
+assert_not_contains "模式 1 不下载 sing-box" "${cloudflare_install_all_output}" "DOWNLOAD-SINGBOX"
+assert_contains "模式 1 服务单元是 easy_all-xray.service" "${cloudflare_install_all_output}" \
+    "PROXY-SERVICE=easy_all-xray.service"
+assert_contains "模式 1 后端标签是 xray" "${cloudflare_install_all_output}" "PROXY-LABEL=xray"
+assert_contains "模式 1 安装 Xray 服务单元" "${cloudflare_install_all_output}" "INSTALL-XRAY-UNIT"
+assert_not_contains "模式 1 不安装 sing-box 服务单元" "${cloudflare_install_all_output}" \
+    "INSTALL-SINGBOX-UNIT"
+# 安装阶段不得再做 WebSockets 预检：改与模式 5 一致的 Network -> gRPC 只读提示。
+cloudflare_install_body=$(sed -n '/^install_all() {/,/^}/p' "${ROOT_DIR}/lib/cloudflare-mode.sh")
+assert_not_contains "模式 1 安装不再预检 WebSockets" "${cloudflare_install_body}" \
+    "cloudflare_ensure_zone_websockets_on"
+assert_contains "模式 1 安装按后端下载核心" "${cloudflare_install_body}" \
+    "runtime_download_proxy_core"
+assert_not_contains "模式 1 安装不直接下载 sing-box" "${cloudflare_install_body}" "download_singbox"
 
 # 43. 模式 3 的 985GB 熔断启动链：只接受 cloudfront 链，且持久阻断必须拒绝启动。
 boot_work="${TMP_DIR}/reality-boot"

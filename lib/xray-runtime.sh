@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
-# 模式 5（reality-cloudflare-xhttp）的 Xray 本机配置与客户端节点（design §2.2）。
+# 模式 1（cloudflare）与模式 5（reality-cloudflare-xhttp）的 Xray 本机配置与
+# 客户端节点（design §2.2 / v2 §3.2）。模式 1 只有回环 XHTTP 入站，模式 5 另有
+# Reality 直连入站。
 # 依赖调用方提供 log.sh 的 die/warn/info/fail，以及模式字段：
 # PROTOCOL、DIRECT_DOMAIN、DIRECT_NODE_NAME、VLESS_UUID、VLESS_PATH、
 # REALITY_PRIVATE_KEY、REALITY_PUBLIC_KEY、REALITY_SHORT_ID、
@@ -26,6 +28,16 @@ xray_uri_encode() {
     jq -rn --arg value "$1" '$value|@uri'
 }
 
+# 是否渲染 Reality 直连入站：模式 5 为真；模式 1（cloudflare）为假；空 PROTOCOL
+# 按模式 5 处理，兼容直接调用渲染器的既有夹具。
+xray_protocol_has_reality() {
+    case "${PROTOCOL:-}" in
+    reality-cloudflare-xhttp | "") return 0 ;;
+    cloudflare) return 1 ;;
+    *) die "不支持的 Xray PROTOCOL：${PROTOCOL:-空}" ;;
+    esac
+}
+
 # 服务端出站私网与保留网段拦截清单（与 singbox_private_ranges_json 同一组 11 条 IPv4 CIDR）。
 # 显式清单而非核心内置 geoip：SSRF 阻断语义不依赖未核验的核心默认行为。
 xray_private_ranges_json() {
@@ -39,6 +51,7 @@ xray_private_ranges_json() {
 # 直连 443：VLESS + raw/tcp + xtls-rprx-vision + Reality；非 Reality 握手透明回落到
 # 127.0.0.1:9443 的 Caddy（端口常量见 caddy_reality_camouflage_port）。
 xray_reality_inbound_json() {
+    xray_protocol_has_reality || { printf 'null'; return 0; }
     [[ -n "${DIRECT_DOMAIN:-}" ]] || die "缺少 DIRECT_DOMAIN，无法生成 Reality 入站"
     [[ -n "${VLESS_UUID:-}" ]] || die "缺少 VLESS_UUID，无法生成 Reality 入站"
     [[ -n "${REALITY_PRIVATE_KEY:-}" ]] || die "缺少 REALITY_PRIVATE_KEY，无法生成 Reality 入站"
@@ -139,32 +152,45 @@ render_xray_config() {
 }
 
 xray_config_structure_ok() {
-    local file=$1 expected_blocked=${2:-}
-    jq -e --arg blocked "${expected_blocked}" '
+    local file=$1 expected_blocked=${2:-} has_reality=0
+    xray_protocol_has_reality && has_reality=1
+    jq -e --arg blocked "${expected_blocked}" --arg has_reality "${has_reality}" '
         def vless_client: .settings.clients[0].id | type == "string" and length > 0;
         . as $config
         | ($config.log | type == "object" and (.loglevel | type == "string"))
         and ($config.dns | type == "object"
              and (.servers | type == "array" and length > 0)
              and .queryStrategy == "UseIPv4")
-        and ($config.inbounds | type == "array" and length > 0)
-        and (any($config.inbounds[];
-                 .tag == "vless-reality-in"
-                 and .listen == "0.0.0.0" and .port == 443 and .protocol == "vless"
-                 and (. | vless_client)
-                 and .settings.clients[0].flow == "xtls-rprx-vision"
-                 and .settings.decryption == "none"
-                 and .streamSettings.network == "raw"
-                 and .streamSettings.security == "reality"
-                 and .streamSettings.realitySettings.target == "127.0.0.1:9443"
-                 and .streamSettings.realitySettings.xver == 0
-                 and .streamSettings.realitySettings.maxTimeDiff == 120000
-                 and (.streamSettings.realitySettings.serverNames | length) > 0
-                 and (.streamSettings.realitySettings.shortIds | length) > 0
-                 and (.streamSettings.realitySettings.privateKey | length) > 0))
-        and (if $blocked == "0" then any($config.inbounds[]; .tag == "vless-cdn-in")
-             elif $blocked == "1" then (any($config.inbounds[]; .tag == "vless-cdn-in") | not)
-             else true end)
+        and ($config.inbounds | type == "array")
+        # 模式 5 恒有 Reality 入站；模式 1 的阻断态允许空入站数组（仅停 CDN 入站）。
+        and (($config.inbounds | length) > 0
+             or ($has_reality == "0" and $blocked == "1"))
+        and (if $has_reality == "1" then
+                 any($config.inbounds[];
+                     .tag == "vless-reality-in"
+                     and .listen == "0.0.0.0" and .port == 443 and .protocol == "vless"
+                     and (. | vless_client)
+                     and .settings.clients[0].flow == "xtls-rprx-vision"
+                     and .settings.decryption == "none"
+                     and .streamSettings.network == "raw"
+                     and .streamSettings.security == "reality"
+                     and .streamSettings.realitySettings.target == "127.0.0.1:9443"
+                     and .streamSettings.realitySettings.xver == 0
+                     and .streamSettings.realitySettings.maxTimeDiff == 120000
+                     and (.streamSettings.realitySettings.serverNames | length) > 0
+                     and (.streamSettings.realitySettings.shortIds | length) > 0
+                     and (.streamSettings.realitySettings.privateKey | length) > 0)
+             else
+                 (any($config.inbounds[]; .tag == "vless-reality-in") | not)
+             end)
+        and (if $has_reality == "1" then
+                 (if $blocked == "0" then any($config.inbounds[]; .tag == "vless-cdn-in")
+                  elif $blocked == "1" then (any($config.inbounds[]; .tag == "vless-cdn-in") | not)
+                  else true end)
+             else
+                 (if $blocked == "1" then (any($config.inbounds[]; .tag == "vless-cdn-in") | not)
+                  else any($config.inbounds[]; .tag == "vless-cdn-in") end)
+             end)
         and (all($config.inbounds[] | select(.tag == "vless-cdn-in");
                  .listen == "127.0.0.1" and .port == 10086 and .protocol == "vless"
                  and (. | vless_client)
@@ -234,7 +260,7 @@ write_xray_config() {
 
 # 解析 `xray x25519` 输出。私有钥取 PrivateKey:；公钥按
 # `Password (PublicKey):` → `Password:` → `PublicKey:` 的优先级取第一条命中。
-# 真实 Xray（v25.8.31+，含锁定版本 v26.11.9）固定输出 `PrivateKey:`、
+# 真实 Xray（v25.8.31+）固定输出 `PrivateKey:`、
 # `Password (PublicKey):` 与 `Hash32:` 三行：`Hash32:` 既不是公私钥也不是公钥候选，
 # 必须显式跳过，绝不得误作公钥；若只有 `PrivateKey:` 与 `Hash32:` 而没有任何公钥行，
 # 下面的行尾形态检查会因公钥为空而返回失败。
@@ -306,11 +332,11 @@ xray_version_at_least() {
 }
 
 # Xray >= 26.9.8 默认启用 X25519MLKEM768，客户端必须同步声明，否则 Reality 握手失败。
-# 优先读已安装核心的真实版本；核心尚未安装/离线渲染时回退锁定常量。
+# 优先读已安装核心的真实版本；核心尚未安装/离线渲染时默认按最新正式版（>= 26.9.8）处理。
 xray_mlkem_required() {
     local version=""
     version=$(xray_binary_version "${XRAY_BIN:-}" 2>/dev/null || true)
-    [[ -n "${version}" ]] || version=$(xray_version)
+    [[ -z "${version}" ]] && return 0
     xray_version_at_least "${version}" "26.9.8"
 }
 
