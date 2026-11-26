@@ -54,12 +54,12 @@ Host *
 
 各模式共用同一套本机运行时（sing-box / Xray 节点入站 + Caddy 订阅与回源分发）。**客户端节点与订阅入口统一使用 443 端口**。
 
-$\textcolor{red}{\textbf{模式推荐：}}$<br>
-$\textcolor{red}{\textbf{线路一般+无可用信用卡，选模式 1}}$<br>
+$\textcolor{red}{\textbf{模式推荐(纯Xray模式不支持Sing-box客户端)：}}$<br>
+$\textcolor{red}{\textbf{线路一般+无可用信用卡，选模式 1(纯Xray)}}$<br>
 $\textcolor{red}{\textbf{线路一般+有可用信用卡，选模式 2}}$<br>
 $\textcolor{red}{\textbf{线路好+有可用信用卡，选模式 3}}$<br>
 $\textcolor{red}{\textbf{线路好+无可用信用卡，选模式 4}}$<br>
-$\textcolor{red}{\textbf{线路好+无可用信用卡+不需要支持Sing-box客户端(多数人不需要)，选模式 5}}$<br>
+$\textcolor{red}{\textbf{线路好+无可用信用卡，选模式 5(纯Xray)}}$<br>
 
 | 模式 | 协议 | 所需凭据 |
 | :--- | :--- | :--- |
