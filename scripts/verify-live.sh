@@ -363,8 +363,12 @@ validate_caddy_config "${CADDY_CONFIG}"
 
     # ④ 双 Xray 实例：Caddy h2c → Xray XHTTP（stream-up）代理数据面。
     # 客户端在 extra.headers 里模拟 Cloudflare 边缘注入的源站头（真实边缘由 Transform Rule 注入）。
+    # Xray 26.x 已移除 allowInsecure，改用自签橙云叶证书的 SHA-256 指纹固定校验。
+    m5_cdn_pin=$(openssl x509 -in "${M5}/certs/cdn-fullchain.pem" -noout -fingerprint -sha256 \
+        | sed 's/^[^=]*=//' | tr -d ':[:space:]')
+    [[ "${m5_cdn_pin}" =~ ^[0-9A-Fa-f]{64}$ ]] || fail "计算模式 5 橙云证书 SHA-256 指纹失败"
     jq -n --arg uuid "${M5_UUID}" --arg host "${M5_CDN}" --arg path "${M5_PATH}" \
-        --arg secret "${M5_SECRET}" '
+        --arg secret "${M5_SECRET}" --arg pin "${m5_cdn_pin}" '
         {
           log: {loglevel: "warning"},
           inbounds: [{tag: "socks-in", protocol: "socks", listen: "127.0.0.1", port: 18091,
@@ -376,7 +380,7 @@ validate_caddy_config "${CADDY_CONFIG}"
             streamSettings: {
               network: "xhttp",
               security: "tls",
-              tlsSettings: {serverName: $host, allowInsecure: true, alpn: ["h2"]},
+              tlsSettings: {serverName: $host, pinnedPeerCertSha256: $pin, alpn: ["h2"]},
               xhttpSettings: {
                 path: $path, host: $host, mode: "stream-up",
                 extra: {headers: {"X-Easy-All-Origin-Key": $secret},
@@ -388,6 +392,7 @@ validate_caddy_config "${CADDY_CONFIG}"
     "${XR}" run -config "${M5}/client.json" >"${M5}/client.log" 2>&1 & CPID4=$!
     m5_proxy_status=""
     for _ in $(seq 1 20); do
+        kill -0 "${CPID4}" 2>/dev/null || break
         m5_proxy_status=$(env -u NO_PROXY -u no_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
             -u http_proxy -u https_proxy -u all_proxy \
             curl -sS --max-time 10 -x "socks5h://127.0.0.1:18091" \
