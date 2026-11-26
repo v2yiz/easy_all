@@ -59,15 +59,15 @@ $\textcolor{red}{\textbf{线路一般+无可用信用卡，选模式 1}}$<br>
 $\textcolor{red}{\textbf{线路一般+有可用信用卡，选模式 2}}$<br>
 $\textcolor{red}{\textbf{线路好+有可用信用卡，选模式 3}}$<br>
 $\textcolor{red}{\textbf{线路好+无可用信用卡，选模式 4}}$<br>
-$\textcolor{red}{\textbf{线路好+无可用信用卡+不需要支持Sing-box客户端，选模式 5}}$<br>
+$\textcolor{red}{\textbf{线路好+无可用信用卡+不需要支持Sing-box客户端(多数人不需要)，选模式 5}}$<br>
 
-| 模式 | 适用场景 | 客户端节点入口 | 订阅入口 | 所需凭据 | 子域名数量 |
-| :--- | :--- | :--- | :--- | :--- | :---: |
-| **1. 纯 CloudFlare** | 只要 CDN 入口且回源仅限 CF | `cf:443` (橙云 CDN) | `cf:443` | Cloudflare Token | 1 |
-| **2. 纯 CloudFront** | 只要 CDN 入口隐藏源站 IP | `cf:443` (AWS CDN) | `cf:443` | Cloudflare Token + AWS 密钥 | 2 |
-| **3. Reality + CloudFront** | IP 未封但要抗 GFW 主动探测，同时需要 CloudFront 入口 | `direct:443` (VLESS Reality) + `cf:443` | `cf:443` | Cloudflare Token + AWS 密钥 | 2 |
-| **4. Reality + CloudFlare** | IP 未封但要抗 GFW 主动探测，且只要橙云 CDN 入口（无需 AWS） | `direct:443` (VLESS Reality) + `cf:443` (橙云 CDN) | `cf:443` | Cloudflare Token | 2 |
-| **5. Reality + CloudFlare（Xray XHTTP）** | 需要抗 GFW 主动探测且只要单 `443` 合一（纯 Xray 核心，不装 sing-box） | `direct:443` (VLESS Reality) + `cf:443` (橙云 VLESS XHTTP) | `cf:443` | Cloudflare Token（需 Transform Rules Edit） | 2 |
+| 模式 | 协议 | 所需凭据 |
+| :--- | :--- | :--- |
+| **1. 纯 CloudFlare** | VLESS HTTPUpgrade（橙云 CDN） | Cloudflare Token |
+| **2. 纯 CloudFront** | VLESS WebSocket（AWS CloudFront） | Cloudflare Token + AWS 密钥 |
+| **3. Reality + CloudFront** | VLESS Reality 直连 + VLESS WebSocket（AWS CloudFront） | Cloudflare Token + AWS 密钥 |
+| **4. Reality + CloudFlare** | VLESS Reality 直连 + VLESS HTTPUpgrade（橙云 CDN） | Cloudflare Token |
+| **5. Reality + CloudFlare（Xray）** | VLESS Reality 直连 + VLESS XHTTP（橙云 CDN，纯 Xray） | Cloudflare Token（需 Transform Rules Edit） |
 
 > **核心约定**：
 > - **域名规划**：全模式只需 **1 个根域名**（托管于同一 Cloudflare Zone），安装器会自动创建对应数量的一级子域名。
