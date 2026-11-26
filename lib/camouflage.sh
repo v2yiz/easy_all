@@ -54,7 +54,8 @@ camouflage_deploy_site() {
 
     case "${EASY_ALL_CAMOUFLAGE_TEMPLATE:-}" in
     login | status | docs | studio) archetype="${EASY_ALL_CAMOUFLAGE_TEMPLATE}" ;;
-    *) archetype=${archetypes[$(camouflage_rand_index "${#archetypes[@]}")]} ;;
+    random) archetype=${archetypes[$(camouflage_rand_index "${#archetypes[@]}")]} ;;
+    *) archetype="studio" ;;
     esac
 
     template="${CAMOUFLAGE_LIB_DIR}/../templates/camouflage-${archetype}.html"

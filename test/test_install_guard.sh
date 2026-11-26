@@ -2962,6 +2962,11 @@ REALITY_PRIVATE_KEY=${FAKE_KEYPAIR_PRIVATE}
 REALITY_PUBLIC_KEY=${FAKE_KEYPAIR_PUBLIC}
 
 # 伪装站多模板部署、防覆写与受管回收（WP3）：
+# 0) 未指定 EASY_ALL_CAMOUFLAGE_TEMPLATE 时默认使用 studio 原型（仍保留实例级变异）。
+rm -rf -- "${CAMOUFLAGE_DIR}" "$(camouflage_managed_manifest_file)"
+EASY_ALL_CAMOUFLAGE_TEMPLATE="" reality_deploy_camouflage_page
+grep -Fq 'page-studio' "${CAMOUFLAGE_DIR}/index.html" \
+    || fail "未指定伪装原型时应默认使用 studio 原型"
 # 1) 四种原型模板均无未替换占位符，且按原型生成对应文件与 0600 受管清单。
 for archetype in login status docs studio; do
     rm -rf -- "${CAMOUFLAGE_DIR}" "$(camouflage_managed_manifest_file)"

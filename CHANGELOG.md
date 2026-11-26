@@ -1,3 +1,12 @@
+## 5.6.1 更新说明（2026-11-26）
+
+### 增强与变更
+
+- **伪装站默认原型调整为 `studio`**（`lib/camouflage.sh`、`docs/technical-reference.md`）：
+  - 未设置 `EASY_ALL_CAMOUFLAGE_TEMPLATE` 时默认使用 `studio` 工程团队主页原型，同时保留全部实例级随机变异（品牌、配色、CSS 变量前缀、`build_id`、SVG 图标与标题/副标题文案）；如需随机抽取或指定其他原型，可设置 `EASY_ALL_CAMOUFLAGE_TEMPLATE=random|login|status|docs`。
+
+---
+
 ## 5.6.0 更新说明（2026-11-26）
 
 ### 增强与修复
@@ -7,7 +16,7 @@
   - 兼容 v5.5.0 老节点零中断升级：通过 `${STATE_DIR}/mode3-single443.migrated` 标记，纯本机 `apply` 暂保留 `8443` 兼容，待执行 `sudo easy_all apply-cloud` 将 CloudFront 回源切至 `443` 并通过公网验收后自动关闭 `8443`。
   - `scripts/hellogfw.py` 补充模式 3 共用 TCP 443 说明，存在 `REALITY: processed invalid connection` 时单列回落计数。
 - **Reality 伪装站多模板抗指纹变异与用户自定义目录保护**（`lib/camouflage.sh`、`templates/camouflage-{login,status,docs,studio}.html`、`lib/caddy-runtime.sh`、`lib/runtime-core.sh`、`runtime.manifest`）：
-  - 内置 4 套中性静态站点原型（登录门户、服务状态、开发者文档、工程团队主页），首次部署随机选择并注入实例级变异（品牌、配色、`--ui-<hex>` 样式变量、构建标识、SVG 图标、`404.html`、`assets/site.css`）；登录原型改用 `assets/auth.js` 异步请求，不再原生跳转裸 JSON。
+  - 内置 4 套中性静态站点原型（登录门户、服务状态、开发者文档、工程团队主页，默认 `studio`，支持 `EASY_ALL_CAMOUFLAGE_TEMPLATE` 指定或设 `random` 随机），首次部署注入实例级变异（品牌、配色、`--ui-<hex>` 样式变量、构建标识、SVG 图标、`404.html`、`assets/site.css`）；登录原型改用 `assets/auth.js` 异步请求，不再原生跳转裸 JSON。
   - Caddy 伪装路由支持 `try_files {path} {path}/index.html`、点文件 `*/.* -> 404`、显式 `405`/`404`；`runtime_reality_fallback_ok()` 改为 `cmp -s` 逐字节校验，解耦固定文案。
   - 已有 `index.html` 时绝不覆写（保护用户自定义静态站点），卸载/清理仅按 `${STATE_DIR}/camouflage-managed.list` 回收受管文件，并修复卸载/清理路径 `rm -rf` 误删 `/var/www/easy_all` 父目录的隐患。
 - **模式 4 / 6（`reality-cloudflare` / `combined-cloudflare`）双 Certbot DNS-01 证书 SAN 隔离**（`lib/runtime-core.sh`、`lib/anytls-mode.sh`、`lib/caddy-runtime.sh`、`profiles/reality-cloudflare.sh`）：
