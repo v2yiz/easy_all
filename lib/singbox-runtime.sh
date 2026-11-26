@@ -129,8 +129,8 @@ render_singbox_config() {
     # （NXDOMAIN、超时、NOERROR 无地址）时以错误终止连接，不会回落到 final: direct。
     # 已对上游 1.12.0 与 master 核验 route/route.go（RuleActionResolve 的错误为 fatal）与
     # dns/router.go（Lookup 把「无地址」改写为 error）；锁定核心升级时需复核这两处。
-    # 引导解析只有单源 1.1.1.1：不配 fallback 条目（配了也不会被使用，属死配置），
-    # 1.1.1.1 不可达时按 fail 显式失败，不做静默降级。
+    # 引导解析只有单源 8.8.8.8（支持 ECS，便于就近调度 YouTube/Google 边缘节点）：
+    # 不配 fallback 条目（配了也不会被使用，属死配置），8.8.8.8 不可达时按 fail 显式失败，不做静默降级。
     jq -n \
         --argjson inbounds "$(singbox_inbounds_json "${blocked}")" \
         --argjson private "$(singbox_private_ranges_json)" '
@@ -138,7 +138,7 @@ render_singbox_config() {
           log: {level: "warning", timestamp: true},
           dns: {
             servers: [
-              {type: "udp", tag: "easy_all-ipv4-primary", server: "1.1.1.1"}
+              {type: "udp", tag: "easy_all-ipv4-primary", server: "8.8.8.8"}
             ],
             strategy: "ipv4_only"
           },

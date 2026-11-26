@@ -129,14 +129,15 @@ render_xray_config() {
     [[ -n "${dest}" ]] || die "render_xray_config 需要目标路径"
     [[ "${blocked}" == "0" || "${blocked}" == "1" ]] \
         || die "Xray blocked 状态无效：${blocked}"
-    # DNS 只用 1.1.1.1 且强制 IPv4：解析失败按错误终止连接，不回落到 direct。
+    # DNS 只用 8.8.8.8（支持 ECS，便于就近调度 YouTube/Google 边缘节点）且强制 IPv4：
+    # 解析失败按错误终止连接，不回落到 direct。
     # 私网与 IPv6（::/0）全部打入 blackhole，阻断语义只由显式路由承载。
     jq -n \
         --argjson inbounds "$(xray_inbounds_json "${blocked}")" \
         --argjson private "$(xray_private_ranges_json)" '
         {
           log: {loglevel: "warning"},
-          dns: {servers: ["1.1.1.1"], queryStrategy: "UseIPv4"},
+          dns: {servers: ["8.8.8.8"], queryStrategy: "UseIPv4"},
           inbounds: $inbounds,
           outbounds: [
             {tag: "direct", protocol: "freedom", settings: {domainStrategy: "UseIPv4"}},
@@ -380,11 +381,11 @@ xray_xhttp_extra_json() {
         uplinkHTTPMethod: "POST",
         noGRPCHeader: false,
         xmux: {
-          maxConnections: 4,
+          maxConnections: 8,
           cMaxReuseTimes: 0,
           hMaxRequestTimes: "300-600",
-          hMaxReusableSecs: "900-1800",
-          hKeepAlivePeriod: 0
+          hMaxReusableSecs: "600-1200",
+          hKeepAlivePeriod: 30
         }
     }'
 }
@@ -418,7 +419,7 @@ build_mihomo_xray_xhttp_node() {
         "    xhttp-opts:\n      host: \($host|@json)\n      path: \($path|@json)\n" +
         "      mode: stream-up\n      no-grpc-header: false\n" +
         "      uplink-http-method: POST\n      reuse-settings:\n" +
-        "        max-connections: 4\n        c-max-reuse-times: 0\n" +
-        "        h-max-request-times: \"300-600\"\n        h-max-reusable-secs: \"900-1800\"\n" +
-        "        h-keep-alive-period: 0\n"'
+        "        max-connections: 8\n        c-max-reuse-times: 0\n" +
+        "        h-max-request-times: \"300-600\"\n        h-max-reusable-secs: \"600-1200\"\n" +
+        "        h-keep-alive-period: 30\n"'
 }

@@ -304,7 +304,8 @@ for template in "${TEMPLATES[@]}"; do
         || fail "${template}: invalid telegram-fallback payload: ${bad_payloads//$'\n'/ }"
 
     # 12. 桌面端开启并发建连（iOS 变体下发时才改回 false，见 strip_mihomo_sniffer）；
-    #     rules 不得再拦截 UDP/443：直连流量原生走 QUIC，代理流量由 xudp 承载。
+    #     rules 仅针对 Google/YouTube/Gemini（google-quic-fallback 与 geosite-google）拒绝 UDP/443，
+    #     不得存在全局 UDP/443 拦截，且该规则必须排在 captive-portal 之后、PROXY 规则之前。
     concurrent=$(sed -n 's/^tcp-concurrent:[[:space:]]*//p' "${path}")
     [[ "${concurrent}" == "true" ]] \
         || fail "${template}: tcp-concurrent must be true（实际：${concurrent:-<缺失>}）"
@@ -314,9 +315,25 @@ for template in "${TEMPLATES[@]}"; do
         inside { print }
     ' "${path}")
     [[ -n "${rules_block}" ]] || fail "${template}: missing rules block"
-    if grep -Eq 'NETWORK,UDP|DST-PORT,443' <<<"${rules_block}"; then
-        fail "${template}: UDP/443 拦截规则必须清除：$(grep -E 'NETWORK,UDP|DST-PORT,443' <<<"${rules_block}" | head -1)"
-    fi
+    grep -Fq 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,google-quic-fallback)),REJECT' <<<"${rules_block}" \
+        || fail "${template}: 缺少 google-quic-fallback 的 UDP/443 拒绝规则"
+    grep -Fq 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-google)),REJECT' <<<"${rules_block}" \
+        || fail "${template}: 缺少 geosite-google 的 UDP/443 拒绝规则"
+    bad_udp443=$(grep -E 'NETWORK,UDP|DST-PORT,443' <<<"${rules_block}" \
+        | grep -Ev 'AND,\(\(NETWORK,UDP\),\(DST-PORT,443\),\(RULE-SET,(google-quic-fallback|geosite-google)\)\),REJECT' || true)
+    [[ -z "${bad_udp443}" ]] \
+        || fail "${template}: 只允许针对 Google 集合拦截 UDP/443，禁止全局拦截：$(head -1 <<<"${bad_udp443}")"
+    captive_line=$(grep -n 'RULE-SET,captive-portal,DIRECT' <<<"${rules_block}" | head -1 | cut -d: -f1)
+    quic_line=$(grep -n 'RULE-SET,google-quic-fallback)),REJECT' <<<"${rules_block}" | head -1 | cut -d: -f1)
+    google_proxy_line=$(grep -nE 'RULE-SET,(proxy-services|geosite-google),PROXY' <<<"${rules_block}" | head -1 | cut -d: -f1)
+    [[ -n "${captive_line}" && -n "${quic_line}" && -n "${google_proxy_line}" ]] \
+        || fail "${template}: 无法定位 captive-portal / Google QUIC / PROXY 规则顺序"
+    ((captive_line < quic_line && quic_line < google_proxy_line)) \
+        || fail "${template}: Google UDP/443 拒绝规则必须排在 captive-portal 之后且早于 proxy-services/geosite-google"
+    for suffix in '+.google' '+.google.com' '+.googleapis.com' '+.googlevideo.com' '+.youtube.com'; do
+        grep -Fq -- "'${suffix}'" "${path}" \
+            || fail "${template}: google-quic-fallback 缺少核心后缀 ${suffix}"
+    done
 
     printf 'ok - %s\n' "${template}"
 done

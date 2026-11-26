@@ -206,7 +206,7 @@ jq empty "${ready_config}" >/dev/null 2>&1 || fail "配置不是合法 JSON"
 xray_config_structure_ok "${ready_config}" 0 || fail "正式配置必须通过就绪态结构校验"
 
 assert_equal "日志级别 warning" "warning" "$(jq -r '.log.loglevel' "${ready_config}")"
-assert_equal "DNS 只用 1.1.1.1" '["1.1.1.1"]' "$(jq -c '.dns.servers' "${ready_config}")"
+assert_equal "DNS 只用 8.8.8.8" '["8.8.8.8"]' "$(jq -c '.dns.servers' "${ready_config}")"
 assert_equal "DNS 解析策略 UseIPv4" "UseIPv4" "$(jq -r '.dns.queryStrategy' "${ready_config}")"
 assert_equal "Reality 入站 tag" "vless-reality-in" "$(jq -r '.inbounds[0].tag' "${ready_config}")"
 assert_equal "Reality 监听 0.0.0.0" "0.0.0.0" "$(jq -r '.inbounds[0].listen' "${ready_config}")"
@@ -364,6 +364,9 @@ assert_contains "橙云节点 alpn=h2" "${links}" '&alpn=h2&'
 assert_contains "橙云节点 host 为节点域名" "${links}" '&host=cf.example.com&path=%2Fvless-0123456789ab'
 assert_contains "橙云节点 extra 含上行方法与 xmux" "${links}" 'uplinkHTTPMethod'
 assert_contains "橙云节点 extra 含 hMaxRequestTimes" "${links}" 'hMaxRequestTimes'
+assert_contains "橙云节点 extra 含 maxConnections=8" "${links}" 'maxConnections%22%3A8'
+assert_contains "橙云节点 extra 含 hMaxReusableSecs=600-1200" "${links}" 'hMaxReusableSecs%22%3A%22600-1200%22'
+assert_contains "橙云节点 extra 含 hKeepAlivePeriod=30" "${links}" 'hKeepAlivePeriod%22%3A30'
 assert_not_contains "链接不泄露源站密钥" "${links}" '0123456789abcdef0123456789abcdef'
 
 # 优选地址只替换连接地址，SNI/host 仍是节点域名。
@@ -390,7 +393,10 @@ assert_contains "Mihomo 橙云节点 network xhttp" "${nodes}" 'network: xhttp'
 assert_contains "Mihomo 橙云节点 no-grpc-header false" "${nodes}" 'no-grpc-header: false'
 assert_contains "Mihomo 橙云节点 uplink-http-method POST" "${nodes}" 'uplink-http-method: POST'
 assert_contains "Mihomo 橙云节点 reuse-settings" "${nodes}" 'reuse-settings:'
+assert_contains "Mihomo 橙云节点 max-connections 8" "${nodes}" 'max-connections: 8'
 assert_contains "Mihomo 橙云节点 h-max-request-times" "${nodes}" 'h-max-request-times: "300-600"'
+assert_contains "Mihomo 橙云节点 h-max-reusable-secs" "${nodes}" 'h-max-reusable-secs: "600-1200"'
+assert_contains "Mihomo 橙云节点 h-keep-alive-period 30" "${nodes}" 'h-keep-alive-period: 30'
 assert_not_contains "Mihomo 节点不泄露源站密钥" "${nodes}" '0123456789abcdef0123456789abcdef'
 
 # < 26.9.8：链接追加 mlkem=0，Mihomo 不写 PQ 开关。

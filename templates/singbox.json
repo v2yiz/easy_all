@@ -361,6 +361,19 @@
         "outbound": "PROXY"
       },
       {
+        "network": [
+          "udp"
+        ],
+        "port": [
+          443
+        ],
+        "rule_set": [
+          "google-quic-fallback",
+          "geosite-google"
+        ],
+        "action": "reject"
+      },
+      {
         "rule_set": [
           "proxy-services"
         ],
@@ -839,6 +852,37 @@
               "95.161.64.0/20",
               "149.154.160.0/20",
               "185.76.151.0/24"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "inline",
+        "tag": "google-quic-fallback",
+        "rules": [
+          {
+            "domain_suffix": [
+              "google",
+              "google.com",
+              "google.cn",
+              "google.ai",
+              "google.dev",
+              "googleapis.com",
+              "googleapis.cn",
+              "googleusercontent.com",
+              "gstatic.com",
+              "gstatic.cn",
+              "deepmind.com",
+              "withgoogle.com",
+              "googlevideo.com",
+              "youtube.com",
+              "youtu.be",
+              "ytimg.com",
+              "ggpht.com",
+              "gvt1.com",
+              "gvt2.com",
+              "gvt3.com",
+              "recaptcha.net"
             ]
           }
         ]

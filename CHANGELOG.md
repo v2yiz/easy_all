@@ -1,3 +1,17 @@
+## 5.9.0 更新说明（2026-11-26）
+
+### 性能优化
+
+- **精准屏蔽 Google / YouTube / Gemini 的 UDP/443（QUIC），缓解晚高峰 CDN 链路拥塞**（`templates/mihomo.yaml`、`templates/mihomo-common.yaml`、`templates/mihomo-classic.yaml`、`templates/singbox.json`、`docs/technical-reference.md`）：
+  - 四份客户端模板新增内联冷启动兜底集合 `google-quic-fallback`（21 条核心后缀，覆盖 `.google`、`.google.com`、`.google.ai`、`.google.dev`、`.googleapis.com`、`.googleusercontent.com`、`.gstatic.com`、`.deepmind.com`、`.withgoogle.com`、`.googlevideo.com`、`.youtube.com`、`.recaptcha.net` 等），确保冷启动或远程 `geosite-google` 拉取失败时 Gemini 与 YouTube 依然生效。
+  - 在 `captive-portal` 之后、`proxy-services` / `geosite-google` 之前插入针对 `google-quic-fallback` 与 `geosite-google` 的 `UDP/443` 拒绝规则，强迫回退 HTTP/2 over TCP，避免 CDN TCP 隧道内 `QUIC-over-TCP` 拥塞冲突；其余直连与代理流量不受影响。
+- **Xray XHTTP 连接池与保活调优（模式 1 / 模式 5）**（`lib/xray-runtime.sh`）：
+  - 客户端 `xmux` / `reuse-settings` 将 `maxConnections` 从 `4` 提升至 `8`，`hMaxReusableSecs` 从 `900-1800` 收敛至 `600-1200`，并启用 `hKeepAlivePeriod=30`（原 `0`），缓解单 TCP 丢包导致的 H2 队头阻塞与 Gemini 长 SSE 流空闲断连。
+- **服务端出站 DNS 切换为支持 ECS 的 `8.8.8.8`**（`lib/xray-runtime.sh`、`lib/singbox-runtime.sh`）：
+  - Xray（模式 1/5）与 sing-box（模式 2/3/4）服务端单源 IPv4 解析器由 `1.1.1.1` 切换为 `8.8.8.8`，提升 YouTube / Google 边缘节点就近调度表现；同步更新 `test/test_mihomo_template_lint.sh`、`test/test_singbox_subscription.sh`、`test/test_xray_render.sh`、`test/test_singbox_render.sh` 断言。
+
+---
+
 ## 5.8.0 更新说明（2026-11-26）
 
 ### 新增功能

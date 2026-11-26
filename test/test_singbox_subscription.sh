@@ -228,7 +228,7 @@ assert_not_contains "JSON 不含指纹不受支持的节点" "$(tags "${all_json
 assert_not_contains "JSON 不含源站密钥" "$(<"${all_json}")" "${ORIGIN_SECRET}"
 
 # DNS 与分流规则必须随订阅下发
-assert_equal "route.rule_set 数量" "16" \
+assert_equal "route.rule_set 数量" "17" \
     "$(jq -r '.route.rule_set | length' "${default_json}")"
 assert_equal "dns final" '"dns-proxy"' "$(jq -c '.dns.final' "${default_json}")"
 # sing-box 1.14 拒绝把 DNS 的 detour 指向空 direct 出口（启动即 FATAL）：直连只能用默认出口表达。
@@ -318,10 +318,23 @@ assert_equal "CGNAT 与链路本地规则出口" '["DIRECT"]' \
 assert_equal "嗅探只作用于 TUN 且不限端口" \
     '{"inbound":["tun-in"],"network":["tcp"],"action":"sniff","sniffer":["http","tls"],"timeout":"300ms"}' \
     "$(jq -c '.route.rules[] | select(.action == "sniff")' "${default_json}")"
-# 不再拦截 UDP/443：直连流量原生走 QUIC，代理流量由 xudp/UDP-over-TCP 承载。
-# 没有域名信息的 QUIC 靠 geoip 与 MATCH 按已有目标 IP 兜底，所以也不再有 UDP 拒绝子规则。
-assert_equal "route.rules 不再拦截 UDP/443" '0' \
-    "$(jq -r '[.route.rules[] | select(.action == "reject" and ((.port // []) | index(443)) != null)] | length' "${default_json}")"
+# 仅针对 Google/YouTube/Gemini（google-quic-fallback + geosite-google）拒绝 UDP/443（QUIC），
+# 强迫回退 HTTP/2 over TCP，避免 CDN TCP 隧道内 QUIC-over-TCP 拥塞冲突；其余流量仍不拦截 UDP/443。
+assert_equal "route.rules 仅含一条针对 Google 集合的 UDP/443 拒绝规则" \
+    '[{"network":["udp"],"port":[443],"rule_set":["google-quic-fallback","geosite-google"],"action":"reject"}]' \
+    "$(jq -c '[.route.rules[] | select(.action == "reject" and ((.port // []) | index(443)) != null)]' "${default_json}")"
+assert_equal "Google UDP/443 拒绝排在 captive-portal 之后且早于 proxy-services" 'true' \
+    "$(jq -r '
+        (.route.rules | map((.rule_set // []) | index("captive-portal") != null) | index(true)) as $cap
+        | (.route.rules | map(.action == "reject" and ((.port // []) | index(443)) != null) | index(true)) as $quic
+        | (.route.rules | map((.rule_set // []) | index("proxy-services") != null) | index(true)) as $proxy
+        | $cap != null and $quic != null and $proxy != null and $cap < $quic and $quic < $proxy
+    ' "${default_json}")"
+assert_equal "google-quic-fallback 覆盖 Gemini 与 YouTube 核心后缀" 'true' \
+    "$(jq -r '
+        [.route.rule_set[] | select(.tag == "google-quic-fallback") | .rules[].domain_suffix[]] as $s
+        | all(["google","google.com","googleapis.com","googlevideo.com","youtube.com"][]; . as $d | ($s | index($d)) != null)
+    ' "${default_json}")"
 assert_equal "不再有 UDP/443 兜底拒绝" '["geoip-cn"]' \
     "$(jq -c '.route.rules[-1].rule_set' "${default_json}")"
 # Clash API 只放行内置直连的两个面板域名（仅 https：明文 http 面板在局域网里可被中间人注入脚本，

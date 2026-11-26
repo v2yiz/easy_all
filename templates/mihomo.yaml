@@ -30,8 +30,8 @@ sniffer:
         override-destination: true
       TLS:
         ports: [443, 8443]
-      # 不嗅探 QUIC：UDP/443 已直接放行，嗅探要解析握手，只会给 UDP 首包白加等待与内存开销。
-      # 没有域名信息的 QUIC 由 geoip 与 MATCH 按已有目标 IP 兜底分流。
+      # 不嗅探 QUIC：嗅探要解析握手，只会给 UDP 首包白加等待与内存开销；
+      # Google/YouTube/Gemini 的 UDP/443 由规则拒绝回退 TCP，其余 QUIC 由 geoip 与 MATCH 兜底分流。
 
 tun:
     enable: true
@@ -480,6 +480,32 @@ rule-providers:
           - '95.161.64.0/20'
           - '149.154.160.0/20'
           - '185.76.151.0/24'
+    # Google/YouTube/Gemini 冷启动兜底集合：仅用于拒绝 UDP/443（QUIC），避免 CDN TCP 隧道内出现 QUIC-over-TCP 拥塞冲突。
+    google-quic-fallback:
+        type: inline
+        behavior: domain
+        payload:
+          - '+.google'
+          - '+.google.com'
+          - '+.google.cn'
+          - '+.google.ai'
+          - '+.google.dev'
+          - '+.googleapis.com'
+          - '+.googleapis.cn'
+          - '+.googleusercontent.com'
+          - '+.gstatic.com'
+          - '+.gstatic.cn'
+          - '+.deepmind.com'
+          - '+.withgoogle.com'
+          - '+.googlevideo.com'
+          - '+.youtube.com'
+          - '+.youtu.be'
+          - '+.ytimg.com'
+          - '+.ggpht.com'
+          - '+.gvt1.com'
+          - '+.gvt2.com'
+          - '+.gvt3.com'
+          - '+.recaptcha.net'
     geosite-private:
         type: http
         behavior: domain
@@ -559,6 +585,9 @@ rules:
     - 'DOMAIN,yacd.haishan.me,DIRECT'
     # 保留 FCM 无域名连接的端口兜底，仅 TCP；局域网例外已经优先处理。
     - 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY'
+    # 仅针对 Google/YouTube/Gemini 拒绝 UDP/443（QUIC），强迫回退 HTTP/2 over TCP，避免 CDN 隧道内 QUIC-over-TCP 拥塞冲突。
+    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,google-quic-fallback)),REJECT'
+    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-google)),REJECT'
     - 'RULE-SET,proxy-services,PROXY'
     - 'RULE-SET,geosite-google,PROXY'
     - 'RULE-SET,wechat-services,DIRECT'
