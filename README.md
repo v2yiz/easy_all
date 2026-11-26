@@ -60,11 +60,11 @@ $\textcolor{red}{\textbf{线路好+无可用信用卡，选模式 5(纯Xray)}}$<
 
 | 模式 | 核心 | 协议 | 所需凭据 |
 | :--- | :--- | :--- | :--- |
-| **1. 纯 CloudFlare** | Xray | VLESS XHTTP（橙云 CDN） | Cloudflare Token |
-| **2. 纯 CloudFront** | sing-box | VLESS WebSocket（AWS CloudFront） | Cloudflare Token + AWS 密钥 |
-| **3. Reality + CloudFront** | sing-box | VLESS Reality + VLESS WebSocket | Cloudflare Token + AWS 密钥 |
-| **4. Reality + CloudFlare** | sing-box | VLESS Reality + VLESS HTTPUpgrade | Cloudflare Token |
-| **5. Reality + CloudFlare（XHTTP）** | Xray | VLESS Reality + VLESS XHTTP | Cloudflare Token |
+| **1. 纯 CloudFlare** | Xray | VLESS XHTTP | Cloudflare Token |
+| **2. 纯 CloudFront** | sing-box | VLESS WebSocket | Cloudflare Token + AWS 密钥 |
+| **3. Reality + CloudFront** | sing-box | VLESS Reality + WebSocket | Cloudflare Token + AWS 密钥 |
+| **4. Reality + CloudFlare** | sing-box | VLESS Reality + HTTPUpgrade | Cloudflare Token |
+| **5. Reality + CloudFlare** | Xray | VLESS Reality + XHTTP | Cloudflare Token |
 
 > **核心约定**：
 > - **域名规划**：全模式只需 **1 个根域名**（托管于同一 Cloudflare Zone），安装器自动创建所需一级子域名。
