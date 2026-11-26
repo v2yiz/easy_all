@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 
-# Shared AWS CloudFront core for mode 4 (CloudFront only), mode 5
-# (AnyTLS + CloudFront) and mode 6 (Reality direct + CloudFront).
+# Shared AWS CloudFront core for mode 2 (CloudFront only) and mode 3
+# (Reality direct + CloudFront).
 #
 # Profile contract provided before this file is sourced:
-#   CDN_PROFILE_KEY          install marker / profile key (cloudfront / combined)
+#   CDN_PROFILE_KEY          install marker / profile key (cloudfront / reality-cloudfront)
 #   CDN_EXPECTED_PROTOCOL    state PROTOCOL owned by the profile
 #   CDN_MODE_LABEL           user-facing mode name
 #   CDN_ENTRY_SUMMARY        entry summary used in the install success message
 #   CDN_INSTALL_PORTS        TCP ports that must be free before a fresh install
 # plus the hooks (empty results instead of guessing):
 #   collect_install_inputs      collect this profile's inputs (calls the shared input collector)
-#   cdn_direct_domains          direct A-record domains (empty for mode 4)
-#   cdn_prepare_direct_runtime  persist the direct-entry identity (no-op for mode 4)
-#   cdn_validate_direct_runtime local acceptance of the direct entry (no-op for mode 4)
+#   cdn_direct_domains          direct A-record domains (empty for mode 2)
+#   cdn_prepare_direct_runtime  persist the direct-entry identity (no-op for mode 2)
+#   cdn_validate_direct_runtime local acceptance of the direct entry (no-op for mode 2)
 #
 # AWS identity/ACM/distribution ownership, DNS, the 985GB protection state machine
 # and the CloudFront lifecycle commands live here. sing-box/Caddy rendering, the
@@ -164,14 +164,14 @@ cdn_validate_install_domains() {
     done < <(cdn_direct_domains | sort -u)
 }
 
-# 域名输入按模式收敛：模式 5 的源站域名固定复用直连域名（443 直连与 8443 回源端口隔离、
-# 共用一份 LE 证书与一条灰云 A），模式 2/5 的订阅域名固定复用节点域名（同一条分发别名与
+# 域名输入按模式收敛：模式 3 的源站域名固定复用直连域名（443 直连与回环 9443 伪装/回源端口隔离、
+# 共用一份 LE 证书与一条灰云 A），模式 2/3 的订阅域名固定复用节点域名（同一条分发别名与
 # CNAME，订阅走 https://<节点域名>/subscribe）。同名复用不再提问，每条链路最多两个名字。
-# 节点名不在这里提示：模式 5 要把直连与 CDN 两个节点名排在一起（见 collect_cloudfront_install_inputs）。
+# 节点名不在这里提示：模式 3 要把直连与 CDN 两个节点名排在一起（见 collect_cloudfront_install_inputs）。
 # 续装例外：沿用安装身份里已落盘的域名（旧版身份可能带独立源站/订阅域名）。
 collect_cloudfront_domain_inputs() {
     if runtime_has_direct_entry; then
-        anytls_collect_direct_domain
+        collect_direct_domain
         # 续装沿用身份里的源站域名：旧版身份可能带独立源站域名，改写会与已建分发/证书/DNS 冲突。
         [[ "${INSTALL_RESUME:-0}" == "1" && -n "${CF_ORIGIN_DOMAIN:-}" ]] \
             || CF_ORIGIN_DOMAIN=${DIRECT_DOMAIN}
@@ -196,7 +196,7 @@ collect_cloudfront_install_inputs() {
 
     # 域名问完之后两个节点名排在一起：先直连、再 CDN。
     if runtime_has_direct_entry; then
-        anytls_collect_direct_node_name
+        collect_direct_node_name
     fi
     CF_NODE_PREFIX=$(prompt_value 'CloudFront 节点名（完整单节点名）' "${CF_NODE_PREFIX:-🇺🇸AWS}")
     validate_node_name "${CF_NODE_PREFIX}" || die "节点名无效（1-64 字符，不能含控制字符）"
@@ -243,7 +243,7 @@ collect_cloudfront_install_inputs() {
 
 # --- Cloudflare token and DNS -------------------------------------------------
 
-# 收集、格式校验与 0600 持久化都在 lib/cf-dns.sh（六模式共用）。
+# 收集、格式校验与 0600 持久化都在 lib/cf-dns.sh（四模式共用）。
 
 cloudflare_clear_api_token() {
     unset CLOUDFLARE_API_TOKEN 2>/dev/null || true
@@ -323,7 +323,7 @@ cdn_certificate_covers_origin() {
     certificate_covers_host "${1:-${CERT_FILE}}" "${CF_ORIGIN_DOMAIN}"
 }
 
-# 覆盖模式所需全部域名（模式 5 为 direct + origin）且仍在续期窗口内即复用。
+# 覆盖模式所需全部域名（模式 3 为 direct + origin）且仍在续期窗口内即复用。
 cdn_issue_origin_certificate() {
     local force=${1:-0}
     install -d -m 0700 "${CERT_DIR}"
@@ -593,7 +593,7 @@ cloudfront_marker() {
 
 build_distribution_config() {
     local destination=$1 caller=$2 origin_https_port
-    # 外部回源端口由模式派生：模式 2/3 为 443（模式 3 经 sing-box 443 回落本机 9443），模式 5 为 8443。
+    # 外部回源端口由模式派生：模式 2/3 为 443（模式 3 经 sing-box 443 回落本机 9443）。
     origin_https_port=$(cloudfront_origin_https_port) || exit 1
     jq -n \
         --arg caller "${caller}" --arg alias "${CF_NODE_DOMAIN}" \
@@ -1074,9 +1074,6 @@ build_node_links() {
     if singbox_protocol_has_reality; then
         build_reality_link
         printf '\n'
-    elif runtime_has_direct_entry; then
-        build_anytls_link
-        printf '\n'
     fi
     build_vless_ws_link
     printf '\n'
@@ -1089,9 +1086,6 @@ build_mihomo_nodes() {
     local extra
     if singbox_protocol_has_reality; then
         build_mihomo_reality_node
-        printf '\n'
-    elif runtime_has_direct_entry; then
-        build_mihomo_anytls_node
         printf '\n'
     fi
     build_mihomo_ws_node
@@ -1109,7 +1103,7 @@ build_mihomo_proxy_names() {
         '($names + $extra)[] | "        - \(.|@json)"'
 }
 
-# 模式 5 不生成额外 CDN 分组（与模式 6 一致，PROXY 手动选择）；
+# 本模式不生成额外 CDN 分组（PROXY 手动选择）；
 # 模板占位必须成功输出空内容。
 build_mihomo_proxy_groups() {
     printf ''
@@ -1402,8 +1396,6 @@ show_status() {
         if caddy_mode3_needs_legacy_8443; then
             printf '单 443 迁移状态: 暂保留旧版 8443 兼容；请执行 sudo easy_all apply-cloud 切换 CloudFront 回源至 443 并关闭 8443\n'
         fi
-    elif runtime_has_direct_entry; then
-        printf '直连域名: %s（AnyTLS，TCP 443）\n' "${DIRECT_DOMAIN}"
     fi
     if runtime_has_cdn_entry; then
         printf 'CDN 节点域名: %s（Caddy 回环 %s）\n' "${CF_NODE_DOMAIN}" \
@@ -1474,11 +1466,11 @@ cdn_commit_local_runtime() {
     fi
 }
 
-# 只有模式 3/5 有直连 TCP 443 入口；模式 2 必须 remove，以清除旧版本、异常中断或
+# 只有模式 3 有直连 TCP 443 入口；模式 2 必须 remove，以清除旧版本、异常中断或
 # 先前直连模式留下的 unit/规则/drop-in。条件不得用「是否 CloudFront」代替。
 # 失败显式传播：调用点据此 return 1 或 die。
 cloudfront_probe_log_sync() {
-    if [[ "${PROTOCOL}" == "combined-cloudfront" || "${PROTOCOL}" == "reality-cloudfront" ]]; then
+    if [[ "${PROTOCOL}" == "reality-cloudfront" ]]; then
         probe_log_enable_and_replay || return 1
     else
         remove_probe_log || return 1
@@ -1949,7 +1941,7 @@ cdn_purge_cloudflare_dns() {
     else
         warn "缺少 CloudFront 分发域名；跳过节点/订阅 CNAME 清理"
     fi
-    # 模式 5 直连 A 与源站 A 可能复用同一域名，同一 type+host 只处理一次。
+    # 直连 A 与源站 A 可能复用同一域名，同一 type+host 只处理一次。
     while IFS= read -r domain; do
         [[ -n "${domain}" ]] || continue
         pairs+=("A|${domain}|${VPS_PUBLIC_IPV4}")

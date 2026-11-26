@@ -19,7 +19,7 @@ jobs:
         run: npm test
       - name: Run real-core gate
         run: npm run test:cores
-      - name: Run live HTTP/proxy gate (AnyTLS + Caddy→VLESS WS)
+      - name: Run live HTTP/proxy gate (Caddy→VLESS WS)
         run: sudo env SINGBOX_BIN="$SINGBOX_BIN" CADDY_BIN="$CADDY_BIN" bash scripts/verify-live.sh
       - name: Run Linux mangle metering gate
         run: sudo bash scripts/verify-linux-metering.sh

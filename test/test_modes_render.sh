@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 六模式本机运行时渲染（design §2/§7/§8/§12）：配置文件与客户端节点都走 Phase 1 库，
+# 四模式本机运行时渲染（design §2/§7/§8/§12）：配置文件与客户端节点都走 Phase 1 库，
 # 端口、TLS、源站守卫与订阅产物由模式派生，不接受用户另设端口。
 set -Eeuo pipefail
 
@@ -43,9 +43,6 @@ render_mode() {
             DIRECT_DOMAIN=direct.example.com
             DIRECT_NODE_NAME="🇺🇸直连"
         fi
-        if state_protocol_has_anytls_entry "${PROTOCOL}"; then
-            ANYTLS_PASSWORD=0123456789abcdefaaaabbbb
-        fi
         if state_protocol_has_reality_entry "${PROTOCOL}"; then
             VLESS_UUID=11111111-2222-3333-4444-555555555555
             REALITY_PRIVATE_KEY=$(printf 'A%.0s' {1..32} | base64 | tr '+/' '-_' | tr -d '=\n')
@@ -70,13 +67,7 @@ render_mode() {
         if [[ "${PROTOCOL}" == "cloudflare" ]]; then
             CLOUDFLARE_ZONE_ID=zoneid
         fi
-        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
-            SUBSCRIPTION_MODE=deploy
-            CLOUDFLARE_ORIGIN_RULESET_ID=rs
-            CLOUDFLARE_ORIGIN_RULE_ID=rule
-        else
-            SUBSCRIPTION_MODE=deploy
-        fi
+        SUBSCRIPTION_MODE=deploy
         cdn_derive_runtime_fields || exit 1
         mkdir -p "${CERT_DIR}"
         : >"${CERT_DIR}/fullchain.pem"
@@ -156,33 +147,8 @@ assert_contains "模式 1 订阅域名由节点域名派生" "${out}/links.txt" 
 [[ ! -s "${out}/groups.yaml" ]] || fail "模式 1 不应生成额外代理组"
 assert_equal "模式 1 PROXY 成员只有 CDN 节点" $'        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
 
-# --- 模式 5：AnyTLS 443 + 源站 8443（无自动组，PROXY 手动选择）--------------
-out="${TMP_DIR}/combined"
-render_mode combined "${out}"
-assert_contains "模式 5 同时有 AnyTLS 与 VLESS" "${out}/config.json" '"type": "anytls"'
-assert_contains "模式 5 CDN 入站在回环" "${out}/config.json" '"listen_port": 10086'
-assert_contains "模式 5 源站站点监听 8443" "${out}/Caddyfile" 'https://origin.example.com:8443 {'
-assert_contains "模式 5 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
-assert_contains "模式 5 节点含直连" "${out}/links.txt" 'anytls://'
-assert_contains "模式 5 节点含 CDN" "${out}/links.txt" 'type=ws'
-assert_not_contains "模式 5 无 AUTO 组" "${out}/groups.yaml" 'AUTO'
-assert_not_contains "模式 5 无 CDN-FALLBACK 组" "${out}/groups.yaml" 'CDN-FALLBACK'
-[[ ! -s "${out}/groups.yaml" ]] || fail "模式 5 不应生成额外代理组"
-assert_equal "模式 5 PROXY 成员顺序" \
-    $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
-assert_not_contains "模式 5 PROXY 不含 AUTO" "${out}/names.yaml" "AUTO"
-assert_not_contains "模式 5 PROXY 不含 CDN-FALLBACK" "${out}/names.yaml" "CDN-FALLBACK"
-assert_not_contains "模式 5 不使用 httpupgrade" "${out}/config.json" 'httpupgrade'
-assert_contains "模式 5 回环入站保持 ws" "${out}/config.json" '"type": "ws"'
-assert_not_contains "模式 5 Mihomo 不写 v2ray-http-upgrade" "${out}/nodes.yaml" 'v2ray-http-upgrade'
-assert_contains "模式 5 协议标签保持 WebSocket" "${out}/label.txt" 'VLESS WebSocket over AWS CloudFront'
-assert_equal "模式 5 Base64 标记" $'anytls://\ntype=ws' "$(<"${out}/markers-base64.txt")"
-assert_equal "模式 5 Mihomo 标记" $'type: anytls\nnetwork: ws' "$(<"${out}/markers-mihomo.txt")"
-assert_equal "模式 5 CloudFront 回源 HTTPS 端口为 8443" "8443" \
-    "$(jq -r '.Origins.Items[0].CustomOriginConfig.HTTPSPort' "${out}/distribution.json")"
-
 # 节点名推荐默认值：必须在交互提示里出现（加载运行时库前由 Profile 赋值），
-# 否则会被 singbox-runtime.sh 的 AnyTLS / VLESS-WS 兜底值覆盖。
+# 否则会被 singbox-runtime.sh 的 Reality / VLESS-WS 兜底值覆盖。
 while IFS='|' read -r profile expected_direct expected_cdn; do
     # 清除父进程可能导出的同名变量：这里断言的是「未提供名称时」的默认值。
     defaults=$(env -u DIRECT_NODE_NAME -u CF_NODE_PREFIX bash -c '
@@ -197,43 +163,13 @@ while IFS='|' read -r profile expected_direct expected_cdn; do
     ' _ "${ROOT_DIR}" "${profile}" 2>&1) || fail "${profile} 显式节点名读取失败"
     assert_equal "${profile} 显式节点名优先" "CustomDirect|CustomCDN" "${explicit}"
 done <<'NODE_DEFAULTS'
-cloudfront|AnyTLS|🇺🇸AWS
-cloudflare|AnyTLS|🇺🇸CF
+cloudfront|Reality|🇺🇸AWS
+cloudflare|Reality|🇺🇸CF
 reality-cloudfront|🇺🇸Reality|🇺🇸AWS
 reality-cloudflare|🇺🇸Reality|🇺🇸CF
-combined|主节点|CDN备用
-combined-cloudflare|主节点|CDN备用
 NODE_DEFAULTS
 
-# --- 模式 6：AnyTLS 443 + 橙云节点/订阅 8443（Origin Rule）------------------
-
-out="${TMP_DIR}/combined-cloudflare"
-render_mode combined-cloudflare "${out}"
-assert_contains "模式 6 有 AnyTLS 入站" "${out}/config.json" '"type": "anytls"'
-assert_contains "模式 6 AnyTLS 监听 443" "${out}/config.json" '"listen_port": 443'
-assert_contains "模式 6 CDN 入站在回环" "${out}/config.json" '"listen_port": 10086'
-assert_contains "模式 6 站点是节点域名 8443" "${out}/Caddyfile" 'https://cf.example.com:8443 {'
-assert_contains "模式 6 8443 回源使用独立 CDN 证书" "${out}/Caddyfile" "tls ${out}/certs/cdn-fullchain.pem ${out}/certs/cdn-private.key"
-assert_contains "模式 6 有订阅入口" "${out}/Caddyfile" '@easy_all_sub path /subscribe /sub'
-assert_contains "模式 6 回环转发" "${out}/Caddyfile" 'reverse_proxy 127.0.0.1:10086'
-assert_not_contains "模式 6 没有 Caddy 源站守卫" "${out}/Caddyfile" 'X-Easy-All-Origin-Key'
-assert_contains "模式 6 节点含直连" "${out}/links.txt" 'anytls://'
-assert_contains "模式 6 节点含橙云 CDN" "${out}/links.txt" 'type=httpupgrade&alpn=http%2F1.1&'
-assert_contains "模式 6 回环入站用 httpupgrade" "${out}/config.json" '"type": "httpupgrade"'
-assert_contains "模式 6 Mihomo 含 AnyTLS" "${out}/nodes.yaml" 'type: anytls'
-assert_contains "模式 6 Mihomo 含 ws 传输" "${out}/nodes.yaml" 'network: ws'
-assert_contains "模式 6 Mihomo 开启 v2ray-http-upgrade" "${out}/nodes.yaml" \
-    'v2ray-http-upgrade: true'
-assert_contains "模式 6 协议标签是 HTTPUpgrade" "${out}/label.txt" 'VLESS HTTPUpgrade over Cloudflare'
-assert_equal "模式 6 Base64 标记" $'anytls://\ntype=httpupgrade' "$(<"${out}/markers-base64.txt")"
-assert_not_contains "模式 6 无 Reality 参数" "${out}/links.txt" 'security=reality'
-assert_equal "模式 6 PROXY 成员顺序" \
-    $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
-assert_not_contains "模式 6 PROXY 不含 AUTO" "${out}/names.yaml" "AUTO"
-assert_not_contains "模式 6 PROXY 不含 CDN-FALLBACK" "${out}/names.yaml" "CDN-FALLBACK"
-[[ ! -s "${out}/groups.yaml" ]] || fail "模式 6 不应生成额外代理组"
-
-for mode_out in cloudfront cloudflare combined combined-cloudflare; do
+for mode_out in cloudfront cloudflare; do
     out="${TMP_DIR}/${mode_out}"
     assert_not_contains "${mode_out} 不占用 10085" "${out}/config.json" '10085'
     assert_not_contains "${mode_out} 不使用 v2ray_api" "${out}/config.json" 'v2ray_api'
@@ -415,12 +351,12 @@ assert_not_contains "模式 4 不带 AnyTLS 节点" "${out}/nodes.yaml" 'type: a
 assert_equal "模式 4 PROXY 成员是 Reality + 橙云" \
     $'        - "🇺🇸直连"\n        - "🇺🇸CF"' "$(<"${out}/names.yaml")"
 
-# --- 全六模式公共反指纹断言（WP1） -------------------------------------------
-for mode_out in cloudfront cloudflare combined combined-cloudflare reality-cloudfront reality-cloudflare; do
+# --- 全四模式公共反指纹断言（WP1） -------------------------------------------
+for mode_out in cloudfront cloudflare reality-cloudfront reality-cloudflare; do
     out="${TMP_DIR}/${mode_out}"
     assert_contains "${mode_out} Caddy 去除 Server 响应头" "${out}/Caddyfile" 'header -Server'
     assert_not_contains "${mode_out} Caddy 禁止 /easy_all-health" "${out}/Caddyfile" '/easy_all-health'
     assert_not_contains "${mode_out} Caddy 禁止 easy_all ok 横幅" "${out}/Caddyfile" 'easy_all ok'
 done
 
-printf 'ok - 六模式渲染测试通过\n'
+printf 'ok - 四模式渲染测试通过\n'

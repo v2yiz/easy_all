@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
 
-# Mode 6: AnyTLS 直连入口（TCP 443）+ 橙云节点域名（Caddy 8443 回源，同时提供
-#         VLESS HTTPUpgrade 与订阅）。
-# Mode 4: 直连入口换成 VLESS Reality（回环 9443 伪装回落）+ 同模式 6 的橙云入口。
+# 模式 4：VLESS Reality 直连入口（TCP 443，非 Reality 握手回落到回环 9443 伪装站）
+#         + 橙云节点域名（Caddy 8443 回源，同时提供 VLESS HTTPUpgrade 与订阅）。
 #
-# Profile 契约（由 profiles/combined-cloudflare.sh、profiles/reality-cloudflare.sh
-# 在本文件之前提供）：
+# Profile 契约（由 profiles/reality-cloudflare.sh 提供）：
 #   CDN_PROFILE_KEY / CDN_EXPECTED_PROTOCOL / CDN_MODE_LABEL / CDN_ENTRY_SUMMARY /
 #   CDN_INSTALL_PORTS / CDN_RECORD_COMMENT
 # 与 CloudFront 模式相同的命令契约（install/apply/apply-cloud/edit-sub/renew-cert/
 # show/status/uninstall/cleanup-partial），但没有任何 AWS 资源与 985GB 熔断。
 #
-# 两个模式固定 deploy：CF_NODE_DOMAIN 同时是回环 VLESS HTTPUpgrade 的站点、订阅域名与
-# 证书名，直连与橙云两个节点都进入订阅。
+# 固定 deploy：CF_NODE_DOMAIN 同时是回环 VLESS HTTPUpgrade 的站点、订阅域名与证书名，
+# 直连与橙云两个节点都进入订阅。
 
 # 公网验收重试次数/间隔；测试可经 *_OVERRIDE 缩短，生产默认不变。
 readonly CDN_PUBLIC_ACCEPT_ATTEMPTS="${CDN_PUBLIC_ACCEPT_ATTEMPTS_OVERRIDE:-6}"
@@ -46,14 +44,14 @@ cdn_config_ready() {
 
 # --- 安装输入 -----------------------------------------------------------------
 
-collect_anytls_install_inputs() {
+collect_direct_install_inputs() {
     CF_ZONE=$(normalize_domain "$(prompt_value 'Cloudflare 根 Zone（如 example.com）' "${CF_ZONE:-}")")
     validate_domain "${CF_ZONE}" || die "Cloudflare Zone 无效：${CF_ZONE}"
-    # 先把所有域名问完（模式 4/6 多一个 CDN 节点域名），再把两个节点名排在一起。
-    anytls_collect_direct_domain
-    collect_combined_cloudflare_cdn_domain
-    anytls_collect_direct_node_name
-    collect_combined_cloudflare_cdn_node_name
+    # 先把所有域名问完（模式 4 多一个 CDN 节点域名），再把两个节点名排在一起。
+    collect_direct_domain
+    collect_direct_cdn_domain
+    collect_direct_node_name
+    collect_direct_cdn_node_name
     VLESS_PATH=$(normalize_vless_path "${VLESS_PATH:-}")
     validate_vless_path "${VLESS_PATH}" || die "VLESS 路径无效：${VLESS_PATH}"
     VLESS_UUID=${VLESS_UUID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || (
@@ -67,19 +65,12 @@ collect_anytls_install_inputs() {
     cdn_derive_runtime_fields || die "运行时字段派生失败：缺少直连域名或 CDN 节点域名"
     # Token 收集/校验/持久化是各模式共用的（lib/cf-dns.sh）：下一进程可直接复用已存值。
     cloudflare_collect_api_token 'Cloudflare API Token（Zone 只读 + DNS 编辑；deploy 还需 Zone Settings 只读 + Origin Rules 编辑）'
-    # 直连身份在输入阶段就位：Reality 的 short_id 在此生成（keypair 依赖已安装的 sing-box，
-    # 留到 core 阶段）；AnyTLS 模式在此生成密码。身份由 install_all 紧接着落盘。
-    if runtime_has_reality_entry; then
-        # Reality short_id 在输入阶段确定；keypair 依赖已安装的 sing-box，留到 core 阶段生成。
-        REALITY_SHORT_ID=${REALITY_SHORT_ID:-$(openssl rand -hex 8)}
-        [[ "${REALITY_SHORT_ID}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
-            || die "Reality short_id 无效：${REALITY_SHORT_ID}"
-    fi
-    if runtime_has_anytls_entry; then
-        ANYTLS_PASSWORD=${ANYTLS_PASSWORD:-$(generate_secret)}
-        [[ ${#ANYTLS_PASSWORD} -ge 16 ]] || die "AnyTLS 密码长度不足 16"
-    fi
-    # 模式 4/6（直连 + 橙云）先问优选前缀，再问订阅配置。
+    # Reality short_id 在输入阶段确定；keypair 依赖已安装的 sing-box，留到 core 阶段生成。
+    # 身份由 install_all 紧接着落盘。
+    REALITY_SHORT_ID=${REALITY_SHORT_ID:-$(openssl rand -hex 8)}
+    [[ "${REALITY_SHORT_ID}" =~ ^([0-9a-fA-F]{2}){1,8}$ ]] \
+        || die "Reality short_id 无效：${REALITY_SHORT_ID}"
+    # 模式 4（直连 + 橙云）先问优选前缀，再问订阅配置。
     collect_cdn_edge_address
     SUBSCRIPTION_CONFIG=$(choose_subscription_config "${SUBSCRIPTION_CONFIG:-}") \
         || die "订阅配置无效：需包含 allowedTokens 与 nodes"
@@ -92,9 +83,9 @@ collect_anytls_install_inputs() {
     fi
 }
 
-# 模式 4/6：节点域名同时承载 HTTPUpgrade 节点与订阅，必须是 Zone 的一级子域名（默认边缘证书覆盖范围）。
+# 模式 4：节点域名同时承载 HTTPUpgrade 节点与订阅，必须是 Zone 的一级子域名（默认边缘证书覆盖范围）。
 # 域名与节点名分两步：域名先问（紧跟直连域名），节点名与直连节点名排在一起。
-collect_combined_cloudflare_cdn_domain() {
+collect_direct_cdn_domain() {
     CF_NODE_DOMAIN=$(normalize_domain "$(prompt_value \
         'CDN 节点域名（橙云代理，同时提供 HTTPUpgrade 节点与订阅）' "${CF_NODE_DOMAIN:-cf.${CF_ZONE}}")")
     validate_domain "${CF_NODE_DOMAIN}" || die "节点域名无效：${CF_NODE_DOMAIN}"
@@ -106,7 +97,7 @@ collect_combined_cloudflare_cdn_domain() {
         || die "节点域名必须与直连域名不同（直连是灰云 A，节点与订阅是橙云 A）"
 }
 
-collect_combined_cloudflare_cdn_node_name() {
+collect_direct_cdn_node_name() {
     CF_NODE_PREFIX=$(prompt_value 'CDN 节点名（完整单节点名）' "${CF_NODE_PREFIX:-🇺🇸CF}")
     validate_node_name "${CF_NODE_PREFIX}" || die "节点名无效（1-64 字符，不能含控制字符）"
     # 最后一个判定正常时返回 1（未占用保留组名）：显式 return，避免调用方 errexit 中断。
@@ -116,7 +107,7 @@ collect_combined_cloudflare_cdn_node_name() {
 
 # --- Cloudflare 资源 ----------------------------------------------------------
 
-anytls_ensure_zone_id() {
+direct_ensure_zone_id() {
     cloudflare_collect_api_token
     if [[ -z "${CLOUDFLARE_ZONE_ID:-}" ]]; then
         CLOUDFLARE_ZONE_ID=$(cloudflare_lookup_parent_zone "${CF_ZONE}") \
@@ -125,8 +116,8 @@ anytls_ensure_zone_id() {
 }
 
 # 直连域名始终是灰云 A；订阅/节点域名（deploy）是橙云 A，回源走 Origin Rule。
-anytls_ensure_dns() {
-    anytls_ensure_zone_id
+direct_ensure_dns() {
+    direct_ensure_zone_id
     info "配置直连解析（灰云 A）：${DIRECT_DOMAIN} -> ${VPS_PUBLIC_IPV4}"
     dns_ensure_record "${DIRECT_DOMAIN}" A "${VPS_PUBLIC_IPV4}" false
     if subscription_enabled; then
@@ -136,10 +127,10 @@ anytls_ensure_dns() {
 }
 
 # 只对精确 http.host 生效的回源端口覆盖；ruleset/rule ID 落 state 供删改复用。
-anytls_ensure_origin_rule() {
+direct_ensure_origin_rule() {
     local ids ruleset_id rule_id
     subscription_enabled || return 0
-    anytls_ensure_zone_id
+    direct_ensure_zone_id
     ids=$(cloudflare_ensure_origin_rule "${CLOUDFLARE_ZONE_ID}" "${SUBSCRIPTION_DOMAIN}" 8443) \
         || die "创建/更新 Cloudflare Origin Rule 失败；未建立订阅回源"
     ruleset_id=$(printf '%s\n' "${ids}" | sed -n '1p')
@@ -150,7 +141,7 @@ anytls_ensure_origin_rule() {
     CLOUDFLARE_ORIGIN_RULE_ID=${rule_id}
 }
 
-anytls_remove_origin_rule() {
+direct_remove_origin_rule() {
     [[ -n "${CLOUDFLARE_ORIGIN_RULESET_ID:-}" && -n "${CLOUDFLARE_ORIGIN_RULE_ID:-}" ]] \
         || return 0
     local zone_id=${CLOUDFLARE_ZONE_ID:-}
@@ -164,7 +155,7 @@ anytls_remove_origin_rule() {
 # --- 证书 ---------------------------------------------------------------------
 
 # 证书由 runtime-core 的 DNS-01 路径分别签发：
-#   - 主证书（easy_all lineage）只覆盖 DIRECT_DOMAIN（9443 伪装站 / 443 AnyTLS，防 SAN 泄露 CF_NODE_DOMAIN）；
+#   - 主证书（easy_all lineage）只覆盖 DIRECT_DOMAIN（9443 伪装站 / 443 Reality，防 SAN 泄露 CF_NODE_DOMAIN）；
 #   - 回源证书（easy_all-cdn lineage）只覆盖 CF_NODE_DOMAIN（8443 橙云回源）。
 cdn_issue_certificate() {
     local force=${1:-0}
@@ -226,11 +217,7 @@ write_runtime_config() {
 
 build_node_links() {
     local extra
-    if singbox_protocol_has_reality; then
-        build_reality_link
-    else
-        build_anytls_link
-    fi
+    build_reality_link
     printf '\n'
     build_vless_ws_link
     printf '\n'
@@ -241,11 +228,7 @@ build_node_links() {
 
 build_mihomo_nodes() {
     local extra
-    if singbox_protocol_has_reality; then
-        build_mihomo_reality_node
-    else
-        build_mihomo_anytls_node
-    fi
+    build_mihomo_reality_node
     printf '\n'
     build_mihomo_ws_node
     printf '\n'
@@ -267,15 +250,15 @@ build_mihomo_proxy_groups() {
     return 0
 }
 
-anytls_template_snapshot_file() {
+direct_template_snapshot_file() {
     printf '%s/mihomo-template.yaml' "${STATE_DIR}"
 }
 
-RT_TEMPLATE_SNAPSHOT_PATH=$(anytls_template_snapshot_file)
+RT_TEMPLATE_SNAPSHOT_PATH=$(direct_template_snapshot_file)
 
-anytls_prepare_subscription_template() {
+direct_prepare_subscription_template() {
     local snapshot
-    snapshot=$(anytls_template_snapshot_file)
+    snapshot=$(direct_template_snapshot_file)
     if [[ -n "${MIHOMO_TEMPLATE_SOURCE:-}" ]]; then
         MIHOMO_TEMPLATE_FILE=""
         prepare_mihomo_template
@@ -293,12 +276,12 @@ anytls_prepare_subscription_template() {
     prepare_mihomo_template
 }
 
-anytls_persist_subscription_template() {
+direct_persist_subscription_template() {
     local snapshot temp
     [[ -n "${MIHOMO_TEMPLATE_FILE:-}" && -s "${MIHOMO_TEMPLATE_FILE}" ]] \
         || die "缺少可持久化的 Mihomo 模板"
     install -d -m 0700 "${STATE_DIR}"
-    snapshot=$(anytls_template_snapshot_file)
+    snapshot=$(direct_template_snapshot_file)
     if [[ "${MIHOMO_TEMPLATE_FILE}" != "${snapshot}" ]]; then
         temp=$(mktemp "${snapshot}.XXXXXX") || die "创建 Mihomo 模板快照暂存文件失败"
         cleanup_files+=("${temp}")
@@ -310,15 +293,15 @@ anytls_persist_subscription_template() {
     MIHOMO_TEMPLATE_SNAPSHOT=1
 }
 
-anytls_write_subscriptions() {
-    anytls_prepare_subscription_template
+direct_write_subscriptions() {
+    direct_prepare_subscription_template
     write_subscriptions
-    anytls_persist_subscription_template
+    direct_persist_subscription_template
 }
 
 # 六产物就绪判定：只渲染 Mihomo/Base64，不生成 sing-box JSON（JSON 故障不进流控门禁）。
-anytls_render_subscription_files() {
-    anytls_prepare_subscription_template
+direct_render_subscription_files() {
+    direct_prepare_subscription_template
     render_mihomo_base64_files "$1"
 }
 
@@ -327,16 +310,16 @@ refresh_runtime_subscription() {
         save_state
         return 0
     }
-    anytls_write_subscriptions
+    direct_write_subscriptions
     validate_singbox_subscription_runtime
     save_state
 }
 
-anytls_subscription_artifacts_ready() {
+direct_subscription_artifacts_ready() {
     local render_dir name ready=1
     render_dir=$(mktemp -d "${RUNTIME_TMP}/subscription-ready.XXXXXX") || return 1
     cleanup_files+=("${render_dir}")
-    if ! ( anytls_render_subscription_files "${render_dir}" ) >/dev/null 2>&1; then
+    if ! ( direct_render_subscription_files "${render_dir}" ) >/dev/null 2>&1; then
         ready=0
     fi
     if ((ready == 1)); then
@@ -353,17 +336,17 @@ anytls_subscription_artifacts_ready() {
     ((ready == 1))
 }
 
-anytls_subscription_ready() {
+direct_subscription_ready() {
     subscription_enabled || return 0
     cdn_config_ready || return 1
-    anytls_subscription_artifacts_ready || return 1
+    direct_subscription_artifacts_ready || return 1
     ( validate_subscription_runtime ) >/dev/null 2>&1
 }
 
 # --- 公网验收 -----------------------------------------------------------------
 
 # 订阅经橙云 → Origin Rule 8443 → Caddy：公网 200/403 是链路与 strict 的二次证据（无 /easy_all-health）。
-anytls_public_subscription_ok() {
+direct_public_subscription_ok() {
     local token body decoded status marker
     token=$(jq -r 'first(.[])' <<<"${ALLOWED_TOKENS:-[]}") || return 1
     [[ -n "${token}" && "${token}" != "null" ]] || return 1
@@ -386,13 +369,13 @@ anytls_public_subscription_ok() {
     [[ "${status}" == "403" ]]
 }
 
-anytls_validate_public_runtime() {
+direct_validate_public_runtime() {
     local attempt
     subscription_enabled || return 0
     wait_for_dns_a_record "${SUBSCRIPTION_DOMAIN}" "" public \
         || die "订阅域名尚未解析：${SUBSCRIPTION_DOMAIN}；请检查橙云 A 记录后重试"
     for ((attempt = 1; attempt <= CDN_PUBLIC_ACCEPT_ATTEMPTS; attempt++)); do
-        anytls_public_subscription_ok && return 0
+        direct_public_subscription_ok && return 0
         ((attempt == CDN_PUBLIC_ACCEPT_ATTEMPTS)) || sleep "${CDN_PUBLIC_ACCEPT_SECONDS}"
     done
     die "订阅公网验收失败（已重试 ${CDN_PUBLIC_ACCEPT_ATTEMPTS} 次）：请确认 ${SUBSCRIPTION_DOMAIN} 为橙云 A、SSL 为 Full (strict)、Origin Rule 回源 8443 已生效；修复后执行 sudo easy_all apply-cloud"
@@ -427,12 +410,8 @@ show_status() {
     printf '模式: %s\n' "${CDN_MODE_LABEL}"
     printf '协议: %s\n' "$(runtime_protocol_label)"
     show_tcp_acceleration_status
-    if runtime_has_reality_entry; then
-        printf '直连域名: %s（VLESS Reality，TCP 443 公网；伪装站 127.0.0.1:9443）\n' "${DIRECT_DOMAIN}"
-        show_ntp_sync_warning
-    else
-        printf '直连域名: %s（AnyTLS，TCP 443 公网）\n' "${DIRECT_DOMAIN}"
-    fi
+    printf '直连域名: %s（VLESS Reality，TCP 443 公网；伪装站 127.0.0.1:9443）\n' "${DIRECT_DOMAIN}"
+    show_ntp_sync_warning
     if subscription_enabled; then
         printf '节点/订阅域名: %s（橙云 A，Caddy 8443 仅 Cloudflare 回源段，同时提供 HTTPUpgrade 节点与订阅）\n' \
             "${SUBSCRIPTION_DOMAIN}"
@@ -492,14 +471,14 @@ apply_easy_all() {
     runtime_apply_runtime_services
     validate_protocol_runtime
     if subscription_enabled; then
-        anytls_write_subscriptions
+        direct_write_subscriptions
         validate_subscription_runtime
         validate_singbox_subscription_runtime
     fi
     save_state
     cdn_commit_local_runtime
     commit_subscription_update
-    # 模式 4/6 恒有直连 TCP 443 入口：探测日志在最后一次 UFW reload 之后同步并强制重放。
+    # 模式 4 恒有直连 TCP 443 入口：探测日志在最后一次 UFW reload 之后同步并强制重放。
     # 失败不回滚已提交的配置，但必须让命令非零退出，绝不能接着报成功。
     probe_log_enable_and_replay || return 1
     success "本机配置与订阅已应用；未修改 Cloudflare 云端资源"
@@ -509,16 +488,16 @@ apply_cloud_phase() {
     cloudflare_collect_api_token
     persist_cloudflare_token
     # 只读查询 Zone ID 必须先于 strict 校验（design §9）：首装输入只有 Zone 名称。
-    anytls_ensure_zone_id
+    direct_ensure_zone_id
     if subscription_enabled; then
         cloudflare_ensure_zone_ssl_strict
-        # 模式 4/6 的橙云节点走 HTTPUpgrade（握手仍发 Upgrade: websocket）：Zone 关闭 WebSockets 时链路必失败。
+        # 模式 4 的橙云节点走 HTTPUpgrade（握手仍发 Upgrade: websocket）：Zone 关闭 WebSockets 时链路必失败。
         cloudflare_ensure_zone_websockets_on
     fi
-    anytls_ensure_dns
+    direct_ensure_dns
     certbot_write_cloudflare_credentials
     cdn_issue_certificate
-    anytls_ensure_origin_rule
+    direct_ensure_origin_rule
 }
 
 apply_cloud_resources() {
@@ -536,10 +515,10 @@ apply_cloud_resources() {
     runtime_apply_runtime_services
     validate_protocol_runtime
     if subscription_enabled; then
-        anytls_write_subscriptions
+        direct_write_subscriptions
         validate_subscription_runtime
         validate_singbox_subscription_runtime
-        anytls_validate_public_runtime
+        direct_validate_public_runtime
     fi
     save_state
     cdn_commit_local_runtime
@@ -571,7 +550,7 @@ update_subscription() {
     CDN_SUBSCRIPTION_CORRUPT=0
     snapshot_subscription_update
     if subscription_enabled; then
-        anytls_write_subscriptions
+        direct_write_subscriptions
         write_runtime_config
         runtime_reload_caddy
         validate_subscription_runtime
@@ -584,8 +563,7 @@ update_subscription() {
 }
 
 renew_certificate() {
-    local direct_label=AnyTLS need_direct_issue=0 need_cdn_issue=0
-    runtime_has_reality_entry && direct_label=Reality
+    local direct_label=Reality need_direct_issue=0 need_cdn_issue=0
     require_root
     acquire_runtime_write_lock
     collect_installed_state
@@ -663,10 +641,10 @@ cdn_print_cloud_inventory() {
 }
 
 # 只删本工具创建的记录与规则：类型、注释、目标三者同时匹配才删。
-anytls_purge_cloud_resources() {
+direct_purge_cloud_resources() {
     local failed=0 host proxied records count id comment current current_proxied spec
     local -a pairs=()
-    anytls_ensure_zone_id || { warn "无法确定 Zone ID；跳过云端清理"; return 1; }
+    direct_ensure_zone_id || { warn "无法确定 Zone ID；跳过云端清理"; return 1; }
     pairs+=("${DIRECT_DOMAIN}|false")
     if subscription_enabled; then
         pairs+=("${SUBSCRIPTION_DOMAIN}|true")
@@ -702,7 +680,7 @@ anytls_purge_cloud_resources() {
             || { warn "删除 Cloudflare 记录失败：${host}"; failed=1; }
     done
     if subscription_enabled; then
-        (anytls_remove_origin_rule) \
+        (direct_remove_origin_rule) \
             || { warn "删除 Origin Rule 未完成"; failed=1; }
     fi
     return "${failed}"
@@ -728,7 +706,7 @@ uninstall_all() {
     [[ ! -f "${STATE_FILE}" ]] || load_state
     cdn_print_cloud_inventory
     printf '正在按上方清单尝试清理本工具创建的云端资源；因归属保护而未删除的条目会在下方点名。\n' >&2
-    if (anytls_purge_cloud_resources); then
+    if (direct_purge_cloud_resources); then
         :
     else
         warn "云端资源清理未完成；本机卸载继续。请保存上方资源清单并手动处置；本机状态删除后无法再按本次安装状态重试清理"
@@ -775,12 +753,11 @@ rollback_fresh_install() {
     install_progress_clear
 }
 
-# 首轮端口预检：模式 4/6 的直连/橙云回源/回环端口必然使用。
+# 首轮端口预检：模式 4 的直连/橙云回源/回环端口必然使用。
 cdn_prepare_install_ports() {
-    # 模式 4/6：443 直连、8443 橙云回源与回环 10086 都必须空闲；Reality 还占用 9443 伪装回环。
+    # 模式 4：443 直连、8443 橙云回源、回环 10086 与 9443 伪装回环都必须空闲。
     prepare_fresh_install "$(runtime_public_tcp_ports)" "$(runtime_cloudflare_only_port)" \
-        "$(runtime_cdn_loopback_port)" \
-        $(runtime_has_reality_entry && caddy_reality_camouflage_port || true)
+        "$(runtime_cdn_loopback_port)" "$(caddy_reality_camouflage_port)"
 }
 
 install_all() {
@@ -810,7 +787,7 @@ install_all() {
     fi
     configure_ipv4_only
     install_progress_stage inputs
-    collect_anytls_install_inputs
+    collect_direct_install_inputs
     # 身份在创建任何云端资源前落盘，中断后可续装。Reality 的 keypair 依赖已下载的
     # sing-box（generate reality-keypair），由 core 阶段的 cdn_prepare_direct_runtime
     # 补齐并再次落盘；第二次落盘只补 Origin Rule 的 ruleset/rule ID。
@@ -823,13 +800,13 @@ install_all() {
     cloudflare_collect_api_token
     persist_cloudflare_token
     # 先只读取得 Zone ID，再校 strict；两者都在任何云资源创建之前。
-    anytls_ensure_zone_id
+    direct_ensure_zone_id
     if subscription_enabled; then
         cloudflare_ensure_zone_ssl_strict
         cloudflare_ensure_zone_websockets_on
     fi
     configure_runtime_ufw
-    anytls_ensure_dns
+    direct_ensure_dns
     certbot_write_cloudflare_credentials
     cdn_issue_certificate
     write_runtime_config
@@ -838,16 +815,16 @@ install_all() {
     runtime_apply_runtime_services
     validate_protocol_runtime
     cdn_validate_direct_runtime
-    anytls_ensure_origin_rule
+    direct_ensure_origin_rule
     persist_install_identity || die "无法落盘安装身份；已保留云端资源"
     install_progress_stage subscription
     if subscription_enabled; then
-        anytls_write_subscriptions
+        direct_write_subscriptions
         write_runtime_config
         runtime_reload_caddy
         validate_subscription_runtime
         validate_singbox_subscription_runtime
-        anytls_validate_public_runtime
+        direct_validate_public_runtime
     fi
     install_progress_stage state
     save_state

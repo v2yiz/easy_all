@@ -69,7 +69,7 @@ read_confirmation() {
 }
 
 # --- CDN 优选连接地址（cdnEdgeAddress）的安装交互 -------------------------------
-# 模式 2/3/5 拼 CloudFront 泛域名后缀，模式 1/4/6 拼 Cloudflare 泛域名后缀（由 WeTest 公布并解析）。
+# 模式 2/3 拼 CloudFront 泛域名后缀，模式 1/4 拼 Cloudflare 泛域名后缀（由 WeTest 公布并解析）。
 CDN_EDGE_CLOUDFRONT_SUFFIX="cloudfront.182682.xyz"
 CDN_EDGE_CLOUDFLARE_SUFFIX="cloudflare.182682.xyz"
 # 安装时生成的优选地址形态：10 位前缀 + 当前模式的泛域名后缀（首位字母，后九位字母或数字）。
@@ -79,8 +79,8 @@ CDN_EDGE_ALNUM="0123456789abcdefghijklmnopqrstuvwxyz"
 
 cdn_edge_mode_suffix() {
     case "${PROTOCOL:-}" in
-    cloudfront | combined-cloudfront | reality-cloudfront) printf '%s' "${CDN_EDGE_CLOUDFRONT_SUFFIX}" ;;
-    cloudflare | combined-cloudflare | reality-cloudflare) printf '%s' "${CDN_EDGE_CLOUDFLARE_SUFFIX}" ;;
+    cloudfront | reality-cloudfront) printf '%s' "${CDN_EDGE_CLOUDFRONT_SUFFIX}" ;;
+    cloudflare | reality-cloudflare) printf '%s' "${CDN_EDGE_CLOUDFLARE_SUFFIX}" ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
@@ -552,7 +552,7 @@ assert_install_ports_free() {
     local argument port owner reason_text listening_status=0
     local -a ports=()
     for argument in "$@"; do
-        # 调用方把整串端口作为一个参数传入（模式 5 的 "443 8443"）：整串交给
+        # 调用方把整串端口作为一个参数传入（如模式 3 旧装兼容期的 "443 8443"）：整串交给
         # ss 会拼出 sport = :443 8443 这种非法表达式，因此必须逐端口检查。
         read -r -a ports <<<"${argument}"
         ((${#ports[@]} > 0)) || continue
@@ -586,8 +586,6 @@ profile_script_for() {
     reality-cloudflare) printf 'reality-cloudflare.sh' ;;
     cloudfront) printf 'cloudfront.sh' ;;
     cloudflare) printf 'cloudflare.sh' ;;
-    combined-cloudfront) printf 'combined.sh' ;;
-    combined-cloudflare) printf 'combined-cloudflare.sh' ;;
     *) return 1 ;;
     esac
 }
@@ -664,7 +662,6 @@ persist_install_identity() {
         --arg origin_secret "${ORIGIN_HEADER_SECRET:-}" \
         --arg uuid "${VLESS_UUID:-}" \
         --arg vless_path "${VLESS_PATH:-}" \
-        --arg anytls_password "${ANYTLS_PASSWORD:-}" \
         --arg node_prefix "${CF_NODE_PREFIX:-}" \
         --arg sub_name "${SUB_DOWNLOAD_NAME:-}" \
         --arg protection_gb "${CDN_TRAFFIC_PROTECTION_GB:-}" \
@@ -699,7 +696,6 @@ persist_install_identity() {
             origin_header_secret: $origin_secret,
             vless_uuid: $uuid,
             vless_path: $vless_path,
-            anytls_password: $anytls_password,
             cf_node_prefix: $node_prefix,
             sub_download_name: $sub_name,
             cdn_traffic_protection_gb: $protection_gb,
@@ -737,7 +733,7 @@ load_install_identity() {
     file=$(install_identity_file)
     install_identity_schema_ok "${file}" || return 1
     for pair in \
-        VLESS_UUID:vless_uuid VLESS_PATH:vless_path ANYTLS_PASSWORD:anytls_password \
+        VLESS_UUID:vless_uuid VLESS_PATH:vless_path \
         VPS_PUBLIC_IPV4:vps_public_ipv4 CF_ZONE:cf_zone \
         CF_ORIGIN_DOMAIN:cf_origin_domain CF_NODE_DOMAIN:cf_node_domain \
         SUBSCRIPTION_DOMAIN:subscription_domain \
@@ -819,11 +815,10 @@ resume_partial_install() {
 install_marker_chain_matches() {
     local current=$1 expected
     case "${current}" in
-    # 模式 3 与模式 2/5 共用 cloudfront 链路（计量/启动门禁与持久阻断都按链判定）；
-    # 模式 4 与模式 6 共用 cloudflare 链路（橙云回源与 Origin Rule）。
-    reality-cloudfront) expected=cloudfront ;;
-    cloudfront | combined-cloudfront) expected=cloudfront ;;
-    cloudflare | combined-cloudflare | reality-cloudflare) expected=cloudflare ;;
+    # 模式 3 与模式 2 共用 cloudfront 链路（计量/启动门禁与持久阻断都按链判定）；
+    # 模式 4 与模式 1 共用 cloudflare 链路（橙云回源与 Origin Rule）。
+    reality-cloudfront | cloudfront) expected=cloudfront ;;
+    cloudflare | reality-cloudflare) expected=cloudflare ;;
     *) return 1 ;;
     esac
     [[ "$(install_progress_field CHAIN 2>/dev/null || true)" == "${expected}" ]]

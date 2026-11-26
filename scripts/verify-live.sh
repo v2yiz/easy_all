@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# 真核心 HTTP/代理链路门禁（design §13）：起真实 sing-box + Caddy，跑订阅矩阵、
-# 源站守卫、AnyTLS 与 Caddy→VLESS WebSocket 代理链路。
-# 需要 root（绑定 443/8443/10086）与锁定版本核心；缺核心/端口/进程失败即非零，不跳过。
+# 真核心 HTTP/代理链路门禁（design §13）：起真实 sing-box + Caddy，验证模式 2 的
+# 源站守卫、订阅矩阵与 Caddy→VLESS WebSocket 代理链路。
+# 模式 3/4 的 Reality 直连与单 443 回落需要额外的 Reality 客户端握手，其服务端与
+# 订阅配置由 verify-cores.sh / test_core_e2e.mjs 用真实核心校验覆盖。
+# 需要 root（绑定 443/10086）与锁定版本核心；缺核心/端口/进程失败即非零，不跳过。
 set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 SB=${SINGBOX_BIN:-/etc/easy_all/sing-box/sing-box}
 CADDY=${CADDY_BIN:-/etc/easy_all/caddy/caddy}
-[[ "$(id -u)" -eq 0 ]] || { printf 'verify-live 需要 root（端口 443/8443）：请用 sudo 运行\n' >&2; exit 2; }
+[[ "$(id -u)" -eq 0 ]] || { printf 'verify-live 需要 root（端口 443）：请用 sudo 运行\n' >&2; exit 2; }
 [[ -x "${SB}" ]] || { printf '缺少 sing-box：%s\n' "${SB}" >&2; exit 1; }
 [[ -x "${CADDY}" ]] || { printf '缺少 Caddy：%s\n' "${CADDY}" >&2; exit 1; }
 
-for port in 443 8443 10086 18080 18081 18082 19090; do
+for port in 443 10086 18081 18082 19090; do
     if command -v ss >/dev/null 2>&1 && ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q .; then
         printf 'verify-live: 端口 %s 已被占用；请先停止占用进程\n' "${port}" >&2
         exit 1
@@ -47,10 +49,10 @@ export CADDY_ADMIN_SOCKET=/run/easy_all-caddy/admin.sock
 # shellcheck source=lib/log.sh
 source "${ROOT_DIR}/lib/log.sh"
 EASY_ALL_RUNTIME_LIB_DIR="${ROOT_DIR}/lib"
-# shellcheck source=profiles/combined.sh
-source "${ROOT_DIR}/profiles/combined.sh"
+# shellcheck source=profiles/cloudfront.sh
+source "${ROOT_DIR}/profiles/cloudfront.sh"
 
-PROTOCOL=combined-cloudfront
+PROTOCOL=cloudfront
 CF_ZONE=example.com
 VPS_PUBLIC_IPV4=203.0.113.10
 SUB_DOWNLOAD_NAME=EASY_ALL
@@ -58,7 +60,6 @@ ALLOWED_TOKENS='{"owner":"tok-live-aaaaaaaa"}'
 SUBSCRIPTION_CONFIG=$(jq -cn --argjson t "${ALLOWED_TOKENS}" '{allowedTokens:$t,nodes:[]}')
 CLOUDFLARE_ZONE_ID=zoneid
 SUBSCRIPTION_MODE=deploy
-DIRECT_DOMAIN=direct.example.com DIRECT_NODE_NAME=direct ANYTLS_PASSWORD=live-test-password
 CF_NODE_DOMAIN=cf.example.com CF_NODE_PREFIX=CF
 VLESS_UUID=11111111-2222-4111-8111-111111111111 VLESS_PATH=/vless-abcdef123456
 CF_ORIGIN_DOMAIN=origin.example.com SUBSCRIPTION_DOMAIN=cf.example.com
@@ -84,14 +85,14 @@ trap cleanup_fixtures EXIT
 HEADER='X-Easy-All-Origin-Key: live-origin-secret-0123456789'
 for _ in $(seq 1 40); do
     [[ "$(curl -sk --noproxy '*' --max-time 2 -o /dev/null -w '%{http_code}' \
-        --resolve origin.example.com:8443:127.0.0.1 -H "${HEADER}" \
-        'https://origin.example.com:8443/subscribe?token=invalid' 2>/dev/null || true)" == "403" ]] && break
+        --resolve origin.example.com:443:127.0.0.1 -H "${HEADER}" \
+        'https://origin.example.com/subscribe?token=invalid' 2>/dev/null || true)" == "403" ]] && break
     sleep 0.25
 done
 
 fail() { printf 'verify-live FAIL: %s\n' "$*" >&2; exit 1; }
 code() { curl -sk --noproxy '*' --max-time 10 -o /dev/null -w '%{http_code}' "$@"; }
-BASE=(-H "${HEADER}" --resolve origin.example.com:8443:127.0.0.1)
+BASE=(-H "${HEADER}" --resolve origin.example.com:443:127.0.0.1)
 TOKEN=$(jq -r '.[]' <<<"${ALLOWED_TOKENS}")
 
 # sing-box JSON 用正式渲染器生成：格式协商要与真实产物一起验收。
@@ -122,24 +123,24 @@ done
 [[ "${client_full_ok}" == "1" ]] \
     || { tail -5 "${T}/client-full.log" >&2; fail "sing-box 订阅配置未通过真实核心启动校验"; }
 
-[[ "$(code "${BASE[@]}" https://origin.example.com:8443/easy_all-health)" == 404 ]] || fail health_removed
-[[ "$(code "${BASE[@]}" 'https://origin.example.com:8443/subscribe?token=invalid')" == 403 ]] || fail invalid_token_403
+[[ "$(code "${BASE[@]}" https://origin.example.com/easy_all-health)" == 404 ]] || fail health_removed
+[[ "$(code "${BASE[@]}" 'https://origin.example.com/subscribe?token=invalid')" == 403 ]] || fail invalid_token_403
 [[ "$(curl -sk --noproxy '*' --max-time 3 -o /dev/null -w '%{http_code}' \
-    --resolve origin.example.com:8443:127.0.0.1 'https://origin.example.com:8443/subscribe?token=invalid' || true)" == 000 ]] \
+    --resolve origin.example.com:443:127.0.0.1 'https://origin.example.com/subscribe?token=invalid' || true)" == 000 ]] \
     || fail "缺少源站头未被 abort"
 invalid_headers=$(curl -sk --noproxy '*' --max-time 10 -D - -o /dev/null "${BASE[@]}" \
-    'https://origin.example.com:8443/subscribe?token=invalid' | tr -d '\r')
+    'https://origin.example.com/subscribe?token=invalid' | tr -d '\r')
 ! grep -qi '^server:' <<<"${invalid_headers}" || fail server_header_present
-[[ "$(code "${BASE[@]}" "https://origin.example.com:8443/subscribe?token=${TOKEN}")" == 200 ]] || fail subscribe
-[[ "$(code "${BASE[@]}" "https://origin.example.com:8443/sub?token=${TOKEN}")" == 200 ]] || fail sub_alias
-[[ "$(code "${BASE[@]}" "https://origin.example.com:8443/subscribe?token=bad")" == 403 ]] || fail deny
-[[ "$(code "${BASE[@]}" -X POST "https://origin.example.com:8443/subscribe?token=${TOKEN}")" == 405 ]] || fail method
-[[ "$(code "${BASE[@]}" "https://origin.example.com:8443/subscribe/extra?token=${TOKEN}")" == 404 ]] || fail path_suffix
-[[ "$(code "${BASE[@]}" "https://origin.example.com:8443/mihomo.yaml")" == 404 ]] || fail bare_file
-[[ "$(code "${BASE[@]}" "https://origin.example.com:8443/singbox.json")" == 404 ]] || fail bare_json_file
+[[ "$(code "${BASE[@]}" "https://origin.example.com/subscribe?token=${TOKEN}")" == 200 ]] || fail subscribe
+[[ "$(code "${BASE[@]}" "https://origin.example.com/sub?token=${TOKEN}")" == 200 ]] || fail sub_alias
+[[ "$(code "${BASE[@]}" "https://origin.example.com/subscribe?token=bad")" == 403 ]] || fail deny
+[[ "$(code "${BASE[@]}" -X POST "https://origin.example.com/subscribe?token=${TOKEN}")" == 405 ]] || fail method
+[[ "$(code "${BASE[@]}" "https://origin.example.com/subscribe/extra?token=${TOKEN}")" == 404 ]] || fail path_suffix
+[[ "$(code "${BASE[@]}" "https://origin.example.com/mihomo.yaml")" == 404 ]] || fail bare_file
+[[ "$(code "${BASE[@]}" "https://origin.example.com/singbox.json")" == 404 ]] || fail bare_json_file
 
 # 格式协商：显式 flag > 已确认 sing-box UA > Clash UA > Base64。
-sub_url="https://origin.example.com:8443/subscribe?token=${TOKEN}"
+sub_url="https://origin.example.com/subscribe?token=${TOKEN}"
 body() { curl -sk --noproxy '*' --max-time 10 "${BASE[@]}" "$@"; }
 json_headers=$(curl -sk --noproxy '*' --max-time 10 -D - -o /dev/null "${BASE[@]}" \
     "${sub_url}&flag=singbox" | tr -d '\r')
@@ -155,7 +156,7 @@ rm -f -- "${T}/subscription-userinfo"
 json_body=$(body "${sub_url}&flag=singbox")
 jq -e '.outbounds | map(.tag) | index("PROXY") != null' <<<"${json_body}" >/dev/null \
     || fail json_proxy_selector
-jq -e '.outbounds | map(select(.type == "anytls" or .type == "vless")) | length > 0' \
+jq -e '.outbounds | map(select(.type == "vless")) | length > 0' \
     <<<"${json_body}" >/dev/null || fail json_nodes
 for client in SFA SFI SFM SFT SFW SFL; do
     ua="${client} (sing-box 1.14.4; language zh_CN)"
@@ -179,21 +180,15 @@ mv "${T}/subs/singbox.json" "${T}/subs/singbox.json.off"
 mv "${T}/subs/singbox.json.off" "${T}/subs/singbox.json"
 [[ "$(code "${BASE[@]}" "${sub_url}&flag=singbox")" == 200 ]] || fail json_restore
 curl -sk --noproxy '*' --max-time 10 -D - -o /dev/null "${BASE[@]}" \
-    "https://origin.example.com:8443/subscribe?token=bad" | tr -d '\r' \
+    "https://origin.example.com/subscribe?token=bad" | tr -d '\r' \
     | grep -qi 'cache-control: no-store' || fail denied_headers
 
-cat >"${T}/client-anytls.json" <<JSON
-{"log":{"level":"warn"},"inbounds":[{"type":"mixed","listen":"127.0.0.1","listen_port":18080}],
-"outbounds":[{"type":"anytls","server":"127.0.0.1","server_port":443,"password":"${ANYTLS_PASSWORD}","tls":{"enabled":true,"server_name":"direct.example.com","insecure":true}}]}
-JSON
 cat >"${T}/client-ws.json" <<JSON
 {"log":{"level":"warn"},"inbounds":[{"type":"mixed","listen":"127.0.0.1","listen_port":18081}],
-"outbounds":[{"type":"vless","server":"127.0.0.1","server_port":8443,"uuid":"${VLESS_UUID}","tls":{"enabled":true,"server_name":"origin.example.com","insecure":true},"transport":{"type":"ws","path":"${VLESS_PATH}","headers":{"Host":"origin.example.com","X-Easy-All-Origin-Key":"${ORIGIN_HEADER_SECRET}"}}}]}
+"outbounds":[{"type":"vless","server":"127.0.0.1","server_port":443,"uuid":"${VLESS_UUID}","tls":{"enabled":true,"server_name":"origin.example.com","insecure":true},"transport":{"type":"ws","path":"${VLESS_PATH}","headers":{"Host":"origin.example.com","X-Easy-All-Origin-Key":"${ORIGIN_HEADER_SECRET}"}}}]}
 JSON
-"${SB}" run -c "${T}/client-anytls.json" >"${T}/client-anytls.log" 2>&1 & CPID1=$!
 "${SB}" run -c "${T}/client-ws.json" >"${T}/client-ws.log" 2>&1 & CPID2=$!
 sleep 2
-kill -0 "${CPID1}" 2>/dev/null || { tail -5 "${T}/client-anytls.log" >&2; fail "AnyTLS 客户端进程未存活"; }
 kill -0 "${CPID2}" 2>/dev/null || { tail -5 "${T}/client-ws.log" >&2; fail "WebSocket 客户端进程未存活"; }
 proxy_status() {
     # 探测端点只验「请求真的穿过了代理并由目标站应答」：必须无未认证限流（api.github.com 对匿名
@@ -204,13 +199,13 @@ proxy_status() {
         curl -sS --max-time 10 -x "http://127.0.0.1:$1" -o /dev/null -w '%{http_code}' \
         https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null
 }
-for port in 18080 18081; do
+for port in 18081; do
     status=""
     for _ in $(seq 1 10); do
         status=$(proxy_status "${port}")
         [[ "${status}" == "200" ]] && break
         sleep 1
     done
-    [[ "${status}" == "200" ]] || { tail -5 "${T}/client-anytls.log" "${T}/client-ws.log" >&2; fail "proxy ${port} 返回 ${status:-无}"; }
+    [[ "${status}" == "200" ]] || { tail -5 "${T}/client-ws.log" >&2; fail "proxy ${port} 返回 ${status:-无}"; }
 done
-printf 'ok - 真核心 HTTP/代理链路（AnyTLS + Caddy→VLESS WebSocket）\n'
+printf 'ok - 真核心 HTTP/代理链路（Caddy→VLESS WebSocket）\n'

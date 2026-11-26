@@ -1,3 +1,14 @@
+## 5.7.0 更新说明（2026-11-26）
+
+### 破坏性变更
+
+- **删除模式 5、模式 6（AnyTLS + CloudFront / AnyTLS + CloudFlare）**（`easy_all`、`profiles/`、`lib/`、`docs/`、`test/`）：
+  - 安装菜单收敛为模式 1–4；`profiles/combined.sh` 与 `profiles/combined-cloudflare.sh` 从仓库与 `runtime.manifest` 移除，`ANYTLS_PASSWORD` 直连身份、AnyTLS 入站与三端节点生成一并删除。
+  - `PROTOCOL=combined-cloudfront` / `combined-cloudflare` 的既有安装不再被接管：启动器会提示先用安装该版本的旧 easy_all 执行 `sudo easy_all uninstall`，再重新安装。
+  - 模式 1–4 的状态字段集、订阅产物、命令契约、端口与证书语义保持不变；`lib/reality-cloudflare-mode.sh` 保留为模式 4 的橙云业务编排库（原 `lib/anytls-mode.sh` 重命名）。
+
+---
+
 ## 5.6.3 更新说明（2026-11-26）
 
 ### 文档优化

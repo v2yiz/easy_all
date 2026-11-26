@@ -44,7 +44,7 @@ readonly STATE_SCHEMA_VERSION="${EASY_ALL_STATE_SCHEMA_VERSION}"
 readonly SUBSCRIPTION_DEPLOY_DESCRIPTION="Caddy"
 
 # easy_all 专用 Certbot lineage（design §6）：DNS-01 签发，不使用 Caddy DNS 插件，
-# 不开放 80 端口。模式 4/6 使用独立 CDN lineage（easy_all-cdn）隔离直连与橙云 SAN。
+# 不开放 80 端口。模式 4 使用独立 CDN lineage（easy_all-cdn）隔离直连与橙云 SAN。
 readonly CERTBOT_LINEAGE_NAME="easy_all"
 readonly CERTBOT_LIVE_DIR="${EASY_ALL_CERTBOT_LIVE_DIR_OVERRIDE:-/etc/letsencrypt/live/easy_all}"
 readonly CERTBOT_CDN_LINEAGE_NAME="easy_all-cdn"
@@ -235,7 +235,7 @@ internal_traffic_prepare() {
         install_marker_chain_matches "${CDN_PROFILE_KEY:-}" \
             || die "安装进度标记缺少本模式要求的 CHAIN；拒绝启动 sing-box"
         case "${CDN_PROFILE_KEY:-}" in
-        cloudfront | combined-cloudfront | reality-cloudfront) chain=cloudfront ;;
+        cloudfront | reality-cloudfront) chain=cloudfront ;;
         cloudflare) chain=cloudflare ;;
         *) die "当前模式没有可校验的 saas 链：${CDN_PROFILE_KEY:-空}" ;;
         esac
@@ -257,7 +257,7 @@ internal_traffic_prepare() {
 }
 
 # 内部入口：Certbot 定时 hook。自行取 runtime 锁，只部署已签发证书（不再次签发）。
-# 模式 4/6 同时维护主直连 lineage（easy_all）与橙云回源 lineage（easy_all-cdn）。
+# 模式 4 同时维护主直连 lineage（easy_all）与橙云回源 lineage（easy_all-cdn）。
 internal_cert_deploy() {
     local lineage=${RENEWED_LINEAGE:-} real_lineage="" primary_dir="" cdn_dir="" slot=""
     require_root
@@ -319,8 +319,8 @@ normalize_vless_path() {
 # 本机探活仍用 caddy_site_host：它才是本机实际监听的源站/订阅站点主机。
 subscription_link_domain() {
     case "${PROTOCOL:-}" in
-    cloudfront | combined-cloudfront | reality-cloudfront) caddy_require_host SUBSCRIPTION_DOMAIN ;;
-    cloudflare | combined-cloudflare | reality-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
+    cloudfront | reality-cloudfront) caddy_require_host SUBSCRIPTION_DOMAIN ;;
+    cloudflare | reality-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
@@ -333,18 +333,12 @@ runtime_protocol_label() {
     reality-cloudflare) printf 'Reality（direct TCP 443）+ VLESS HTTPUpgrade over Cloudflare 橙云' ;;
     cloudfront) printf 'VLESS WebSocket over AWS CloudFront' ;;
     cloudflare) printf 'VLESS HTTPUpgrade over Cloudflare 橙云' ;;
-    combined-cloudfront) printf 'AnyTLS（direct TCP 443）+ VLESS WebSocket over AWS CloudFront' ;;
-    combined-cloudflare) printf 'AnyTLS（direct TCP 443）+ VLESS HTTPUpgrade over Cloudflare 橙云' ;;
     *) printf '%s\n' "${PROTOCOL:-未知}" ;;
     esac
 }
 
 runtime_has_direct_entry() {
     state_protocol_has_direct_entry "${PROTOCOL:-}"
-}
-
-runtime_has_anytls_entry() {
-    state_protocol_has_anytls_entry "${PROTOCOL:-}"
 }
 
 runtime_has_reality_entry() {
@@ -356,13 +350,10 @@ runtime_has_cdn_entry() {
 }
 
 runtime_uses_split_cdn_cert() {
-    case "${PROTOCOL:-}" in
-    reality-cloudflare | combined-cloudflare) return 0 ;;
-    esac
-    return 1
+    [[ "${PROTOCOL:-}" == "reality-cloudflare" ]]
 }
 
-# 公网 TCP 业务端口（design §2）。模式 1 的 443 与模式 4/6 的 8443 只对 Cloudflare 段开放；
+# 公网 TCP 业务端口（design §2）。模式 1 的 443 与模式 4 的 8443 只对 Cloudflare 段开放；
 # 模式 3 采用单 443 合一，仅在旧版 v5.5.0 尚未执行 apply-cloud 迁移期间临时保留 8443。
 runtime_public_tcp_ports() {
     case "${PROTOCOL:-}" in
@@ -376,18 +367,16 @@ runtime_public_tcp_ports() {
     reality-cloudflare) printf '443' ;;
     cloudfront) printf '443' ;;
     cloudflare) printf '' ;;
-    combined-cloudfront) printf '443 8443' ;;
-    combined-cloudflare) printf '443' ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
 
 # 只允许 Cloudflare IPv4 段访问的业务端口；空表示本模式没有该端口。
-# 模式 3/5 的 8443 由 Caddy 的 X-Easy-All-Origin-Key 守卫，不按源段限制。
+# 模式 3 的 8443 迁移兼容端口由 Caddy 的 X-Easy-All-Origin-Key 守卫，不按源段限制。
 runtime_cloudflare_only_port() {
     case "${PROTOCOL:-}" in
     cloudflare) printf '443' ;;
-    combined-cloudflare | reality-cloudflare) printf '8443' ;;
+    reality-cloudflare) printf '8443' ;;
     esac
     return 0
 }
@@ -399,37 +388,31 @@ runtime_cdn_loopback_port() {
 
 runtime_caddy_site_enabled() {
     case "${PROTOCOL:-}" in
-    # 模式 3：Caddy 始终运行：它同时承担 127.0.0.1:9443 的 Reality 伪装站与
-    # 0.0.0.0:8443 的 CloudFront 源站（含订阅）；模式 4 同构（8443 橙云回源 + 9443 伪装站）。
-    reality-cloudfront | reality-cloudflare) return 0 ;;
-    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
+    # 模式 3：Caddy 始终运行：它同时承担 127.0.0.1:9443 的 Reality 伪装站与回环 CloudFront 源站；
+    # 模式 4：8443 橙云回源 + 9443 伪装站。
+    reality-cloudfront | reality-cloudflare | cloudfront | cloudflare) return 0 ;;
     *) return 1 ;;
     esac
 }
 
-# 订阅站点是否启用：模式 3/4 与模式 5 同构，没有 link 模式，8443 订阅站点始终随之部署；
-# 其余模式的订阅站点与 Caddy 站点重合。
+# 订阅站点是否启用：四模式均始终部署。
 runtime_subscription_site_enabled() {
-    case "${PROTOCOL:-}" in
-    reality-cloudfront | reality-cloudflare) return 0 ;;
-    esac
     runtime_caddy_site_enabled
 }
 
 runtime_singbox_exec_start_pre() {
     case "${PROTOCOL:-}" in
-    cloudfront | combined-cloudfront | reality-cloudfront)
+    cloudfront | reality-cloudfront)
         printf '%s internal-traffic-prepare' "${COMMAND_PATH}"
         ;;
     *) printf '' ;;
     esac
 }
 
-# --- 状态契约与订阅配置（六模式共用） ---------------------------------------
+# --- 状态契约与订阅配置（四模式共用） ---------------------------------------
 
-# AnyTLS 直连身份（模式 5/6 共用）：域名、节点名与密码先落盘再创建任何资源。
-# 域名与节点名分两步提示：模式 5/6 要先把所有域名问完，再把两个节点名排在一起。
-anytls_collect_direct_domain() {
+# 直连身份（模式 3/4 共用）：域名与节点名分两步提示，先把所有域名问完再把两个节点名排在一起。
+collect_direct_domain() {
     DIRECT_DOMAIN=$(normalize_domain "$(prompt_value \
         '直连节点域名（灰云 A 记录指向本机）' "${DIRECT_DOMAIN:-node.${CF_ZONE}}")")
     validate_domain "${DIRECT_DOMAIN}" || die "直连域名无效：${DIRECT_DOMAIN}"
@@ -437,22 +420,12 @@ anytls_collect_direct_domain() {
         || die "直连域名必须属于 ${CF_ZONE}：${DIRECT_DOMAIN}"
 }
 
-anytls_collect_direct_node_name() {
+collect_direct_node_name() {
     DIRECT_NODE_NAME=$(prompt_value '直连节点名' "${DIRECT_NODE_NAME:-🇺🇸直连}")
     validate_node_name "${DIRECT_NODE_NAME}" \
         || die "直连节点名无效（1-64 字符，不能含控制字符）"
     cdn_node_name_reserved "${DIRECT_NODE_NAME}" && die "直连节点名不能使用保留组名：${DIRECT_NODE_NAME}"
     return 0
-}
-
-anytls_prepare_runtime() {
-    [[ -n "${DIRECT_DOMAIN:-}" && -n "${DIRECT_NODE_NAME:-}" ]] \
-        || die "直连域名/节点名缺失；请先执行 sudo easy_all uninstall 后重新安装"
-    ANYTLS_PASSWORD=${ANYTLS_PASSWORD:-$(generate_secret)}
-    [[ ${#ANYTLS_PASSWORD} -ge 16 ]] || die "AnyTLS 密码长度不足 16"
-    # 密码生成后立即落盘：中断续装必须复用同一身份，不能等最终 save_state。
-    persist_install_identity \
-        || die "无法落盘安装身份；在生成运行配置前停止"
 }
 
 # 交互确认是否可用：提示写 stderr、输入读 stdin，两者都必须是终端（非交互即 fail-closed 拒绝）。
@@ -518,7 +491,7 @@ dns_confirm_takeover() {
         || die "Cloudflare ${host} 的同名记录不是本工具创建的（注释：${comment}）；拒绝接管"
 }
 
-# DNS 记录的唯一写入入口（六模式共用）：先按名字读取全部记录，再校验类型/代理状态/目标/归属。
+# DNS 记录的唯一写入入口（四模式共用）：先按名字读取全部记录，再校验类型/代理状态/目标/归属。
 # 同名其他类型或多条同名记录一律阻止写入；非受管记录在交互终端下需确认是否强制接管。
 dns_ensure_record() {
     local host=$1 type=$2 content=$3 proxied=$4
@@ -832,9 +805,6 @@ cdn_validate_state_structure() {
         validate_domain "${DIRECT_DOMAIN}" || die "状态中的直连域名无效：${DIRECT_DOMAIN}"
         validate_node_name "${DIRECT_NODE_NAME}" || die "状态中的直连节点名无效：${DIRECT_NODE_NAME}"
     fi
-    if runtime_has_anytls_entry; then
-        [[ ${#ANYTLS_PASSWORD} -ge 16 ]] || die "状态中的 AnyTLS 密码过短"
-    fi
     if runtime_has_reality_entry; then
         validate_uuid "${VLESS_UUID}" || die "状态中的 VLESS UUID 无效"
         [[ "${REALITY_PRIVATE_KEY}" =~ ^[A-Za-z0-9_-]{42,44}=?$ ]] \
@@ -866,14 +836,14 @@ cdn_validate_state_structure() {
         [[ "${CF_ORIGIN_DOMAIN}" != "${SUBSCRIPTION_DOMAIN}" ]] \
             || die "状态中的源站域名不得等于订阅域名"
     fi
-    if [[ "${protocol}" == "combined-cloudflare" || "${protocol}" == "reality-cloudflare" ]]; then
+    if [[ "${protocol}" == "reality-cloudflare" ]]; then
         validate_domain "${CF_NODE_DOMAIN}" || die "状态中的节点域名无效：${CF_NODE_DOMAIN}"
         [[ "${CF_NODE_DOMAIN}" == *".${CF_ZONE}" ]] \
             || die "状态中的节点域名不属于 ${CF_ZONE}：${CF_NODE_DOMAIN}"
         [[ "${CF_NODE_DOMAIN}" != "${DIRECT_DOMAIN}" ]] \
             || die "状态中的节点域名不得等于直连域名：${CF_NODE_DOMAIN}"
         [[ "${SUBSCRIPTION_MODE}" == "deploy" ]] \
-            || die "状态中的订阅模式无效（模式 4/6 固定 deploy）：${SUBSCRIPTION_MODE}"
+            || die "状态中的订阅模式无效（模式 4 固定 deploy）：${SUBSCRIPTION_MODE}"
     fi
     cdn_derive_runtime_fields || die "状态缺少可用于派生运行时的字段"
 }
@@ -1009,7 +979,7 @@ snapshot_ufw_state() {
     fi
 }
 
-# 按模式放行公网端口；模式 1 的 443 与橙云回源（模式 4/6）的 8443 只允许 Cloudflare 官方 IPv4 段。
+# 按模式放行公网端口；模式 1 的 443 与橙云回源（模式 4）的 8443 只允许 Cloudflare 官方 IPv4 段。
 configure_runtime_ufw() {
     local public_ports cf_port desired_ports window_target_port
     snapshot_ufw_state
@@ -1054,8 +1024,8 @@ configure_runtime_ufw() {
 # --- 证书（design §6） -------------------------------------------------------
 
 certificate_required_hosts() {
-    # 同一域名复用（如模式 3/5 的直连域名等于源站域名）只保留一个 -d；域名顺序不影响签发与展示。
-    # 模式 4/6 采用双证书 SAN 隔离：主证书只覆盖 DIRECT_DOMAIN，CF_NODE_DOMAIN 由独立 CDN 证书承载。
+    # 同一域名复用（如模式 3 的直连域名等于源站域名）只保留一个 -d；域名顺序不影响签发与展示。
+    # 模式 4 采用双证书 SAN 隔离：主证书只覆盖 DIRECT_DOMAIN，CF_NODE_DOMAIN 由独立 CDN 证书承载。
     {
         if runtime_has_direct_entry; then
             printf '%s\n' "${DIRECT_DOMAIN}"
@@ -1643,7 +1613,7 @@ runtime_config_has_cdn_inbound() {
     jq -e 'any(.inbounds[]?; .tag == "vless-cdn-in")' "${config}" >/dev/null 2>&1
 }
 
-# 必需监听端口按候选配置派生：受限（blocked）时不要求 10086，模式 5 仍要求 443。
+# 必需监听端口按候选配置派生：受限（blocked）时不要求 10086，模式 3 仍要求 443。
 runtime_singbox_required_ports() {
     local ports=""
     runtime_has_direct_entry && ports="443"
@@ -1714,14 +1684,12 @@ runtime_ports_listening() {
 }
 
 runtime_base64_markers() {
-    runtime_has_anytls_entry && printf 'anytls://\n'
     runtime_has_reality_entry && printf 'security=reality\n'
     runtime_has_cdn_entry && printf 'type=%s\n' "$(singbox_cdn_transport_type)"
     return 0
 }
 
 runtime_mihomo_markers() {
-    runtime_has_anytls_entry && printf 'type: anytls\n'
     runtime_has_reality_entry && printf 'reality-opts:\n'
     if runtime_has_cdn_entry; then
         printf 'network: ws\n'
@@ -1733,7 +1701,7 @@ runtime_mihomo_markers() {
 
 runtime_primary_node_name() {
     if runtime_has_direct_entry; then
-        printf '%s\n' "${DIRECT_NODE_NAME:-AnyTLS}"
+        printf '%s\n' "${DIRECT_NODE_NAME:-Reality}"
     else
         printf '%s\n' "${CF_NODE_PREFIX:-VLESS-WS}"
     fi

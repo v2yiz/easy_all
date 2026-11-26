@@ -145,7 +145,7 @@ collect_cloudflare_install_inputs() {
 
 # --- Cloudflare token and DNS -------------------------------------------------
 
-# 收集、格式校验与 0600 持久化都在 lib/cf-dns.sh（六模式共用）。
+# 收集、格式校验与 0600 持久化都在 lib/cf-dns.sh（四模式共用）。
 
 cdn_record_belongs_to_easy_all() {
     [[ "${1:-}" == easy_all* ]]
@@ -204,7 +204,7 @@ cdn_issue_certificate() {
 
 # 模式 1 没有 985GB 熔断：Caddy 代理路径始终可用，订阅始终可用。
 write_runtime_config() {
-    # 订阅产物是否可用：配置损坏时不得把 503 降级站点判成就绪（对齐 anytls-mode 的写法）。
+    # 订阅产物是否可用：配置损坏时不得把 503 降级站点判成就绪（对齐模式 4 的写法）。
     local subscription_ok=0
     if [[ "${CDN_SUBSCRIPTION_CORRUPT:-0}" == "0" ]] && cdn_config_ready; then
         subscription_ok=1
@@ -774,7 +774,7 @@ cdn_purge_cloud_resources() {
     # 因此必须排在 Zone 依赖块**之前**无条件执行——cdn_ensure_zone_id 的失败路径只有 die
     # （exit 1），放在它之后等于「Zone 补查失败就永远吊销不了证书」，正是孤儿证书的来源。
     (cdn_purge_origin_certificate) || { warn "Cloudflare Origin CA 证书吊销未完成"; purge_failed=1; }
-    # 状态里缺 Zone ID 时先补查（同 anytls 的 purge）：不能因为状态不完整连 DNS 记录一起放弃。
+    # 状态里缺 Zone ID 时先补查（同模式 4 的 purge）：不能因为状态不完整连 DNS 记录一起放弃。
     # 补查失败会 die（在调用方子 shell 内），DNS 记录随之保留——这是刻意的保守行为。
     cdn_ensure_zone_id
     (cdn_purge_cloudflare_dns) || { warn "Cloudflare 记录清理未完成"; purge_failed=1; }

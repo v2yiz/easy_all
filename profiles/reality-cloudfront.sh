@@ -13,7 +13,7 @@ EASY_ALL_RUNTIME_LIB_DIR="${REALITY_CLOUDFRONT_PROFILE_ROOT}/../lib"
 export EASY_ALL_RUNTIME_LIB_DIR
 
 # 两个节点名的推荐默认值：必须在加载 singbox-runtime.sh 之前赋值，否则会被其
-# AnyTLS / VLESS-WS 兜底值覆盖，交互提示与文档默认名不一致。
+# Reality / VLESS-WS 兜底值覆盖，交互提示与文档默认名不一致。
 DIRECT_NODE_NAME=${DIRECT_NODE_NAME:-🇺🇸Reality}
 CF_NODE_PREFIX=${CF_NODE_PREFIX:-🇺🇸AWS}
 

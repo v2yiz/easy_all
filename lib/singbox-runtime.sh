@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-# 六模式 sing-box 本机配置与客户端节点（design §7、§12）。
+# 四模式 sing-box 本机配置与客户端节点（design §7、§12）。
 # 依赖调用方提供 log.sh 的 die/warn/info/fail，以及模式字段：
-# PROTOCOL、DIRECT_DOMAIN、DIRECT_NODE_NAME、ANYTLS_PASSWORD、VLESS_UUID、VLESS_PATH、
+# PROTOCOL、DIRECT_DOMAIN、DIRECT_NODE_NAME、VLESS_UUID、VLESS_PATH、
 # REALITY_PRIVATE_KEY、REALITY_PUBLIC_KEY、REALITY_SHORT_ID、
 # CF_NODE_DOMAIN、CF_NODE_PREFIX。CF_EDGE_ADDRESS 可选：非空时只替换本机 CDN 节点的
 # 连接地址，SNI 与 transport Host 仍是 CF_NODE_DOMAIN（订阅配置里的 cdnEdgeAddress）。
@@ -15,21 +15,14 @@ source "${SINGBOX_RUNTIME_LIB_DIR}/singbox-core.sh"
 : "${CERT_DIR:=/etc/easy_all/certs}"
 : "${CERT_FILE:=${CERT_DIR}/fullchain.pem}"
 : "${KEY_FILE:=${CERT_DIR}/private.key}"
-: "${DIRECT_NODE_NAME:=AnyTLS}"
+: "${DIRECT_NODE_NAME:=Reality}"
 : "${CF_NODE_PREFIX:=VLESS-WS}"
 
 singbox_require_protocol() {
     case "${PROTOCOL:-}" in
-    reality-cloudfront | reality-cloudflare | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare | cloudfront | cloudflare) return 0 ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
-}
-
-singbox_protocol_has_anytls() {
-    case "${PROTOCOL:-}" in
-    combined-cloudfront | combined-cloudflare) return 0 ;;
-    esac
-    return 1
 }
 
 singbox_protocol_has_reality() {
@@ -41,16 +34,16 @@ singbox_protocol_has_reality() {
 
 singbox_protocol_has_cdn() {
     case "${PROTOCOL:-}" in
-    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare | reality-cloudfront | reality-cloudflare) return 0 ;;
+    cloudfront | cloudflare | reality-cloudfront | reality-cloudflare) return 0 ;;
     esac
     return 1
 }
 
 # CDN 传输按 CDN 家族区分：CloudFront 会改写 Connection 并剥离非完整 WebSocket 握手
-# 的 Upgrade 头，只有橙云模式（1/4/6）能用 httpupgrade；其余一律 ws。
+# 的 Upgrade 头，只有橙云模式（1/4）能用 httpupgrade；其余一律 ws。
 singbox_cdn_transport_type() {
     case "${PROTOCOL:-}" in
-    cloudflare | reality-cloudflare | combined-cloudflare) printf 'httpupgrade\n' ;;
+    cloudflare | reality-cloudflare) printf 'httpupgrade\n' ;;
     *) printf 'ws\n' ;;
     esac
 }
@@ -67,27 +60,6 @@ singbox_private_ranges_json() {
       "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24",
       "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4"
     ]'
-}
-
-singbox_anytls_inbound_json() {
-    singbox_protocol_has_anytls || { printf 'null'; return 0; }
-    [[ -n "${DIRECT_DOMAIN:-}" ]] || die "缺少 DIRECT_DOMAIN，无法生成 AnyTLS 入站"
-    [[ -n "${ANYTLS_PASSWORD:-}" ]] || die "缺少 ANYTLS_PASSWORD，无法生成 AnyTLS 入站"
-    jq -cn --arg domain "${DIRECT_DOMAIN}" --arg password "${ANYTLS_PASSWORD}" \
-        --arg cert "${CERT_FILE}" --arg key "${KEY_FILE}" '
-        {
-          type: "anytls",
-          tag: "anytls-in",
-          listen: "0.0.0.0",
-          listen_port: 443,
-          users: [{name: "easy_all", password: $password}],
-          tls: {
-            enabled: true,
-            server_name: $domain,
-            certificate_path: $cert,
-            key_path: $key
-          }
-        }'
 }
 
 # Reality 自偷入站：443 上完成 REALITY 握手，非 Reality 探测由 sing-box 透明转发到
@@ -120,7 +92,7 @@ singbox_reality_inbound_json() {
         }'
 }
 
-# blocked=1 时省略 CDN 入站：模式 5/6 保留直连入站，重启核心即终止旧 CDN 长连接。
+# blocked=1 时省略 CDN 入站：模式 3/4 保留直连入站，重启核心即终止旧 CDN 长连接。
 singbox_vless_inbound_json() {
     local blocked=$1
     singbox_protocol_has_cdn || { printf 'null'; return 0; }
@@ -141,10 +113,9 @@ singbox_vless_inbound_json() {
 
 singbox_inbounds_json() {
     local blocked=$1
-    jq -cn --argjson anytls "$(singbox_anytls_inbound_json)" \
-        --argjson reality "$(singbox_reality_inbound_json)" \
+    jq -cn --argjson reality "$(singbox_reality_inbound_json)" \
         --argjson vless "$(singbox_vless_inbound_json "${blocked}")" \
-        '[$anytls, $reality, $vless] | map(select(. != null))'
+        '[$reality, $vless] | map(select(. != null))'
 }
 
 render_singbox_config() {
@@ -242,26 +213,6 @@ write_singbox_config() {
 
 # --- 客户端节点（design §12） -------------------------------------------------
 
-build_anytls_link() {
-    [[ -n "${DIRECT_DOMAIN:-}" ]] || die "缺少 DIRECT_DOMAIN，无法生成 AnyTLS 节点链接"
-    [[ -n "${ANYTLS_PASSWORD:-}" ]] || die "缺少 ANYTLS_PASSWORD，无法生成 AnyTLS 节点链接"
-    printf 'anytls://%s@%s:443/?sni=%s&insecure=0#%s' \
-        "$(singbox_uri_encode "${ANYTLS_PASSWORD}")" \
-        "${DIRECT_DOMAIN}" \
-        "$(singbox_uri_encode "${DIRECT_DOMAIN}")" \
-        "$(singbox_uri_encode "${DIRECT_NODE_NAME}")"
-}
-
-build_mihomo_anytls_node() {
-    [[ -n "${DIRECT_DOMAIN:-}" ]] || die "缺少 DIRECT_DOMAIN，无法生成 AnyTLS 节点"
-    [[ -n "${ANYTLS_PASSWORD:-}" ]] || die "缺少 ANYTLS_PASSWORD，无法生成 AnyTLS 节点"
-    jq -nr --arg name "${DIRECT_NODE_NAME}" --arg server "${DIRECT_DOMAIN}" \
-        --arg password "${ANYTLS_PASSWORD}" '
-        "  - name: \($name|@json)\n    type: anytls\n    server: \($server|@json)\n    port: 443\n" +
-        "    password: \($password|@json)\n    sni: \($server|@json)\n" +
-        "    client-fingerprint: chrome\n    udp: true\n    skip-cert-verify: false\n"'
-}
-
 build_reality_link() {
     [[ -n "${DIRECT_DOMAIN:-}" ]] || die "缺少 DIRECT_DOMAIN，无法生成 Reality 节点链接"
     [[ -n "${VLESS_UUID:-}" ]] || die "缺少 VLESS_UUID，无法生成 Reality 节点链接"
@@ -333,17 +284,6 @@ build_mihomo_ws_node() {
 }
 
 # --- sing-box 客户端订阅节点 -------------------------------------------------
-
-build_singbox_anytls_outbound() {
-    [[ -n "${DIRECT_DOMAIN:-}" ]] || die "缺少 DIRECT_DOMAIN，无法生成 sing-box AnyTLS 节点"
-    [[ -n "${ANYTLS_PASSWORD:-}" ]] || die "缺少 ANYTLS_PASSWORD，无法生成 sing-box AnyTLS 节点"
-    jq -cn --arg tag "${DIRECT_NODE_NAME}" --arg server "${DIRECT_DOMAIN}" \
-        --arg password "${ANYTLS_PASSWORD}" '
-        {type: "anytls", tag: $tag, server: $server, server_port: 443,
-         password: $password,
-         tls: {enabled: true, server_name: $server,
-               utls: {enabled: true, fingerprint: "chrome"}}}'
-}
 
 build_singbox_reality_outbound() {
     [[ -n "${DIRECT_DOMAIN:-}" ]] || die "缺少 DIRECT_DOMAIN，无法生成 sing-box Reality 节点"

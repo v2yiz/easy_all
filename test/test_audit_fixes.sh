@@ -199,7 +199,7 @@ assert_not_contains "卸载流程不再包含旧 Globalping 兼容分支" \
 echo "=== 4. 新链路 Cloudflare Token 最小权限与 AWS 凭据仅内存 ==="
 core_content=$(<"${ROOT_DIR}/lib/cloudfront-mode.sh")
 shared_dns_content=$(<"${ROOT_DIR}/lib/cf-dns.sh")
-# Token 收集与 0600 落盘是六模式共用的单一实现：模式 1/5 只沿用默认的 Zone 只读 + DNS 编辑。
+# Token 收集与 0600 落盘是四模式共用的单一实现：模式 1/3 只沿用默认的 Zone 只读 + DNS 编辑。
 assert_contains "shared token prompt defaults to zone read + DNS edit" \
     "${shared_dns_content}" 'Cloudflare API Token（Zone 只读 + DNS 编辑）'
 assert_contains "token persistence lives in the shared library" \
@@ -387,8 +387,8 @@ tcp_tuning_case() { # $1=PROTOCOL $2=CDN_PROVIDER -> 输出生成的 sysctl 文�
             cat "${TCP_SYSCTL_CONF}"
         ' _ "${ROOT_DIR}" "$1" "${2:-}" || fail "TCP 调优失败（$1 ${2:-无 CDN}）"
 }
-cdn_tuning=$(tcp_tuning_case combined-cloudfront aws)
-assert_not_contains "模式 5 不写 tcp_no_metrics_save" "${cdn_tuning}" "tcp_no_metrics_save"
+cdn_tuning=$(tcp_tuning_case reality-cloudfront aws)
+assert_not_contains "模式 3 不写 tcp_no_metrics_save" "${cdn_tuning}" "tcp_no_metrics_save"
 assert_contains "所有模式都保留 fq 与缓冲区调优" "${cdn_tuning}" "net.core.default_qdisc = fq"
 
 # 6.4 UFW SSH 端口策略：必须校验真实端口，而不是回落的 22（回归：非 22 端口时初始化中断）
@@ -519,7 +519,7 @@ remote_dir=${remote_dir%$'\r'}
 assert_equal "MOTD 与 CR 混入 stdout 后仍取出远端目录" \
     "/tmp/easy_all_init.abc12345" "${remote_dir}"
 
-echo "=== 7. 系统依赖与六模式运行时入口 ==="
+echo "=== 7. 系统依赖与四模式运行时入口 ==="
 # 依赖清单只在共享运行时定义一次：sudo/vim 与 DNS-01 所需包都必须在这里。
 package_list_of() {
     awk '/local pkgs=\(/{flag=1; next} flag && /^[[:space:]]*\)/{exit} flag' "$1"
@@ -568,7 +568,7 @@ PROTOCOL=cloudfront
 CDN_TRAFFIC_PROTECTION_GB=985
 state_protocol_uses_cloudfront() {
     case "${1:-}" in
-    cloudfront | combined-cloudfront) return 0 ;;
+    cloudfront | reality-cloudfront) return 0 ;;
     esac
     return 1
 }
@@ -982,7 +982,7 @@ forward_block=$(sed -n '/^forward_env=()/,/^done/p' "${ROOT_DIR}/bootstrap.sh")
 
 # 14. edit-sub 的交互输入必须早于写锁：否则流量守卫（同一把排他锁）在用户停留于提示
 # 期间取不到锁，监控与 985 GB 熔断整段时间失效。
-for mode_file in anytls-mode cloudfront-mode cloudflare-mode; do
+for mode_file in reality-cloudflare-mode cloudfront-mode cloudflare-mode; do
     body=$(sed -n '/^update_subscription() {/,/^}/p' "${ROOT_DIR}/lib/${mode_file}.sh")
     [[ -n "${body}" ]] || fail "audit: ${mode_file} 未找到 update_subscription"
     assert_before "audit: ${mode_file} 交互输入早于写锁" "${body}" \

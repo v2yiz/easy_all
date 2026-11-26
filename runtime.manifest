@@ -3,8 +3,6 @@ profiles/reality-cloudfront.sh
 profiles/reality-cloudflare.sh
 profiles/cloudfront.sh
 profiles/cloudflare.sh
-profiles/combined.sh
-profiles/combined-cloudflare.sh
 lib/log.sh
 lib/state.sh
 lib/runtime-core.sh
@@ -27,7 +25,7 @@ lib/camouflage.sh
 lib/cf-origin-rule.sh
 lib/cf-dns.sh
 lib/cdn-traffic-guard.sh
-lib/anytls-mode.sh
+lib/reality-cloudflare-mode.sh
 lib/cloudfront-mode.sh
 lib/cloudflare-mode.sh
 lib/cloud-purge.sh

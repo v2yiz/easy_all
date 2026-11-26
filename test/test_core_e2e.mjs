@@ -1,5 +1,5 @@
 // 真核心端到端门禁（design §13）：缺核心即失败，不跳过。
-// 1) 六模式正式配置通过真实 `sing-box check` 与 `caddy validate`；
+// 1) 四模式正式配置通过真实 `sing-box check` 与 `caddy validate`；
 // 2) 阻断/订阅未就绪变体同样通过核心校验（配置层面覆盖 §7/§8 的两种极端形态）。
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -47,7 +47,7 @@ export RUNTIME_TMP="${tmp}/runtime"
 export EASY_ALL_STATE_DIR_OVERRIDE="${tmp}/state"
 export EASY_ALL_CERT_DIR_OVERRIDE="${tmp}/certs"
 export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${tmp}/subscriptions"
-source "${root}/profiles/combined.sh"
+source "${root}/profiles/reality-cloudfront.sh"
 mkdir -p "\${RUNTIME_TMP}"
 CF_ZONE=example.com
 VPS_PUBLIC_IPV4=203.0.113.10
@@ -58,12 +58,14 @@ CLOUDFLARE_ZONE_ID=zoneid
 SUBSCRIPTION_MODE=deploy
 DIRECT_DOMAIN=direct.example.com
 DIRECT_NODE_NAME=direct
-ANYTLS_PASSWORD=0123456789abcdefaaaabbbb
+REALITY_PRIVATE_KEY=QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE
+REALITY_PUBLIC_KEY=QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI
+REALITY_SHORT_ID=0123456789abcdef
 CF_NODE_DOMAIN=cf.example.com
 CF_NODE_PREFIX=CF
 VLESS_UUID=11111111-2222-3333-4444-555555555555
 VLESS_PATH=/vless-0123456789ab
-CF_ORIGIN_DOMAIN=origin.example.com
+CF_ORIGIN_DOMAIN=direct.example.com
 SUBSCRIPTION_DOMAIN=cf.example.com
 ORIGIN_HEADER_SECRET=0123456789abcdef0123456789abcdef
 CDN_TRAFFIC_PROTECTION_GB=985

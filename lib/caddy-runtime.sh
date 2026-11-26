@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 六模式 Caddy 站点：代理路径、订阅路由、公共响应头与服务管理（design §6、§8）。
+# 四模式 Caddy 站点：代理路径、订阅路由、公共响应头与服务管理（design §6、§8）。
 # 依赖调用方提供 log.sh 的 die/warn/info/fail，以及模式字段：
 # PROTOCOL、CF_NODE_DOMAIN、SUBSCRIPTION_DOMAIN、CF_ORIGIN_DOMAIN、VLESS_PATH、
 # ORIGIN_HEADER_SECRET、ALLOWED_TOKENS、SUB_DOWNLOAD_NAME、CERT_FILE、KEY_FILE。
@@ -18,21 +18,21 @@ source "${CADDY_RUNTIME_LIB_DIR}/caddy-core.sh"
 
 caddy_require_protocol() {
     case "${PROTOCOL:-}" in
-    reality-cloudfront | reality-cloudflare | cloudfront | cloudflare | combined-cloudfront | combined-cloudflare) return 0 ;;
+    reality-cloudfront | reality-cloudflare | cloudfront | cloudflare) return 0 ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
 }
 
 caddy_protocol_has_cdn() {
     case "${PROTOCOL:-}" in
-    cloudfront | cloudflare | combined-cloudfront | combined-cloudflare | reality-cloudfront | reality-cloudflare) return 0 ;;
+    cloudfront | cloudflare | reality-cloudfront | reality-cloudflare) return 0 ;;
     esac
     return 1
 }
 
 caddy_protocol_needs_origin_guard() {
     case "${PROTOCOL:-}" in
-    cloudfront | combined-cloudfront | reality-cloudfront) return 0 ;;
+    cloudfront | reality-cloudfront) return 0 ;;
     esac
     return 1
 }
@@ -51,12 +51,9 @@ caddy_protocol_uses_unified_reality_site() {
     [[ "${PROTOCOL:-}" == "reality-cloudfront" ]]
 }
 
-# 模式 4/6 双证书 SAN 隔离：直连 443/9443 与橙云 8443 使用各自独立证书。
+# 模式 4 双证书 SAN 隔离：直连 443/9443 与橙云 8443 使用各自独立证书。
 caddy_protocol_uses_split_cdn_cert() {
-    case "${PROTOCOL:-}" in
-    reality-cloudflare | combined-cloudflare) return 0 ;;
-    esac
-    return 1
+    [[ "${PROTOCOL:-}" == "reality-cloudflare" ]]
 }
 
 caddy_mode3_migration_marker() {
@@ -109,19 +106,19 @@ caddy_require_host() {
 }
 
 # 站点主机与本机监听端口由模式派生：模式 1/2 为 443、模式 3 为回环 9443（单 443 合一）、
-# 模式 4/5/6 为 8443；不接受用户另设端口。
+# 模式 4 为 8443；不接受用户另设端口。
 caddy_site_host() {
     caddy_require_protocol
     case "${PROTOCOL}" in
-    cloudfront | combined-cloudfront | reality-cloudfront) caddy_require_host CF_ORIGIN_DOMAIN ;;
-    cloudflare | combined-cloudflare | reality-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
+    cloudfront | reality-cloudfront) caddy_require_host CF_ORIGIN_DOMAIN ;;
+    cloudflare | reality-cloudflare) caddy_require_host CF_NODE_DOMAIN ;;
     esac
 }
 
 caddy_site_port() {
     case "${PROTOCOL:-}" in
     reality-cloudfront) printf '9443\n' ;;
-    combined-cloudfront | combined-cloudflare | reality-cloudflare) printf '8443\n' ;;
+    reality-cloudflare) printf '8443\n' ;;
     cloudfront | cloudflare) printf '443\n' ;;
     *) die "不支持的 PROTOCOL：${PROTOCOL:-空}" ;;
     esac
@@ -132,7 +129,6 @@ caddy_site_port() {
 cloudfront_origin_https_port() {
     case "${PROTOCOL:-}" in
     cloudfront | reality-cloudfront) printf '443\n' ;;
-    combined-cloudfront) printf '8443\n' ;;
     *) die "非 CloudFront 模式无外部回源端口：${PROTOCOL:-空}" ;;
     esac
 }
@@ -381,7 +377,7 @@ caddy_render_camouflage_routes() {
 }
 
 # 一个公网 https 站点块：模式相关的守卫/代理由 caddy_protocol_* 谓词决定；
-# 源站头守卫只属于 CloudFront 链路（模式 2/5 及模式 3 旧装兼容期），橙云模式（模式 1/4/6）没有。
+# 源站头守卫只属于 CloudFront 链路（模式 2 及模式 3 旧装兼容期），橙云模式（模式 1/4）没有。
 caddy_render_https_site() {
     local host=$1 port=$2 bind_address=$3 blocked=$4 subscription_ok=$5
     local cert_file key_file

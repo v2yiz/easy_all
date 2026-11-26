@@ -18,7 +18,7 @@ PROBE_LOG_DROPIN_NAME="99-easy_all-probe-retention.conf"
 PROBE_LOG_DIRECT_PORT="443"
 PROBE_LOG_LOG_PREFIX_MATCH='--log-prefix "GFW_CHK: "'
 PROBE_LOG_USAGE='用法：easy_all hellogfw [--since <时间范围>] [--my-ip <IPv4> ...]'
-PROBE_LOG_MODE_LIST='combined-cloudflare / combined-cloudfront / reality-cloudfront / reality-cloudflare'
+PROBE_LOG_MODE_LIST='reality-cloudfront / reality-cloudflare'
 
 # --- 固定资源路径 -------------------------------------------------------------
 # SYSTEMD_SYSTEM_DIR 与 JOURNALD_CONF_DIR 是测试/隔离覆盖口；生产默认见 design §4.1。

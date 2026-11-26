@@ -36,7 +36,6 @@ for syntax_file in lib/singbox-subscription.sh lib/singbox-runtime.sh \
     bash -n "${ROOT_DIR}/${syntax_file}" || fail "语法校验失败：${syntax_file}"
 done
 
-ANYTLS_PASSWORD="sub-qegsmmsz-6348516949"
 VLESS_UUID="11111111-2222-4111-8111-111111111111"
 VLESS_PATH="/vless-abcdef123456"
 REALITY_UUID="22222222-3333-4444-8555-666666666666"
@@ -77,14 +76,14 @@ AGGREGATION_NODES_FIXTURE=$(jq -cn --arg uuid "${REALITY_UUID}" --arg pbk "${REA
 normalize_config() { # $1=订阅配置 JSON -> stdout 规范化结果（stderr 原样透出）
     bash -c '
         set -Eeuo pipefail
-        source "$1/profiles/combined.sh"
+        source "$1/profiles/reality-cloudfront.sh"
         normalize_subscription_config "$2" "[]"
     ' _ "${ROOT_DIR}" "$1"
 }
 derive_edge_address() { # $1=订阅配置 JSON -> stdout CF_EDGE_ADDRESS
     bash -c '
         set -Eeuo pipefail
-        source "$1/profiles/combined.sh"
+        source "$1/profiles/reality-cloudfront.sh"
         apply_local_aggregation_config "$2" "[]" || exit 1
         printf "%s" "${CF_EDGE_ADDRESS}"
     ' _ "${ROOT_DIR}" "$1"
@@ -118,9 +117,6 @@ render_mode() { # $1=profile $2=输出目录（$3=可选的 cdnEdgeAddress）
             DIRECT_DOMAIN=direct.example.com
             DIRECT_NODE_NAME="🇺🇸直连"
         fi
-        if state_protocol_has_anytls_entry "${PROTOCOL}"; then
-            ANYTLS_PASSWORD=${ANYTLS_PASSWORD}
-        fi
         if state_protocol_has_reality_entry "${PROTOCOL}"; then
             VLESS_UUID=${VLESS_UUID}
             REALITY_PRIVATE_KEY=${REALITY_PRIV}
@@ -142,7 +138,7 @@ render_mode() { # $1=profile $2=输出目录（$3=可选的 cdnEdgeAddress）
             AWS_CLOUDFRONT_DOMAIN=d111111abcdef8.cloudfront.net
             AWS_ACM_CERTIFICATE_ARN=arn:aws:acm:us-east-1:123456789012:certificate/x
         fi
-        if [[ "${PROTOCOL}" == "combined-cloudflare" ]]; then
+        if [[ "${PROTOCOL}" == "reality-cloudflare" ]]; then
             CLOUDFLARE_ORIGIN_RULESET_ID=rs
             CLOUDFLARE_ORIGIN_RULE_ID=rule
         fi
@@ -158,12 +154,12 @@ render_mode() { # $1=profile $2=输出目录（$3=可选的 cdnEdgeAddress）
     )
 }
 
-# --- 模式 5：八产物与策略组 ---------------------------------------------------
-out="${TMP_DIR}/combined"
-render_log="${TMP_DIR}/combined.log"
-render_mode combined "${out}" >"${render_log}" 2>&1 || {
+# --- 模式 3：八产物与策略组 ---------------------------------------------------
+out="${TMP_DIR}/reality-cloudfront-full"
+render_log="${TMP_DIR}/reality-cloudfront-full.log"
+render_mode reality-cloudfront "${out}" >"${render_log}" 2>&1 || {
     cat "${render_log}" >&2
-    fail "模式 5 订阅渲染失败"
+    fail "模式 3 订阅渲染失败"
 }
 default_json="${out}/subs/singbox.json"
 all_json="${out}/subs/singbox-all.json"
@@ -199,10 +195,10 @@ assert_not_contains "不生成虚假 CDN-FALLBACK" "$(tags "${all_json}")" "CDN-
 assert_equal "route 默认出口" '"PROXY"' "$(jq -c '.route.final' "${default_json}")"
 
 # 本机节点参数
-assert_equal "AnyTLS 节点字段" \
-    "anytls direct.example.com 443 ${ANYTLS_PASSWORD} direct.example.com false chrome" \
+assert_equal "Reality 节点字段" \
+    "vless direct.example.com 443 ${VLESS_UUID} xtls-rprx-vision direct.example.com ${REALITY_PBK} ${REALITY_SID} chrome xudp" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸直连") |
-        "\(.type) \(.server) \(.server_port) \(.password) \(.tls.server_name) \(.tls.insecure // false) \(.tls.utls.fingerprint)"' "${default_json}")"
+        "\(.type) \(.server) \(.server_port) \(.uuid) \(.flow) \(.tls.server_name) \(.tls.reality.public_key) \(.tls.reality.short_id) \(.tls.utls.fingerprint) \(.packet_encoding)"' "${default_json}")"
 assert_equal "VLESS WS 节点字段" \
     "vless cf.example.com 443 ${VLESS_UUID} ws ${VLESS_PATH} cf.example.com xudp" \
     "$(jq -r '.outbounds[] | select(.tag == "🇺🇸CF") |
@@ -373,7 +369,7 @@ PROBES
 fi
 
 # --- 模式 1–6：没有 AUTO 组，PROXY 默认选首个本机节点 ------------------------
-# 模式 1/2 没有直连入口，成员里不得出现直连节点；模式 3/4/5/6 的首成员是直连节点。
+# 模式 1/2 没有直连入口，成员里不得出现直连节点；模式 3/4 的首成员是直连节点。
 while IFS='|' read -r profile expected_default has_direct; do
     mode_out="${TMP_DIR}/${profile}"
     render_mode "${profile}" "${mode_out}" >"${mode_out}.log" 2>&1 || {
@@ -395,9 +391,9 @@ while IFS='|' read -r profile expected_default has_direct; do
     fi
     assert_not_contains "${profile} 默认订阅不含 optional 节点" "$(tags "${mode_json}")" "R-可用"
     assert_contains "${profile} all 订阅包含 optional 节点" "$(tags "${mode_out}/subs/singbox-all.json")" "R-可用"
-    # CDN 传输按 CDN 家族分流：橙云（1/4/6）httpupgrade + http/1.1 ALPN，CloudFront 保持 ws。
+    # CDN 传输按 CDN 家族分流：橙云（1/4）httpupgrade + http/1.1 ALPN，CloudFront 保持 ws。
     case "${profile}" in
-    cloudflare | reality-cloudflare | combined-cloudflare) mode_transport=httpupgrade ;;
+    cloudflare | reality-cloudflare) mode_transport=httpupgrade ;;
     *) mode_transport=ws ;;
     esac
     assert_equal "${profile} 本机 CDN 节点传输" "${mode_transport} cf.example.com" \
@@ -421,8 +417,6 @@ reality-cloudfront|🇺🇸直连|yes
 reality-cloudflare|🇺🇸直连|yes
 cloudfront|🇺🇸CF|no
 cloudflare|🇺🇸CF|no
-combined|🇺🇸直连|yes
-combined-cloudflare|🇺🇸直连|yes
 PROFILES
 
 # --- 模式 3：Reality + CloudFront 双本地节点进入 JSON 订阅 -------------------
@@ -546,7 +540,7 @@ if (
     export EASY_ALL_CERT_DIR_OVERRIDE="${out_missing}/certs"
     export EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${out_missing}/subs"
     # shellcheck source=/dev/null
-    source "${ROOT_DIR}/profiles/combined-cloudflare.sh"
+    source "${ROOT_DIR}/profiles/reality-cloudflare.sh"
     CF_ZONE=example.com
     SUB_DOWNLOAD_NAME=EASY_ALL
     ALLOWED_TOKENS='{"owner":"token-abcdefgh"}'
@@ -557,12 +551,14 @@ if (
     CF_NODE_PREFIX="🇺🇸CF"
     VLESS_UUID="11111111-2222-4333-8444-555555555555"
     VLESS_PATH=/vless-0123456789ab
-    ANYTLS_PASSWORD=""
+    REALITY_PRIVATE_KEY="${REALITY_PRIV}"
+    REALITY_PUBLIC_KEY=""
+    REALITY_SHORT_ID="${REALITY_SID}"
     AGGREGATION_NODES='[]'
     mkdir -p "${RUNTIME_TMP}" "${CERT_DIR}"
     render_subscription_files "${out_missing}/subs"
 ) >/dev/null 2>&1; then
-    fail "缺少 AnyTLS 密码时渲染必须失败"
+    fail "缺少 Reality 公钥时渲染必须失败"
 fi
 [[ ! -e "${out_missing}/subs/singbox.json" ]] || fail "渲染失败不得留下 sing-box 订阅"
 
@@ -608,10 +604,10 @@ assert_equal "派生 CF_EDGE_ADDRESS 为小写值" "k2v8nq4zt6.cloudfront.182682
 assert_equal "无字段时 CF_EDGE_ADDRESS 为空" "" "$(derive_edge_address "${cfg_base}")"
 
 # 端到端：三种产物的连接地址换成优选域名，SNI / Host 仍是节点域名。
-edge_out="${TMP_DIR}/combined-edge"
-render_mode combined "${edge_out}" "k2v8nq4zt6.cloudfront.182682.xyz" >"${edge_out}.log" 2>&1 || {
+edge_out="${TMP_DIR}/reality-cloudfront-edge"
+render_mode reality-cloudfront "${edge_out}" "k2v8nq4zt6.cloudfront.182682.xyz" >"${edge_out}.log" 2>&1 || {
     cat "${edge_out}.log" >&2
-    fail "带 cdnEdgeAddress 的模式 5 订阅渲染失败"
+    fail "带 cdnEdgeAddress 的模式 3 订阅渲染失败"
 }
 for edge_artifact in singbox.json singbox-all.json; do
     assert_equal "优选地址替换 ${edge_artifact} 本机 CDN 节点" \
@@ -638,7 +634,7 @@ edge_apply_err=$(
     EASY_ALL_SUBSCRIPTION_DIR_OVERRIDE="${TMP_DIR}/reject-subs" \
         bash -c '
             set -Eeuo pipefail
-            source "$1/profiles/combined.sh"
+            source "$1/profiles/reality-cloudfront.sh"
             cdn_apply_subscription_config "$2"
         ' _ "${ROOT_DIR}" \
         '{"allowedTokens":{"owner":"token-abcdefgh"},"nodes":[],"cdnEdgeAddress":"a.com:443"}' 2>&1

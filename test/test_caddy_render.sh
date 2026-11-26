@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 阶段 1 基础库：Caddy 固定版本/清单校验、六模式 Caddyfile 结构、订阅路由与服务单元。
+# 阶段 1 基础库：Caddy 固定版本/清单校验、四模式 Caddyfile 结构、订阅路由与服务单元。
 # 用户视角：断言生成产物与公开接口；外部边界（下载、caddy 二进制、systemctl）用替身。
 set -Eeuo pipefail
 
@@ -106,7 +106,7 @@ if (caddy_arch mips) >/dev/null 2>&1; then
     fail "未知架构必须失败"
 fi
 
-# --- 六模式站点（Reality 两模式在下方单独覆盖） ------------------------------
+# --- 四模式站点（Reality 两模式在下方单独覆盖） ------------------------------
 render_caddy() { # $1=protocol $2=blocked $3=subscription_ok -> stdout
     local out="${TMP_DIR}/Caddyfile-$1-$2-$3"
     rm -f -- "${out}"
@@ -117,23 +117,21 @@ render_caddy() { # $1=protocol $2=blocked $3=subscription_ok -> stdout
 
 cloudfront_body=$(render_caddy cloudfront 0 1)
 cloudflare_body=$(render_caddy cloudflare 0 1)
-combined_body=$(render_caddy combined-cloudfront 0 1)
-combined_cf_body=$(render_caddy combined-cloudflare 0 1)
+reality_cf_body=$(render_caddy reality-cloudflare 0 1)
 
-for body_proto in cloudfront cloudflare combined-cloudfront combined-cloudflare; do
+for body_proto in cloudfront cloudflare reality-cloudflare; do
     body_file="${TMP_DIR}/Caddyfile-${body_proto}-0-1"
     case "${body_proto}" in
     cloudfront) body=${cloudfront_body} ;;
     cloudflare) body=${cloudflare_body} ;;
-    combined-cloudfront) body=${combined_body} ;;
-    *) body=${combined_cf_body} ;;
+    *) body=${reality_cf_body} ;;
     esac
     assert_contains "${body_proto}: 管理套接字" "${body}" "admin unix/${CADDY_ADMIN_SOCKET}"
     assert_contains "${body_proto}: 关闭自动 HTTPS" "${body}" "auto_https off"
     assert_contains "${body_proto}: 只提供 h1/h2" "${body}" "protocols h1 h2"
     assert_not_contains "${body_proto}: 不提供 h3" "${body}" "h3"
     assert_contains "${body_proto}: 绑定 0.0.0.0" "${body}" "bind 0.0.0.0"
-    if [[ "${body_proto}" == "combined-cloudflare" ]]; then
+    if [[ "${body_proto}" == "reality-cloudflare" ]]; then
         assert_contains "${body_proto}: 8443 回源使用独立 CDN 证书" "${body}" \
             "tls ${CDN_CERT_FILE} ${CDN_KEY_FILE}"
     else
@@ -161,14 +159,10 @@ assert_contains "模式 2 转发到回环" "${cloudfront_body}" "reverse_proxy 1
 assert_contains "模式 1 站点：节点域 443" "${cloudflare_body}" "https://cf.example.com:443 {"
 assert_not_contains "模式 1 无源站守卫" "${cloudflare_body}" "@easy_all_bad_origin"
 assert_contains "模式 1 代理路径" "${cloudflare_body}" "handle ${VLESS_PATH} {"
-assert_contains "模式 5 站点：源站 8443" "${combined_body}" "https://origin.example.com:8443 {"
-assert_contains "模式 5 有源站守卫" "${combined_body}" "abort @easy_all_bad_origin"
-assert_contains "模式 5 代理路径" "${combined_body}" "handle ${VLESS_PATH} {"
-assert_contains "模式 5 转发到回环" "${combined_body}" "reverse_proxy 127.0.0.1:10086"
-assert_contains "模式 6 站点：节点域 8443" "${combined_cf_body}" "https://cf.example.com:8443 {"
-assert_not_contains "模式 6 无源站守卫" "${combined_cf_body}" "@easy_all_bad_origin"
-assert_contains "模式 6 代理路径" "${combined_cf_body}" "handle ${VLESS_PATH} {"
-assert_contains "模式 6 转发到回环" "${combined_cf_body}" "reverse_proxy 127.0.0.1:10086"
+assert_contains "模式 4 站点：节点域 8443" "${reality_cf_body}" "https://cf.example.com:8443 {"
+assert_not_contains "模式 4 无源站守卫" "${reality_cf_body}" "@easy_all_bad_origin"
+assert_contains "模式 4 代理路径" "${reality_cf_body}" "handle ${VLESS_PATH} {"
+assert_contains "模式 4 转发到回环" "${reality_cf_body}" "reverse_proxy 127.0.0.1:10086"
 
 # 守卫必须是外层 route 的首个指令，且早于代理路径与订阅入口。
 guard_line=$(grep -nF "@easy_all_bad_origin expression" "${TMP_DIR}/Caddyfile-cloudfront-0-1" \
@@ -181,7 +175,7 @@ assert_before "守卫早于订阅入口" "${guard_line}" \
     "$(line_of "${TMP_DIR}/Caddyfile-cloudfront-0-1" "handle @easy_all_sub {")"
 
 # --- 订阅路由 ---------------------------------------------------------------
-ready_body=${combined_body}
+ready_body=${cloudfront_body}
 assert_contains "公共头 Vary" "${ready_body}" 'header Vary "User-Agent"'
 assert_contains "公共 Cache-Control" "${ready_body}" \
     'header Cache-Control "no-store, no-cache, must-revalidate, max-age=0"'
@@ -194,7 +188,7 @@ assert_contains "非法 Token 返回 403" "${ready_body}" "respond @easy_all_sub
 assert_contains "Token 精确列表来自 ALLOWED_TOKENS" "${ready_body}" \
     "{query.token} in ['tok-aaaaaaaa','tok-bbbbbbbb']"
 
-ready_file="${TMP_DIR}/Caddyfile-combined-cloudfront-0-1"
+ready_file="${TMP_DIR}/Caddyfile-cloudfront-0-1"
 assert_before "公共头先于方法校验" "$(line_of "${ready_file}" 'header Vary "User-Agent"')" \
     "$(line_of "${ready_file}" "respond @easy_all_sub_bad_method 405")"
 assert_before "方法校验先于 Token 校验" "$(line_of "${ready_file}" "respond @easy_all_sub_bad_method 405")" \
@@ -268,7 +262,7 @@ assert_contains "node=all 使用完整取值" "${ready_body}" \
 assert_contains "重复 token 逗号拼接后不在列表" "${ready_body}" "!({query.token} in ["
 
 # 未就绪与阻断
-unready_body=$(render_caddy combined-cloudfront 0 0)
+unready_body=$(render_caddy cloudfront 0 0)
 assert_contains "订阅未就绪返回 503" "${unready_body}" "respond 503"
 assert_not_contains "未就绪不下发产物" "${unready_body}" "rewrite *"
 assert_not_contains "未就绪不暴露 file_server" "${unready_body}" "file_server"
@@ -279,11 +273,9 @@ assert_contains "阻断时代理路径 503" "${blocked_body}" "respond 503"
 assert_not_contains "阻断时不转发回环" "${blocked_body}" "reverse_proxy"
 assert_contains "阻断不影响订阅" "${blocked_body}" "respond @easy_all_sub_denied 403"
 
-# CloudFront 模式（4/5）下发 Subscription-Userinfo，位于 403 之后、未就绪 503 之前；其他模式不下发
+# CloudFront 模式（2/3）下发 Subscription-Userinfo，位于 403 之后、未就绪 503 之前；其他模式不下发
 cf_ready_body=$(render_caddy cloudfront 0 1)
 assert_contains "模式 2 下发 Subscription-Userinfo" "${cf_ready_body}" \
-    "header Subscription-Userinfo \"{file.$(dirname "${CADDY_CONFIG}")/subscription-userinfo}\""
-assert_contains "模式 5 下发 Subscription-Userinfo" "${ready_body}" \
     "header Subscription-Userinfo \"{file.$(dirname "${CADDY_CONFIG}")/subscription-userinfo}\""
 assert_contains "未就绪时仍带 Subscription-Userinfo" "${unready_body}" \
     "header Subscription-Userinfo \"{file.$(dirname "${CADDY_CONFIG}")/subscription-userinfo}\""
@@ -292,7 +284,7 @@ userinfo_line=$(grep -n 'header Subscription-Userinfo ' <<<"${unready_body}" | h
 sub_503_line=$(grep -n 'respond 503' <<<"${unready_body}" | tail -n 1 | cut -d: -f1)
 ((userinfo_line > denied_line && userinfo_line < sub_503_line)) \
     || fail "Subscription-Userinfo 必须位于 403 之后且在未就绪 503 之前"
-for non_cf_mode in cloudflare combined-cloudflare; do
+for non_cf_mode in cloudflare reality-cloudflare; do
     non_cf_body=$(render_caddy "${non_cf_mode}" 0 1)
     assert_not_contains "${non_cf_mode} 不下发 Subscription-Userinfo" "${non_cf_body}" \
         "Subscription-Userinfo"
@@ -303,9 +295,7 @@ assert_equal "模式 2 CloudFront 外部回源端口 443" "443" \
     "$(PROTOCOL=cloudfront cloudfront_origin_https_port)"
 assert_equal "模式 3 CloudFront 外部回源端口 443（单 443 合一）" "443" \
     "$(PROTOCOL=reality-cloudfront cloudfront_origin_https_port)"
-assert_equal "模式 5 CloudFront 外部回源端口 8443" "8443" \
-    "$(PROTOCOL=combined-cloudfront cloudfront_origin_https_port)"
-for non_cf_origin_proto in cloudflare reality-cloudflare combined-cloudflare; do
+for non_cf_origin_proto in cloudflare reality-cloudflare; do
     if (PROTOCOL="${non_cf_origin_proto}" cloudfront_origin_https_port) >/dev/null 2>&1; then
         fail "${non_cf_origin_proto} 非 CloudFront 模式不得返回外部回源端口"
     fi
@@ -640,12 +630,12 @@ assert_not_contains "模式 4 订阅未就绪时订阅站不挂 file_server" "${
     exit 0
 ) || fail "模式 4 结构校验行为不符合预期"
 
-# --- WP5：模式 4/6 双证书 SAN 隔离与 v5.5.0 升级平滑回退 ----------------------
+# --- WP5：模式 4 双证书 SAN 隔离与 v5.5.0 升级平滑回退 ----------------------
 split_certs="${TMP_DIR}/split-certs"
 mkdir -p "${split_certs}"
 printf 'LEGACY-COMBINED-CERT\n' >"${split_certs}/fullchain.pem"
 printf 'LEGACY-COMBINED-KEY\n' >"${split_certs}/private.key"
-for split_proto in reality-cloudflare combined-cloudflare; do
+for split_proto in reality-cloudflare; do
     # 仅存在旧版 CERT_FILE、尚未签发 CDN_CERT_FILE 时，8443 平滑回退到 CERT_FILE/KEY_FILE。
     fallback_pair=$(
         PROTOCOL="${split_proto}" \
@@ -675,7 +665,7 @@ done
 # 独立 CDN 证书签发落盘后：8443 切至 cdn-fullchain.pem，模式 4 的 9443 保持主证书。
 printf 'CDN-ONLY-CERT\n' >"${split_certs}/cdn-fullchain.pem"
 printf 'CDN-ONLY-KEY\n' >"${split_certs}/cdn-private.key"
-for split_proto in reality-cloudflare combined-cloudflare; do
+for split_proto in reality-cloudflare; do
     split_pair=$(
         PROTOCOL="${split_proto}" \
         CERT_FILE="${split_certs}/fullchain.pem" \
@@ -840,7 +830,7 @@ assert_not_contains "候选校验失败不点名临时路径" "$(<"${wrapper_std
 
 # 有真实 caddy 时用官方二进制复核四种模式的语法。
 if command -v caddy >/dev/null 2>&1; then
-    for body_file in "${TMP_DIR}"/Caddyfile-{cloudfront,cloudflare,combined-cloudfront,combined-cloudflare}-0-1; do
+    for body_file in "${TMP_DIR}"/Caddyfile-{cloudfront,cloudflare,reality-cloudflare}-0-1; do
         caddy validate --adapter caddyfile --config "${body_file}" >/dev/null 2>&1 \
             || fail "真实 caddy validate 失败：${body_file}"
     done

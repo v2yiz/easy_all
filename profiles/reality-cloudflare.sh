@@ -13,15 +13,15 @@ readonly REALITY_CLOUDFLARE_PROFILE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0
 EASY_ALL_RUNTIME_LIB_DIR="${REALITY_CLOUDFLARE_PROFILE_ROOT}/../lib"
 export EASY_ALL_RUNTIME_LIB_DIR
 
-# 两个节点名的推荐默认值：必须在加载运行时库之前赋值，否则会被其 AnyTLS / VLESS-WS
+# 两个节点名的推荐默认值：必须在加载运行时库之前赋值，否则会被其 Reality / VLESS-WS
 # 兜底值覆盖，交互提示与文档默认名不一致。
 DIRECT_NODE_NAME=${DIRECT_NODE_NAME:-🇺🇸Reality}
 CF_NODE_PREFIX=${CF_NODE_PREFIX:-🇺🇸CF}
 
 # shellcheck source=lib/runtime-core.sh
 source "${EASY_ALL_RUNTIME_LIB_DIR}/runtime-core.sh"
-# shellcheck source=lib/anytls-mode.sh
-source "${EASY_ALL_RUNTIME_LIB_DIR}/anytls-mode.sh"
+# shellcheck source=lib/reality-cloudflare-mode.sh
+source "${EASY_ALL_RUNTIME_LIB_DIR}/reality-cloudflare-mode.sh"
 
 PROTOCOL=reality-cloudflare
 BACKEND=sing-box
@@ -39,7 +39,7 @@ SUBSCRIPTION_OPTIONAL_VARIANTS=1
 readonly CDN_RECORD_COMMENT="easy_all reality-cloudflare"
 
 collect_install_inputs() {
-    collect_anytls_install_inputs
+    collect_direct_install_inputs
 }
 
 cdn_direct_domains() {

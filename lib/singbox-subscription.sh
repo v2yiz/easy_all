@@ -66,10 +66,6 @@ singbox_aggregation_outbounds_json() {
 
 singbox_client_local_outbounds_json() {
     local outbounds='[]'
-    if singbox_protocol_has_anytls; then
-        outbounds=$(jq -cn --argjson list "${outbounds}" \
-            --argjson node "$(build_singbox_anytls_outbound)" '$list + [$node]')
-    fi
     if singbox_protocol_has_reality; then
         outbounds=$(jq -cn --argjson list "${outbounds}" \
             --argjson node "$(build_singbox_reality_outbound)" '$list + [$node]')
