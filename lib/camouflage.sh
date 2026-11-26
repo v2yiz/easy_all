@@ -11,9 +11,21 @@ fi
 
 : "${CAMOUFLAGE_DIR:=/var/www/easy_all/camouflage}"
 : "${STATE_DIR:=/etc/easy_all}"
+# v5.5.0 遗留单页模板（templates/camouflage-login.html）的精确 SHA256：无受管清单且哈希
+# 精确匹配时视为未改动的旧版默认页，升级时自动替换为新版实例变异站，用户自定义页保持不动。
+readonly CAMOUFLAGE_LEGACY_LOGIN_SHA256="61d0050025aee2edea64c0d89ab1d2a7d2c9f00ff2c154f33a519a815486be0a"
 
 camouflage_managed_manifest_file() {
     printf '%s/camouflage-managed.list\n' "${STATE_DIR}"
+}
+
+camouflage_is_unmodified_legacy_page() {
+    local index_file="${CAMOUFLAGE_DIR}/index.html" manifest digest
+    manifest=$(camouflage_managed_manifest_file)
+    [[ ! -f "${manifest}" && -s "${index_file}" ]] || return 1
+    digest=$(openssl dgst -sha256 "${index_file}" 2>/dev/null | awk '{print $NF}' \
+        | tr '[:upper:]' '[:lower:]') || return 1
+    [[ "${digest}" == "${CAMOUFLAGE_LEGACY_LOGIN_SHA256}" ]]
 }
 
 camouflage_rand_index() {
@@ -23,8 +35,16 @@ camouflage_rand_index() {
 }
 
 camouflage_deploy_site() {
-    # 幂等且非破坏性：已有非空 index.html 时保留原实例变体或用户自定义站点。
-    [[ ! -s "${CAMOUFLAGE_DIR}/index.html" ]] || return 0
+    # 幂等且非破坏性：已有非空 index.html 时保留原实例变体或用户自定义站点；
+    # 仅当确认是 v5.5.0 未改动旧版默认页时自动清理并升级。
+    if [[ -s "${CAMOUFLAGE_DIR}/index.html" ]]; then
+        if camouflage_is_unmodified_legacy_page; then
+            rm -f -- "${CAMOUFLAGE_DIR}/index.html" \
+                || die "清理旧版默认伪装页失败：${CAMOUFLAGE_DIR}/index.html"
+        else
+            return 0
+        fi
+    fi
 
     local archetype template brand brand_initial domain contact_user contact_email
     local accent accent_hover radius svg_rx css_hex build_id year

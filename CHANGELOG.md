@@ -1,3 +1,12 @@
+## 5.6.2 更新说明（2026-11-26）
+
+### 增强与修复
+
+- **v5.5.0 旧版默认伪装页升级自动焕新**（`lib/camouflage.sh`、`docs/technical-reference.md`）：
+  - `camouflage_deploy_site()` 新增精确 SHA256 识别（`CAMOUFLAGE_LEGACY_LOGIN_SHA256`）：当不存在 `camouflage-managed.list` 且磁盘 `index.html` 精确匹配 v5.5.0 未改动 `Workspace Sign In` 单页时，在 `apply` / `apply-cloud` / `renew-cert` 期间自动清理旧页并部署新版默认 `studio` 变异站；用户自定义静态站与已生成的新版变异站仍保持原样不覆写。
+
+---
+
 ## 5.6.1 更新说明（2026-11-26）
 
 ### 增强与变更

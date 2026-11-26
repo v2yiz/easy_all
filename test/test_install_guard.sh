@@ -3021,6 +3021,19 @@ rm -f -- "${CAMOUFLAGE_DIR}/user-note.txt" "${CAMOUFLAGE_DIR}/assets/custom.css"
 reality_remove_camouflage_page
 [[ ! -d "${CAMOUFLAGE_DIR}" ]] || fail "清空用户文件后伪装站目录应被回收"
 
+# 3.5) v5.5.0 遗留未改动默认页（无受管清单且 SHA256 精确匹配）在部署时自动替换为新 studio 变异站。
+rm -rf -- "${CAMOUFLAGE_DIR}" "$(camouflage_managed_manifest_file)"
+install -d -m 0755 "${CAMOUFLAGE_DIR}"
+if git show 20261126:templates/camouflage-login.html >"${CAMOUFLAGE_DIR}/index.html" 2>/dev/null; then
+    [[ "$(openssl dgst -sha256 "${CAMOUFLAGE_DIR}/index.html" | awk '{print $NF}' | tr '[:upper:]' '[:lower:]')" == "${CAMOUFLAGE_LEGACY_LOGIN_SHA256}" ]] \
+        || fail "20261126 旧版 camouflage-login.html 哈希与常量不一致"
+    EASY_ALL_CAMOUFLAGE_TEMPLATE="" reality_deploy_camouflage_page
+    grep -Fq 'page-studio' "${CAMOUFLAGE_DIR}/index.html" \
+        || fail "v5.5.0 遗留默认页应自动升级为 studio 原型"
+    [[ -s "$(camouflage_managed_manifest_file)" ]] \
+        || fail "自动升级旧版默认页后必须写入受管清单"
+fi
+
 # 4) 无受管清单回退回收（旧装或 uninstall_incomplete）仍只删固定受管集合、保留用户文件。
 EASY_ALL_CAMOUFLAGE_TEMPLATE=login reality_deploy_camouflage_page
 rm -f -- "$(camouflage_managed_manifest_file)"
