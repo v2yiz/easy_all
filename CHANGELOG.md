@@ -1,3 +1,12 @@
+## 5.10.1 更新说明（2026-11-28）
+
+### 规则优化
+
+- **补全字节系国内直连域名**（`templates/mihomo.yaml`、`templates/mihomo-common.yaml`、`templates/mihomo-classic.yaml`、`templates/singbox.json`）：
+  - 在直连域名集合（`direct-services` / `direct-cdn`）补齐 `snssdk.com` 与 `zijieapi.com`，避免豆包输入法及字节国内 App 的 SDK / API 流量误走代理出口（不影响 TikTok 国际版）。
+
+---
+
 ## 5.10.0 更新说明（2026-11-28）
 
 ### 客户端模板优化

@@ -298,6 +298,8 @@ rule-providers:
         - '+.cmpassport.com'
         - '+.httpdns.pro'
         - '+.ctobsnssdk.com'
+        - '+.snssdk.com'
+        - '+.zijieapi.com'
         - '+.ugdtimg.com'
         - '+.id6.me'
 

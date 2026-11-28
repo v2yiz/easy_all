@@ -481,6 +481,8 @@ rule-providers:
           - '+.doubaopay.com'
           - '+.doubao.com'
           - '+.toutiao.com'
+          - '+.snssdk.com'
+          - '+.zijieapi.com'
           - '+.vivo.com'
           - '+.oppo.com'
           - '+.heytap.com'
