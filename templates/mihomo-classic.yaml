@@ -1,6 +1,6 @@
 # 经典订阅模板（可选）：面向需要 FCM/微信真实 IP 的老客户端；规则集已全部改为 MRS 二进制格式。
 # 默认发布使用 templates/mihomo.yaml；需要本模板时用 MIHOMO_TEMPLATE_SOURCE 指定。
-# 注意：本模板要求客户端内核支持 rule-providers 的 format: mrs（mihomo 1.18+）。
+# 注意：本模板要求客户端内核支持 rule-providers 的 format: mrs、size-limit 与 direct-nameserver（mihomo 1.19.0+）。
 
 mixed-port: 1080
 allow-lan: false
@@ -28,6 +28,36 @@ sniffer:
         ports: [443, 8443]
       # 不嗅探 QUIC：嗅探要解析握手，只会给 UDP 首包白加等待与内存开销；
       # Google/YouTube/Gemini 的 UDP/443 由规则拒绝回退 TCP，其余 QUIC 由 geoip 与 MATCH 兜底分流。
+    skip-domain:
+      # 非标准 SNI 与主流智能家居 / IoT
+      - 'Mijia Cloud'
+      - 'dlg.io.mi.com'
+      - '+.io.mi.com'
+      - '+.home.midea.com'
+      - '+.tuyacn.com'
+      - '+.tuyaus.com'
+      - '+.lechange.cn'
+      - '+.ezvizlife.com'
+      # 系统推送长连接（APNs / FCM）
+      - '+.push.apple.com'
+      - '+.mtalk.google.com'
+      # 远程控制 / 内网穿透 / 异地组网（私有协议常复用 443 端口）
+      - '+.oray.com'
+      - '+.orayimg.com'
+      - '+.todesk.com'
+      - '+.anydesk.com'
+      - '+.parsec.app'
+      - '+.tailscale.com'
+      - '+.tailscale.io'
+      - '+.zerotier.com'
+      # 局域网 / 内网自签服务与 NAS
+      - 'localhost'
+      - '+.local'
+      - '+.lan'
+      - '+.home.arpa'
+      - '+.internal'
+      - '+.synology.me'
+      - '+.direct.quickconnect.to'
 
 tun:
     enable: true
@@ -44,13 +74,14 @@ tun:
       - tcp://any:53
     # Windows TUN + BWG 使用兼容模式，避免严格路由与现有网络栈冲突。
     strict-route: false
-    # 通用局域网 IPv4 地址绕过 TUN，保留内网直连能力。
+    # 通用局域网 IPv4 与组播地址绕过 TUN，保留内网直连与设备发现能力。
     route-exclude-address:
       - 10.0.0.0/8
       - 172.16.0.0/12
       - 192.168.0.0/16
       - 169.254.0.0/16
       - 100.64.0.0/10
+      - 224.0.0.0/4
 
 dns:
     enable: true
@@ -69,6 +100,11 @@ dns:
       - 'rule-set:geosite-cn'
       - 'rule-set:geosite-private'
       - 'rule-set:captive-portal'
+      - '+.push.apple.com'
+      - '+.oray.com'
+      - '+.orayimg.com'
+      - '+.tailscale.com'
+      - '+.tailscale.io'
       - '+.10jqka.com.cn'
       # 微信图片、头像、小程序资源在 TUN + Fake-IP 下必须返回真实 IP。
       - '+.qpic.cn'
@@ -153,6 +189,9 @@ dns:
       # 仅私有域名交给客户端系统 DNS；移动端可覆盖为实际局域网 DNS。
       'rule-set:geosite-private': system
       'rule-set:captive-portal': system
+      'testingcf.jsdelivr.net':
+        - https://223.5.5.5/dns-query
+        - https://doh.pub/dns-query
       # 明确代理的服务优先于完整 cn 集合，避免重叠域名查询国内 DNS。
       'rule-set:geosite-google,geosite-github,geosite-openai,geosite-anthropic':
         - 'https://1.1.1.1/dns-query#PROXY'
@@ -176,6 +215,10 @@ dns:
       - 'https://8.8.8.8/dns-query#PROXY'
     # 节点域名启动解析保持直连，并使用两个独立国内 DoH 提供冗余。
     proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://doh.pub/dns-query']
+    # 直连出口重新解析使用国内 DoH，避免漏在 nameserver-policy 外的国内长尾域名拿到境外 CDN IP；
+    # 配合 direct-nameserver-follow-policy: true，私网与认证门户仍沿用上方 system DNS（需 mihomo 1.18.10+）。
+    direct-nameserver: ['https://223.5.5.5/dns-query', 'https://doh.pub/dns-query']
+    direct-nameserver-follow-policy: true
 
 rule-providers:
     # 内嵌小集合同时供 DNS 与路由使用，不下载额外外部规则文件。
@@ -290,93 +333,119 @@ rule-providers:
         type: http
         behavior: domain
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/private.mrs'
         path: ./ruleset/geosite-private.mrs
+        size-limit: 262144
     geosite-googlefcm:
         type: http
         behavior: domain
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/googlefcm.mrs'
         path: ./ruleset/geosite-googlefcm.mrs
+        size-limit: 262144
     geosite-google:
         type: http
         behavior: domain
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/google.mrs'
         path: ./ruleset/geosite-google.mrs
+        size-limit: 262144
     geosite-github:
         type: http
         behavior: domain
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/github.mrs'
         path: ./ruleset/geosite-github.mrs
+        size-limit: 262144
     geosite-openai:
         type: http
         behavior: domain
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/openai.mrs'
         path: ./ruleset/geosite-openai.mrs
+        size-limit: 262144
     geosite-anthropic:
         type: http
         behavior: domain
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/anthropic.mrs'
         path: ./ruleset/geosite-anthropic.mrs
+        size-limit: 262144
     geosite-apple-cn:
         type: http
         behavior: domain
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/apple-cn.mrs'
         path: ./ruleset/geosite-apple-cn.mrs
+        size-limit: 262144
     geosite-microsoft-cn:
         type: http
         behavior: domain
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/microsoft@cn.mrs'
         path: ./ruleset/geosite-microsoft-cn.mrs
+        size-limit: 262144
     geosite-cn:
         type: http
         behavior: domain
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.mrs'
         path: ./ruleset/geosite-cn.mrs
+        size-limit: 2097152
     geosite-geolocation-cn:
         type: http
         behavior: domain
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/geolocation-cn.mrs'
         path: ./ruleset/geosite-geolocation-cn.mrs
+        size-limit: 262144
     geosite-ai-chat:
         type: http
         behavior: domain
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-ai-chat-!cn.mrs'
         path: ./ruleset/geosite-ai-chat.mrs
+        size-limit: 262144
     geoip-cn:
         type: http
         behavior: ipcidr
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.mrs'
         path: ./ruleset/geoip-cn.mrs
+        size-limit: 262144
     geoip-telegram:
         type: http
         behavior: ipcidr
         format: mrs
+        proxy: DIRECT
         interval: 86400
         url: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/telegram.mrs'
         path: ./ruleset/geoip-telegram.mrs
+        size-limit: 262144
 
 # 代理节点（VLESS Reality 直连 / VLESS CDN / 聚合节点）由订阅按模式注入，模板本身不放置占位凭据。
 proxies:

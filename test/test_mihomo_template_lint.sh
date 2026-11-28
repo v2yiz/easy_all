@@ -52,6 +52,39 @@ http_providers_without_mrs() {
     ' "$1"
 }
 
+# 列出 type: http 但缺少 proxy: DIRECT 或正整数 size-limit 的 provider
+http_providers_missing_guards() {
+    awk '
+        /^rule-providers:[[:space:]]*$/ { inside = 1; next }
+        inside && /^[^[:space:]#]/ { exit }
+        inside { raw = $0; sub(/[[:space:]]+#.*$/, "", raw) }
+        inside && raw ~ /^    [^[:space:]]+:[[:space:]]*$/ {
+            if (name != "" && kind == "http" && (proxy != "DIRECT" || size_limit !~ /^[1-9][0-9]*$/)) print name
+            name = raw
+            sub(/^    /, "", name)
+            sub(/:[[:space:]]*$/, "", name)
+            kind = ""
+            proxy = ""
+            size_limit = ""
+            next
+        }
+        inside && raw ~ /^[[:space:]]+type:[[:space:]]*http[[:space:]]*$/ { kind = "http" }
+        inside && raw ~ /^[[:space:]]+proxy:[[:space:]]*[^[:space:]]/ {
+            proxy = raw
+            sub(/^[[:space:]]+proxy:[[:space:]]*/, "", proxy)
+            gsub(/[[:space:]]/, "", proxy)
+        }
+        inside && raw ~ /^[[:space:]]+size-limit:[[:space:]]*[^[:space:]]/ {
+            size_limit = raw
+            sub(/^[[:space:]]+size-limit:[[:space:]]*/, "", size_limit)
+            gsub(/[[:space:]]/, "", size_limit)
+        }
+        END {
+            if (name != "" && kind == "http" && (proxy != "DIRECT" || size_limit !~ /^[1-9][0-9]*$/)) print name
+        }
+    ' "$1"
+}
+
 # nameserver-policy 中 rule-set: 首段后面的逗号段也是 rule-set 名（首段前缀会套用到每一段）
 policy_rule_set_refs() {
     awk '
@@ -212,13 +245,73 @@ invalid_telegram_payloads() { # $1=模板
     done < <(telegram_fallback_payloads "$1")
 }
 
-# 提取 sniffer 顶层段（用于检查嗅探协议白名单）
-sniffer_block() {
-    awk '
-        /^sniffer:[[:space:]]*(#.*)?$/ { inside = 1; next }
+# 提取顶层 YAML 块（如 sniffer / dns / tun）
+top_level_block() { # $1=顶层键名 $2=模板
+    awk -v key="$1" '
+        $0 ~ ("^" key ":[[:space:]]*(#.*)?$") { inside = 1; next }
         inside && /^[^[:space:]#]/ { exit }
         inside { print }
-    ' "$1"
+    ' "$2"
+}
+
+# 提取指定顶层段下某个列表子键的所有条目（剥除注释、前缀 "- " 与引号）
+section_list_items() { # $1=顶层键名 $2=子键名 $3=模板
+    top_level_block "$1" "$3" | awk -v subkey="$2" '
+        function indent_of(line) {
+            match(line, /^[[:space:]]*/)
+            return RLENGTH
+        }
+        /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
+        !in_list && $0 ~ ("^[[:space:]]+" subkey ":[[:space:]]*(#.*)?$") {
+            in_list = 1
+            key_indent = indent_of($0)
+            next
+        }
+        in_list {
+            if (indent_of($0) <= key_indent) exit
+            line = $0
+            sub(/[[:space:]]+#.*$/, "", line)
+            if (line !~ /^[[:space:]]*-[[:space:]]+/) next
+            sub(/^[[:space:]]*-[[:space:]]+/, "", line)
+            gsub(/^["\x27]|["\x27]$/, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            if (line != "") print line
+        }
+    '
+}
+
+# 提取 dns.nameserver-policy 下的非注释键名（去掉引号）
+dns_nameserver_policy_keys() { # $1=模板
+    top_level_block dns "$1" | awk '
+        function indent_of(line) {
+            match(line, /^[[:space:]]*/)
+            return RLENGTH
+        }
+        /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
+        !in_policy && /^[[:space:]]+nameserver-policy:[[:space:]]*(#.*)?$/ {
+            in_policy = 1
+            key_indent = indent_of($0)
+            next
+        }
+        in_policy {
+            if (indent_of($0) <= key_indent) exit
+            line = $0
+            sub(/[[:space:]]+#.*$/, "", line)
+            if (line ~ /^[[:space:]]*-/) next
+            if (line !~ /:/) next
+            sub(/^[[:space:]]+/, "", line)
+            if (line ~ /^\x27[^\x27]+\x27[[:space:]]*:/) {
+                sub(/^\x27/, "", line)
+                sub(/\x27[[:space:]]*:.*$/, "", line)
+            } else if (line ~ /^"[^"]+"[[:space:]]*:/) {
+                sub(/^"/, "", line)
+                sub(/"[[:space:]]*:.*$/, "", line)
+            } else {
+                sub(/:([[:space:]].*)?$/, "", line)
+            }
+            if (line != "") print line
+        }
+    '
 }
 
 for template in "${TEMPLATES[@]}"; do
@@ -237,9 +330,12 @@ for template in "${TEMPLATES[@]}"; do
         fail "${template}: still downloads .dat files"
     fi
 
-    # 3. 所有 http 规则集必须是 mrs
+    # 3. 所有 http 规则集必须是 mrs，且声明 proxy: DIRECT 与正整数 size-limit（防冷启动死锁与规则集异常膨胀）
     offenders=$(http_providers_without_mrs "${path}")
     [[ -z "${offenders}" ]] || fail "${template}: non-mrs http rule-providers: ${offenders}"
+    missing_guards=$(http_providers_missing_guards "${path}")
+    [[ -z "${missing_guards}" ]] \
+        || fail "${template}: http rule-providers missing proxy: DIRECT or size-limit: ${missing_guards//$'\n'/ }"
 
     # 4. 不得残留 geosite:/geoip: 旧式引用
     if grep -Eq '(geosite|geoip):[^ ]' "${path}"; then
@@ -272,7 +368,7 @@ for template in "${TEMPLATES[@]}"; do
     # 8. sniffer 只允许嗅探 HTTP/TLS。嗅探 QUIC 要解析握手，只会给 UDP 首包白加等待与内存开销；
     #    没有域名信息的 QUIC 由 geoip 与 MATCH 按已有目标 IP 兜底分流。
     #    先剔除注释行，避免注释里的半角 "QUIC:" 造成假失败。
-    sniffer=$(sniffer_block "${path}")
+    sniffer=$(top_level_block sniffer "${path}")
     [[ -n "${sniffer}" ]] || fail "${template}: missing sniffer block"
     sniffer_body=$(printf '%s\n' "${sniffer}" | grep -v '^[[:space:]]*#' || true)
     if grep -qiE '^[[:space:]]*quic[[:space:]]*:' <<<"${sniffer_body}"; then
@@ -280,10 +376,17 @@ for template in "${TEMPLATES[@]}"; do
     fi
     grep -qiE '^[[:space:]]*tls[[:space:]]*:' <<<"${sniffer_body}" \
         || fail "${template}: sniffer must keep TLS sniffing"
+    skip_domains=$(section_list_items sniffer skip-domain "${path}")
+    [[ -n "${skip_domains}" ]] || fail "${template}: sniffer missing skip-domain"
+    for skip_entry in 'Mijia Cloud' '+.push.apple.com' '+.oray.com'; do
+        grep -Fxq -- "${skip_entry}" <<<"${skip_domains}" \
+            || fail "${template}: sniffer skip-domain missing ${skip_entry}"
+    done
 
     # 9. dns 段必须显式声明纯 IP 的 default-nameserver：Mihomo 用它解析 DoH 服务器自已的域名（doh.pub），
     #    不能靠系统解析（TUN dns-hijack 下会绕回自身），也不能回落到内置列表里的境外源。
-    default_ns=$(sed -n 's/^[[:space:]]*default-nameserver:[[:space:]]*//p' "${path}")
+    dns_body=$(top_level_block dns "${path}" | grep -v '^[[:space:]]*#' | sed -E 's/[[:space:]]+#.*$//' || true)
+    default_ns=$(sed -n 's/^[[:space:]]*default-nameserver:[[:space:]]*//p' <<<"${dns_body}")
     [[ -n "${default_ns}" ]] \
         || fail "${template}: dns 段缺少 default-nameserver（DoH 域名需要纯 IP 引导解析）"
     if printf '%s\n' "${default_ns}" | grep -qE '[a-zA-Z]'; then
@@ -291,6 +394,24 @@ for template in "${TEMPLATES[@]}"; do
     fi
     printf '%s\n' "${default_ns}" | grep -q '223\.5\.5\.5' \
         || fail "${template}: default-nameserver 应包含国内引导源 223.5.5.5"
+    grep -qE '^[[:space:]]+direct-nameserver:[[:space:]]*[^[:space:]]' <<<"${dns_body}" \
+        || fail "${template}: dns 段缺少 direct-nameserver"
+    grep -qE '^[[:space:]]+direct-nameserver-follow-policy:[[:space:]]*true[[:space:]]*$' <<<"${dns_body}" \
+        || fail "${template}: dns 段缺少 direct-nameserver-follow-policy: true"
+    policy_keys=$(dns_nameserver_policy_keys "${path}")
+    grep -Fxq -- 'testingcf.jsdelivr.net' <<<"${policy_keys}" \
+        || fail "${template}: nameserver-policy 缺少 testingcf.jsdelivr.net 直连解析"
+    fake_ip_filters=$(section_list_items dns fake-ip-filter "${path}")
+    for filter_entry in '+.push.apple.com' '+.oray.com' '+.orayimg.com' '+.tailscale.com' '+.tailscale.io'; do
+        grep -Fxq -- "${filter_entry}" <<<"${fake_ip_filters}" \
+            || fail "${template}: fake-ip-filter 缺少 ${filter_entry}"
+    done
+    excluded_cidrs=$(section_list_items tun route-exclude-address "${path}")
+    grep -Fxq -- '224.0.0.0/4' <<<"${excluded_cidrs}" \
+        || fail "${template}: tun.route-exclude-address 缺少 224.0.0.0/4"
+    if grep -Fxq -- '255.255.255.255/32' <<<"${excluded_cidrs}"; then
+        fail "${template}: tun.route-exclude-address 不应包含 255.255.255.255/32"
+    fi
 
     # 10. TUN 的 inet4-address 不得落在本模板的 fake-ip 池内。
     overlaps=$(tun_addresses_in_fake_ip_pool "${path}")
@@ -427,6 +548,30 @@ awk -v replacement='          - 300.1.1.1/24' '
 ' "${baseline}" >"${payload_probe}"
 [[ -n "$(invalid_telegram_payloads "${payload_probe}")" ]] \
     || fail "非法的 telegram-fallback payload 判定必须能报警（反证失败）"
+
+# 删掉 dns.fake-ip-filter 中的 +.push.apple.com（保留 sniffer.skip-domain 中的同名词条），确认不跨段误判。
+fake_ip_probe="${lint_dir}/mihomo-missing-fake-ip-push.yaml"
+awk '
+    /^dns:[[:space:]]*$/ { inside = 1; print; next }
+    inside && /^[^[:space:]#]/ { inside = 0 }
+    inside && /^[[:space:]]*-[[:space:]]*\x27\+\.push\.apple\.com\x27[[:space:]]*$/ { next }
+    { print }
+' "${baseline}" >"${fake_ip_probe}"
+if grep -Fxq -- '+.push.apple.com' <<<"$(section_list_items dns fake-ip-filter "${fake_ip_probe}")"; then
+    fail "fake-ip-filter 判定不得被 sniffer.skip-domain 同名词条满足（反证失败）"
+fi
+
+# 注释掉 tun.route-exclude-address 中的 224.0.0.0/4，确认不命中注释行。
+route_exclude_probe="${lint_dir}/mihomo-commented-multicast.yaml"
+awk '
+    /^tun:[[:space:]]*$/ { inside = 1; print; next }
+    inside && /^[^[:space:]#]/ { inside = 0 }
+    inside && /^[[:space:]]*-[[:space:]]*224\.0\.0\.0\/4[[:space:]]*$/ { print "      # - 224.0.0.0/4"; next }
+    { print }
+' "${baseline}" >"${route_exclude_probe}"
+if grep -Fxq -- '224.0.0.0/4' <<<"$(section_list_items tun route-exclude-address "${route_exclude_probe}")"; then
+    fail "route-exclude-address 判定不得命中注释行（反证失败）"
+fi
 
 printf 'ok - mihomo templates IPv4-only indentation\n'
 printf 'ok - mihomo templates\n'

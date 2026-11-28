@@ -302,11 +302,17 @@ assert_contains "geosite-private 进入直连规则" \
     "$(jq -c '[.route.rules[] | select(.rule_set != null and .outbound == "DIRECT") | .rule_set][0]' "${default_json}")"
 assert_equal "TUN 地址、MTU、栈与自动路由" "198.19.0.1/30 1500 system true hijack" \
     "$(jq -r '.inbounds[] | select(.tag == "tun-in") | "\(.address[0]) \(.mtu) \(.stack) \(.auto_route) \(.dns_mode)"' "${default_json}")"
-# 对齐 Mihomo：私网、CGNAT（Tailscale/ZeroTier）与链路本地不进 TUN，漏进来的也直连。
+# 对齐 Mihomo：私网、CGNAT（Tailscale/ZeroTier）、链路本地与组播不进 TUN，漏进来的私网/CGNAT/链路本地也直连。
 # ip_is_private 不含 100.64/10 与 169.254/16，所以两者靠 ip_cidr 规则补上。
-assert_equal "TUN 不接管私网、CGNAT 与链路本地" \
-    '["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16","169.254.0.0/16","100.64.0.0/10"]' \
+assert_equal "TUN 不接管私网、CGNAT、链路本地与组播" \
+    '["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16","169.254.0.0/16","100.64.0.0/10","224.0.0.0/4"]' \
     "$(jq -c '.inbounds[] | select(.tag == "tun-in") | .route_exclude_address' "${default_json}")"
+assert_equal "fakeip-exceptions 覆盖推送、内网穿透与异地组网后缀" 'true' \
+    "$(jq -r '
+        [.route.rule_set[] | select(.tag == "fakeip-exceptions") | .rules[].domain_suffix[]] as $s
+        | ["push.apple.com","oray.com","orayimg.com","tailscale.com","tailscale.io"]
+        | all(. as $k | ($s | index($k)) != null)
+    ' "${default_json}")"
 assert_equal "CGNAT 与链路本地直连规则排在 ip_is_private 之后" \
     '["ip_is_private","100.64.0.0/10","169.254.0.0/16"]' \
     "$(jq -c '[.route.rules[] | if .ip_is_private == true then "ip_is_private" elif (.ip_cidr // [] | index("100.64.0.0/10")) != null then .ip_cidr[] else empty end]' "${default_json}")"

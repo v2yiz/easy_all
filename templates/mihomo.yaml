@@ -6,6 +6,7 @@
 # 与原配置不同：移除宽泛关键字和 ssl.gstatic.com 直连，Google 统一代理。
 # MRS 下载失败保留可用缓存；冷启动依靠内联基础规则，不等价于完整规则覆盖。
 # 内存必须以实际客户端、节点数、TUN 和并发流量的峰值为准，见客户端指南。
+# 注意：本模板要求客户端内核支持 rule-providers 的 format: mrs、size-limit 与 direct-nameserver（mihomo 1.19.0+）。
 mixed-port: 1080
 allow-lan: false
 mode: rule
@@ -32,6 +33,36 @@ sniffer:
         ports: [443, 8443]
       # 不嗅探 QUIC：嗅探要解析握手，只会给 UDP 首包白加等待与内存开销；
       # Google/YouTube/Gemini 的 UDP/443 由规则拒绝回退 TCP，其余 QUIC 由 geoip 与 MATCH 兜底分流。
+    skip-domain:
+      # 非标准 SNI 与主流智能家居 / IoT
+      - 'Mijia Cloud'
+      - 'dlg.io.mi.com'
+      - '+.io.mi.com'
+      - '+.home.midea.com'
+      - '+.tuyacn.com'
+      - '+.tuyaus.com'
+      - '+.lechange.cn'
+      - '+.ezvizlife.com'
+      # 系统推送长连接（APNs / FCM）
+      - '+.push.apple.com'
+      - '+.mtalk.google.com'
+      # 远程控制 / 内网穿透 / 异地组网（私有协议常复用 443 端口）
+      - '+.oray.com'
+      - '+.orayimg.com'
+      - '+.todesk.com'
+      - '+.anydesk.com'
+      - '+.parsec.app'
+      - '+.tailscale.com'
+      - '+.tailscale.io'
+      - '+.zerotier.com'
+      # 局域网 / 内网自签服务与 NAS
+      - 'localhost'
+      - '+.local'
+      - '+.lan'
+      - '+.home.arpa'
+      - '+.internal'
+      - '+.synology.me'
+      - '+.direct.quickconnect.to'
 
 tun:
     enable: true
@@ -52,6 +83,7 @@ tun:
       - 192.168.0.0/16
       - 169.254.0.0/16
       - 100.64.0.0/10
+      - 224.0.0.0/4
 
 dns:
     enable: true
@@ -67,14 +99,19 @@ dns:
       - 'rule-set:geosite-private'
       - 'rule-set:captive-portal'
       - 'rule-set:wechat-services'
+      - '+.push.apple.com'
+      - '+.oray.com'
+      - '+.orayimg.com'
+      - '+.tailscale.com'
+      - '+.tailscale.io'
       - 'stun.*.*.*'
       - 'stun.*.*'
       - 'time.windows.com'
       - 'time.nist.gov'
       - 'time.apple.com'
       - 'time.asia.apple.com'
-      - '*.ntp.org.cn'
-      - '*.openwrt.pool.ntp.org'
+      - '+.ntp.org.cn'
+      - '+.openwrt.pool.ntp.org'
       - 'time1.cloud.tencent.com'
       - 'time.ustc.edu.cn'
       - 'pool.ntp.org'
@@ -94,7 +131,7 @@ dns:
       - 'time5.aliyun.com'
       - 'time6.aliyun.com'
       - 'time7.aliyun.com'
-      - '*.time.edu.cn'
+      - '+.time.edu.cn'
       - 'time1.apple.com'
       - 'time2.apple.com'
       - 'time3.apple.com'
@@ -106,39 +143,35 @@ dns:
       - 'time2.google.com'
       - 'time3.google.com'
       - 'time4.google.com'
-      - 'music.163.com'
-      - '*.music.163.com'
-      - '*.126.net'
+      - '+.music.163.com'
+      - '+.126.net'
       - 'musicapi.taihe.com'
       - 'music.taihe.com'
       - 'songsearch.kugou.com'
       - 'trackercdn.kugou.com'
-      - '*.kuwo.cn'
+      - '+.kuwo.cn'
       - 'api-jooxtt.sanook.com'
       - 'api.joox.com'
       - 'joox.com'
-      - 'y.qq.com'
-      - '*.y.qq.com'
+      - '+.y.qq.com'
       - 'streamoc.music.tc.qq.com'
       - 'mobileoc.music.tc.qq.com'
       - 'isure.stream.qqmusic.qq.com'
       - 'dl.stream.qqmusic.qq.com'
       - 'aqqmusic.tc.qq.com'
       - 'amobile.music.tc.qq.com'
-      - '*.xiami.com'
-      - '*.music.migu.cn'
-      - 'music.migu.cn'
-      - '*.msftconnecttest.com'
-      - '*.msftncsi.com'
+      - '+.xiami.com'
+      - '+.music.migu.cn'
+      - '+.msftconnecttest.com'
+      - '+.msftncsi.com'
       - 'localhost.ptlogin2.qq.com'
       - '*.*.*.srv.nintendo.net'
       - '*.*.stun.playstation.net'
       - 'xbox.*.*.microsoft.com'
-      - '*.ipv6.microsoft.com'
+      - '+.ipv6.microsoft.com'
       - '*.*.xboxlive.com'
       - 'speedtest.cros.wr.pvp.net'
-      - 'mtalk.google.com'
-      - '*.mtalk.google.com'
+      - '+.mtalk.google.com'
       - 'android.clients.google.com'
       - 'mtalk4.google.com'
       - 'mtalk-staging.google.com'
@@ -156,6 +189,10 @@ dns:
     default-nameserver: [223.5.5.5, 119.29.29.29]
     # 节点引导独立直连，避免海外 DoH 与代理节点解析互相依赖。
     proxy-server-nameserver: ['https://223.5.5.5/dns-query', 'https://doh.pub/dns-query']
+    # 直连出口重新解析使用国内 DoH，避免漏在 nameserver-policy 外的国内长尾域名拿到境外 CDN IP；
+    # 配合 direct-nameserver-follow-policy: true，私网与认证门户仍沿用上方 system DNS（需 mihomo 1.18.10+）。
+    direct-nameserver: ['https://223.5.5.5/dns-query', 'https://doh.pub/dns-query']
+    direct-nameserver-follow-policy: true
     nameserver: ['https://1.1.1.1/dns-query#PROXY', 'https://8.8.8.8/dns-query#PROXY']
     nameserver-policy:
       'rule-set:private-fallback,geosite-private': system

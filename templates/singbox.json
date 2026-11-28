@@ -264,7 +264,8 @@
         "172.16.0.0/12",
         "192.168.0.0/16",
         "169.254.0.0/16",
-        "100.64.0.0/10"
+        "100.64.0.0/10",
+        "224.0.0.0/4"
       ]
     }
   ],
@@ -535,6 +536,11 @@
               "alt8-mtalk.google.com"
             ],
             "domain_suffix": [
+              "push.apple.com",
+              "oray.com",
+              "orayimg.com",
+              "tailscale.com",
+              "tailscale.io",
               "ntp.org.cn",
               "openwrt.pool.ntp.org",
               "time.edu.cn",

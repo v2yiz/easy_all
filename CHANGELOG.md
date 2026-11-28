@@ -1,3 +1,20 @@
+## 5.10.0 更新说明（2026-11-28）
+
+### 客户端模板优化
+
+- **三套 Mihomo 模板补全嗅探排除、直连重解析与防死锁参数**（`templates/mihomo.yaml`、`templates/mihomo-common.yaml`、`templates/mihomo-classic.yaml`）：
+  - `sniffer.skip-domain` 统一补全 25 条高频跳过项，覆盖非标准 SNI 与主流智能家居 / IoT（`Mijia Cloud`、`dlg.io.mi.com`、`+.io.mi.com`、美的 / 涂鸦 / 乐橙 / 萤石）、系统推送（`+.push.apple.com`、`+.mtalk.google.com`）、远程控制 / 内网穿透 / 异地组网（向日葵 / 花生壳、ToDesk、AnyDesk、Parsec、Tailscale、ZeroTier）以及局域网与群晖 NAS 自签域名；保持在 `sniffer:` 块内，iOS 变体下发时仍整段剥离。
+  - `dns` 段统一新增国内 DoH `direct-nameserver` 与 `direct-nameserver-follow-policy: true`，避免漏在 `nameserver-policy` 外的国内长尾域名在直连出口拿到境外 CDN IP，同时保留私网与认证门户走 `system` DNS；三套模板顶部统一注明内核门槛 `mihomo 1.19.0+`。
+  - `dns.fake-ip-filter` 统一补全 `+.push.apple.com`、`+.oray.com`、`+.orayimg.com`、`+.tailscale.com`、`+.tailscale.io`，并将 `mihomo.yaml` 与 `mihomo-common.yaml` 中所有成对 / 单级 `*.` 通配符收拢为 `+.` 前缀。
+  - `templates/mihomo-classic.yaml` 的 13 个远程 MRS `rule-providers` 补全 `proxy: DIRECT` 与 `size-limit`，并在 `nameserver-policy` 补齐 `testingcf.jsdelivr.net` 国内直连解析，消除冷启动死锁与规则集异常膨胀风险。
+- **Mihomo 与 sing-box 模板同步 TUN 组播排除与 Fake-IP 例外**（`templates/singbox.json`、`docs/technical-reference.md`）：
+  - 四套客户端模板的 TUN `route-exclude-address` / `route_exclude_address` 统一追加组播段 `224.0.0.0/4`（保留 6 段，不纳入存在跨平台路由边界风险的 `255.255.255.255/32`），减少 mDNS / 投屏 / 局域网设备发现误入 TUN。
+  - `templates/singbox.json` 的 `fakeip-exceptions` 同步补齐 `push.apple.com`、`oray.com`、`orayimg.com`、`tailscale.com`、`tailscale.io`。
+- **模板一致性与订阅测试加固**（`test/test_mihomo_template_lint.sh`、`test/test_singbox_subscription.sh`）：
+  - 新增分段提取与剥注释校验，精确锁定 `proxy: DIRECT`、`size-limit`、`skip-domain`、`direct-nameserver`、`nameserver-policy`、`fake-ip-filter` 与 `route-exclude-address` 不变量，并附跨段/注释行反证用例。
+
+---
+
 ## 5.9.1 更新说明（2026-11-26）
 
 ### 问题修复

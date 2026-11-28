@@ -1,6 +1,6 @@
 {
   "name": "easy_all-tests",
-  "version": "5.9.1",
+  "version": "5.10.0",
   "private": true,
   "type": "module",
   "scripts": {
