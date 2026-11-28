@@ -1,3 +1,13 @@
+## 5.10.2 更新说明（2026-11-28）
+
+### 规则优化
+
+- **客户端模板改为仅对 `PROXY` 流量拒绝 UDP/443（QUIC），完整放行所有 `DIRECT` 流量**（`templates/mihomo.yaml`、`templates/mihomo-common.yaml`、`templates/mihomo-classic.yaml`、`templates/singbox.json`、`docs/technical-reference.md`）：
+  - 四套客户端模板在各前置代理规则集之前以及 `geoip-cn(DIRECT)` 之后、兜底 `PROXY` 之前拦截 `UDP/443`，强迫所有走代理隧道的 HTTP/3 流量快速回退 HTTP/2 over TCP，消除代理 TCP 隧道内的 `QUIC-over-TCP` 拥塞冲突，同时完整保留所有直连流量的原生 QUIC。
+  - 移除因尾部兜底拦截已冗余的内联集合 `google-quic-fallback`，同步更新 `test/test_mihomo_template_lint.sh` 与 `test/test_singbox_subscription.sh` 断言。
+
+---
+
 ## 5.10.1 更新说明（2026-11-28）
 
 ### 规则优化

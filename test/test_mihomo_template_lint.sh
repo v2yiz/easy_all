@@ -425,8 +425,9 @@ for template in "${TEMPLATES[@]}"; do
         || fail "${template}: invalid telegram-fallback payload: ${bad_payloads//$'\n'/ }"
 
     # 12. 桌面端开启并发建连（iOS 变体下发时才改回 false，见 strip_mihomo_sniffer）；
-    #     rules 仅针对 Google/YouTube/Gemini（google-quic-fallback 与 geosite-google）拒绝 UDP/443，
-    #     不得存在全局 UDP/443 拦截，且该规则必须排在 captive-portal 之后、PROXY 规则之前。
+    #     仅针对走 PROXY 的流量拒绝 UDP/443（QUIC），完整放行所有 DIRECT 流量：
+    #     - 前置 PROXY 规则集必须有对应的 UDP/443 拒绝规则，且位于 captive-portal 之后、各自 PROXY 规则之前；
+    #     - 兜底 AND,((NETWORK,UDP),(DST-PORT,443)),REJECT 必须严格位于 geoip-cn(DIRECT) 之后、MATCH,PROXY 之前。
     concurrent=$(sed -n 's/^tcp-concurrent:[[:space:]]*//p' "${path}")
     [[ "${concurrent}" == "true" ]] \
         || fail "${template}: tcp-concurrent must be true（实际：${concurrent:-<缺失>}）"
@@ -436,25 +437,44 @@ for template in "${TEMPLATES[@]}"; do
         inside { print }
     ' "${path}")
     [[ -n "${rules_block}" ]] || fail "${template}: missing rules block"
-    grep -Fq 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,google-quic-fallback)),REJECT' <<<"${rules_block}" \
-        || fail "${template}: 缺少 google-quic-fallback 的 UDP/443 拒绝规则"
-    grep -Fq 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-google)),REJECT' <<<"${rules_block}" \
-        || fail "${template}: 缺少 geosite-google 的 UDP/443 拒绝规则"
-    bad_udp443=$(grep -E 'NETWORK,UDP|DST-PORT,443' <<<"${rules_block}" \
-        | grep -Ev 'AND,\(\(NETWORK,UDP\),\(DST-PORT,443\),\(RULE-SET,(google-quic-fallback|geosite-google)\)\),REJECT' || true)
-    [[ -z "${bad_udp443}" ]] \
-        || fail "${template}: 只允许针对 Google 集合拦截 UDP/443，禁止全局拦截：$(head -1 <<<"${bad_udp443}")"
+    expected_quic_sets=(geosite-google proxy-services)
+    case "${template}" in
+        mihomo-common.yaml)
+            expected_quic_sets+=(geosite-foreign)
+            ;;
+        mihomo-classic.yaml)
+            expected_quic_sets+=(geosite-github geosite-openai geosite-anthropic geosite-ai-chat)
+            ;;
+    esac
     captive_line=$(grep -n 'RULE-SET,captive-portal,DIRECT' <<<"${rules_block}" | head -1 | cut -d: -f1)
-    quic_line=$(grep -n 'RULE-SET,google-quic-fallback)),REJECT' <<<"${rules_block}" | head -1 | cut -d: -f1)
-    google_proxy_line=$(grep -nE 'RULE-SET,(proxy-services|geosite-google),PROXY' <<<"${rules_block}" | head -1 | cut -d: -f1)
-    [[ -n "${captive_line}" && -n "${quic_line}" && -n "${google_proxy_line}" ]] \
-        || fail "${template}: 无法定位 captive-portal / Google QUIC / PROXY 规则顺序"
-    ((captive_line < quic_line && quic_line < google_proxy_line)) \
-        || fail "${template}: Google UDP/443 拒绝规则必须排在 captive-portal 之后且早于 proxy-services/geosite-google"
-    for suffix in '+.google' '+.google.com' '+.googleapis.com' '+.googlevideo.com' '+.youtube.com'; do
-        grep -Fq -- "'${suffix}'" "${path}" \
-            || fail "${template}: google-quic-fallback 缺少核心后缀 ${suffix}"
+    [[ -n "${captive_line}" ]] || fail "${template}: 无法定位 captive-portal 规则"
+    for rset in "${expected_quic_sets[@]}"; do
+        grep -Fq "AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,${rset})),REJECT" <<<"${rules_block}" \
+            || fail "${template}: 缺少 ${rset} 的 UDP/443 拒绝规则"
+        quic_line=$(grep -n "RULE-SET,${rset})),REJECT" <<<"${rules_block}" | head -1 | cut -d: -f1)
+        ((captive_line < quic_line)) \
+            || fail "${template}: ${rset} 的 UDP/443 拒绝规则必须排在 captive-portal 之后"
+        proxy_line=$(grep -n "RULE-SET,${rset},PROXY" <<<"${rules_block}" | head -1 | cut -d: -f1)
+        [[ -n "${proxy_line}" && "${quic_line}" -lt "${proxy_line}" ]] \
+            || fail "${template}: ${rset} 的 UDP/443 拒绝规则必须早于 RULE-SET,${rset},PROXY"
     done
+    ! grep -Fq 'google-quic-fallback' "${path}" \
+        || fail "${template}: 不应再保留冗余的 google-quic-fallback 集合"
+    bad_udp443=$(grep -E '^[[:space:]]*-' <<<"${rules_block}" \
+        | grep -E 'NETWORK,UDP|DST-PORT,443' \
+        | grep -Ev 'AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)(,\(RULE-SET,(geosite-google|proxy-services|geosite-foreign|geosite-github|geosite-openai|geosite-anthropic|geosite-ai-chat)\))?\),REJECT' || true)
+    [[ -z "${bad_udp443}" ]] \
+        || fail "${template}: 存在未预期的 UDP/443 规则：$(head -1 <<<"${bad_udp443}")"
+    fallback_quic_count=$(grep -cE "^[[:space:]]*-[[:space:]]*'?AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT'?$" <<<"${rules_block}" || true)
+    [[ "${fallback_quic_count}" == "1" ]] \
+        || fail "${template}: 兜底 UDP/443 拒绝规则必须恰好 1 条（实际：${fallback_quic_count}）"
+    geoip_cn_line=$(grep -nE "^[[:space:]]*-[[:space:]]*'?RULE-SET,geoip-cn,DIRECT,no-resolve'?$" <<<"${rules_block}" | head -1 | cut -d: -f1)
+    fallback_quic_line=$(grep -nE "^[[:space:]]*-[[:space:]]*'?AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT'?$" <<<"${rules_block}" | head -1 | cut -d: -f1)
+    match_proxy_line=$(grep -nE "^[[:space:]]*-[[:space:]]*'?MATCH,PROXY'?$" <<<"${rules_block}" | head -1 | cut -d: -f1)
+    [[ -n "${geoip_cn_line}" && -n "${fallback_quic_line}" && -n "${match_proxy_line}" ]] \
+        || fail "${template}: 无法定位 geoip-cn / 兜底 QUIC / MATCH,PROXY 顺序"
+    ((geoip_cn_line < fallback_quic_line && fallback_quic_line < match_proxy_line)) \
+        || fail "${template}: 兜底 UDP/443 拒绝规则必须排在 geoip-cn(DIRECT) 之后、MATCH,PROXY 之前"
 
     printf 'ok - %s\n' "${template}"
 done

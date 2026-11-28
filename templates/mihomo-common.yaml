@@ -32,7 +32,7 @@ sniffer:
       TLS:
         ports: [443, 8443]
       # 不嗅探 QUIC：嗅探要解析握手，只会给 UDP 首包白加等待与内存开销；
-      # Google/YouTube/Gemini 的 UDP/443 由规则拒绝回退 TCP，其余 QUIC 由 geoip 与 MATCH 兜底分流。
+      # 直连流量保留原生 QUIC，走 PROXY 的 UDP/443 由规则拒绝回退 TCP。
     skip-domain:
       # 非标准 SNI 与主流智能家居 / IoT
       - 'Mijia Cloud'
@@ -519,32 +519,6 @@ rule-providers:
           - '95.161.64.0/20'
           - '149.154.160.0/20'
           - '185.76.151.0/24'
-    # Google/YouTube/Gemini 冷启动兜底集合：仅用于拒绝 UDP/443（QUIC），避免 CDN TCP 隧道内出现 QUIC-over-TCP 拥塞冲突。
-    google-quic-fallback:
-        type: inline
-        behavior: domain
-        payload:
-          - '+.google'
-          - '+.google.com'
-          - '+.google.cn'
-          - '+.google.ai'
-          - '+.google.dev'
-          - '+.googleapis.com'
-          - '+.googleapis.cn'
-          - '+.googleusercontent.com'
-          - '+.gstatic.com'
-          - '+.gstatic.cn'
-          - '+.deepmind.com'
-          - '+.withgoogle.com'
-          - '+.googlevideo.com'
-          - '+.youtube.com'
-          - '+.youtu.be'
-          - '+.ytimg.com'
-          - '+.ggpht.com'
-          - '+.gvt1.com'
-          - '+.gvt2.com'
-          - '+.gvt3.com'
-          - '+.recaptcha.net'
     geosite-private:
         type: http
         behavior: domain
@@ -631,15 +605,16 @@ rules:
     - 'DOMAIN,yacd.haishan.me,DIRECT'
     # 保留 FCM 无域名连接的端口兜底，仅 TCP；局域网例外已经优先处理。
     - 'AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY'
-    # 仅针对 Google/YouTube/Gemini 拒绝 UDP/443（QUIC），强迫回退 HTTP/2 over TCP，避免 CDN 隧道内 QUIC-over-TCP 拥塞冲突。
-    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,google-quic-fallback)),REJECT'
+    # 仅针对走 PROXY 的流量拒绝 UDP/443（QUIC），强迫回退 HTTP/2 over TCP，避免代理 TCP 隧道内 QUIC-over-TCP 拥塞冲突；所有 DIRECT 流量完整放行 UDP/443。
     - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-google)),REJECT'
+    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,proxy-services)),REJECT'
     - 'RULE-SET,proxy-services,PROXY'
     - 'RULE-SET,geosite-google,PROXY'
     - 'RULE-SET,wechat-services,DIRECT'
     - 'RULE-SET,steam-download,DIRECT'
     - 'RULE-SET,apple-cn-fallback,DIRECT'
     - 'RULE-SET,geosite-apple-cn,DIRECT'
+    - 'AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-foreign)),REJECT'
     - 'RULE-SET,geosite-foreign,PROXY'
     - 'RULE-SET,direct-services,DIRECT'
     - 'RULE-SET,geosite-cn,DIRECT'
@@ -649,4 +624,6 @@ rules:
     # LAN 已在前面按已有目标 IP 直连；CN GeoIP 兜底同样不触发解析。
     # 未命中域名集合的未知域名不会仅为 GEOIP 判断额外解析，默认交给 MATCH,PROXY。
     - 'RULE-SET,geoip-cn,DIRECT,no-resolve'
+    # 所有 DIRECT 规则之后拦截兜底代理流量的 UDP/443（QUIC），强迫回退 HTTP/2 over TCP。
+    - 'AND,((NETWORK,UDP),(DST-PORT,443)),REJECT'
     - 'MATCH,PROXY'

@@ -27,7 +27,7 @@ sniffer:
       TLS:
         ports: [443, 8443]
       # 不嗅探 QUIC：嗅探要解析握手，只会给 UDP 首包白加等待与内存开销；
-      # Google/YouTube/Gemini 的 UDP/443 由规则拒绝回退 TCP，其余 QUIC 由 geoip 与 MATCH 兜底分流。
+      # 直连流量保留原生 QUIC，走 PROXY 的 UDP/443 由规则拒绝回退 TCP。
     skip-domain:
       # 非标准 SNI 与主流智能家居 / IoT
       - 'Mijia Cloud'
@@ -303,33 +303,6 @@ rule-providers:
         - '+.ugdtimg.com'
         - '+.id6.me'
 
-    # Google/YouTube/Gemini 冷启动兜底集合：仅用于拒绝 UDP/443（QUIC），避免 CDN TCP 隧道内出现 QUIC-over-TCP 拥塞冲突。
-    google-quic-fallback:
-        type: inline
-        behavior: domain
-        payload:
-          - '+.google'
-          - '+.google.com'
-          - '+.google.cn'
-          - '+.google.ai'
-          - '+.google.dev'
-          - '+.googleapis.com'
-          - '+.googleapis.cn'
-          - '+.googleusercontent.com'
-          - '+.gstatic.com'
-          - '+.gstatic.cn'
-          - '+.deepmind.com'
-          - '+.withgoogle.com'
-          - '+.googlevideo.com'
-          - '+.youtube.com'
-          - '+.youtu.be'
-          - '+.ytimg.com'
-          - '+.ggpht.com'
-          - '+.gvt1.com'
-          - '+.gvt2.com'
-          - '+.gvt3.com'
-          - '+.recaptcha.net'
-
     # MRS 规则集：二进制格式，内存远低于 YAML/DAT；本模板不再加载 geosite.dat/geoip.dat。
     geosite-private:
         type: http
@@ -478,9 +451,12 @@ rules:
   - RULE-SET,captive-portal,DIRECT
   # FCM 使用真实 IP 后可能没有域名信息；专用 TCP 推送端口仍经代理，优先于 CN IP 直连。
   - AND,((NETWORK,TCP),(DST-PORT,5228-5230)),PROXY
-  # 仅针对 Google/YouTube/Gemini 拒绝 UDP/443（QUIC），强迫回退 HTTP/2 over TCP，避免 CDN 隧道内 QUIC-over-TCP 拥塞冲突。
-  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,google-quic-fallback)),REJECT
+  # 仅针对走 PROXY 的流量拒绝 UDP/443（QUIC），强迫回退 HTTP/2 over TCP，避免代理 TCP 隧道内 QUIC-over-TCP 拥塞冲突；所有 DIRECT 流量完整放行 UDP/443。
   - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-google)),REJECT
+  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-github)),REJECT
+  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-openai)),REJECT
+  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-anthropic)),REJECT
+  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,proxy-services)),REJECT
   # Google 优先于国内集合，让 Play 接口与下载使用同一代理出口；VPS 出站地址族仍由服务端策略锁定。
   - RULE-SET,geosite-google,PROXY
   # 明确代理的 AI 及服务例外优先于 CN/微软直连。
@@ -497,11 +473,14 @@ rules:
   - DOMAIN,clash.razord.top,DIRECT
   - DOMAIN,yacd.haishan.me,DIRECT
   # 其余 AI 分类保留在 CN 后，避免把 Kimi 等重叠服务无条件改成代理。
+  - AND,((NETWORK,UDP),(DST-PORT,443),(RULE-SET,geosite-ai-chat)),REJECT
   - RULE-SET,geosite-ai-chat,PROXY
   # Telegram 专属 IP 段代理
   - RULE-SET,geoip-telegram,PROXY,no-resolve
   # CN GeoIP 兜底只匹配已有目标 IP；未知域名不会仅为 GEOIP 判断额外解析，
   # 未命中域名集合时交给 MATCH,PROXY。需要覆盖未收录国内域名时应扩充域名集合。
   - RULE-SET,geoip-cn,DIRECT,no-resolve
+  # 所有 DIRECT 规则之后拦截兜底代理流量的 UDP/443（QUIC），强迫回退 HTTP/2 over TCP。
+  - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT
   # 最终兜底：其余国外网站/视频/服务全部走代理
   - MATCH,PROXY
